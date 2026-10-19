@@ -1,8 +1,10 @@
 export function compareArcVersions(candidate, current) {
   const parse = (value) => {
-    const match = String(value || '').replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+    const match = String(value || '').replace(/^v/i, '').match(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
     if (!match) return null;
-    return { core: match.slice(1, 4).map(Number), pre: match[4] ? match[4].split('.') : null };
+    const pre = match[4] ? match[4].split('.') : null;
+    if (pre?.some((part) => !part || (/^\d+$/.test(part) && part.length > 1 && part.startsWith('0')))) return null;
+    return { core: match.slice(1, 4).map(Number), pre };
   };
   const next = parse(candidate);
   const installed = parse(current);
