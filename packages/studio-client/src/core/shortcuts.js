@@ -73,11 +73,36 @@ export function shortcutFromEvent(event) {
 }
 
 export function getShortcutReservation(binding, platform = '') {
-  if (platform !== 'macos' || !binding) return '';
-  const parts = String(binding).toLowerCase().split('+');
+  if (!binding) return '';
+  const normalized = normalizeShortcutBinding(binding, platform);
+  const appReservations = [
+    ['mod+a', 'Select nodes is an app shortcut and cannot be reassigned here.'],
+    ['mod+shift+a', 'Select visible nodes is an app shortcut and cannot be reassigned here.'],
+    ['mod+c', 'Copy node is an app shortcut and cannot be reassigned here.'],
+    ['mod+v', 'Paste node is an app shortcut and cannot be reassigned here.'],
+    ['mod+plus', 'Increase UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+shift+plus', 'Increase UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+=', 'Increase UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+shift+=', 'Increase UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+minus', 'Decrease UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+shift+minus', 'Decrease UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+_', 'Decrease UI scale is an app shortcut and cannot be reassigned here.'],
+    ['mod+shift+_', 'Decrease UI scale is an app shortcut and cannot be reassigned here.'],
+    ['delete', 'Delete node is an app shortcut and cannot be reassigned here.'],
+    ['backspace', 'Delete node is an app shortcut and cannot be reassigned here.'],
+    ['n', 'Add note is an app shortcut and cannot be reassigned here.'],
+    ['f', 'Fit canvas is an app shortcut and cannot be reassigned here.'],
+    ['shift+g', 'Create tag group is an app shortcut and cannot be reassigned here.'],
+    ['space', 'Space-drag canvas panning is an app shortcut and cannot be reassigned here.'],
+    ['escape', 'Escape is used to dismiss app panels and cancel canvas actions.']
+  ];
+  const appReservation = appReservations.find(([reserved]) => normalizeShortcutBinding(reserved, platform) === normalized);
+  if (appReservation) return appReservation[1];
+  if (platform !== 'macos') return '';
+  const parts = normalized.split('+');
   const key = parts.at(-1);
   const has = (modifier) => parts.includes(modifier);
-  const command = has('mod');
+  const command = has('meta');
   const shift = has('shift');
   const alt = has('alt');
   const control = has('ctrl');
