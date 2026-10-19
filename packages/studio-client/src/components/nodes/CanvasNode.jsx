@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FileCode2, Plus, X } from 'lucide-react';
 import { PinColors } from './nodeDefinitions.js';
-import { DISCORD_PERMISSIONS } from './permissionCatalog.js';
+import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { EmbedNodeBuilder } from './EmbedNodeBuilder.jsx';
@@ -14,20 +14,44 @@ import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
-const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'object' ? {} : '';
-const slashCommandPermissionOptions = [
-  { value: '', label: 'Everyone' },
-  ...DISCORD_PERMISSIONS.map((permission) => ({
-    value: String(1n << BigInt(permission.bit)),
-    label: permission.label
-  }))
-];
-const channelPermissionOptions = [
-  ['ViewChannel', 'View channel'], ['SendMessages', 'Send messages'], ['ReadMessageHistory', 'Read message history'],
-  ['AttachFiles', 'Attach files'], ['EmbedLinks', 'Embed links'], ['AddReactions', 'Add reactions'],
-  ['ManageMessages', 'Manage messages'], ['ManageChannels', 'Manage channels'], ['UseApplicationCommands', 'Use app commands'],
-  ['Connect', 'Connect to voice'], ['Speak', 'Speak in voice']
-];
+const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
+const eventSocketHints = {
+  application_id: 'Discord application (bot) ID associated with this interaction',
+  channel_id: 'Discord channel ID where this event or interaction occurred',
+  command_name: 'Name of the slash command that was invoked, without the leading slash',
+  content: 'Text content of the Discord message or event payload',
+  custom_id: 'Developer-defined ID used to identify the submitted component or modal',
+  guild_id: 'Discord server ID where this event occurred; empty for direct messages',
+  interaction_token: 'Short-lived token used to respond to this interaction; treat it as a secret',
+  interaction_id: 'Unique ID for this Discord interaction',
+  message_id: 'ID of the Discord message involved in this event',
+  options: 'Object containing the command options submitted with this interaction',
+  selected_values: 'Array of values chosen in the submitted select menu',
+  submitted_values: 'Object of modal field values, keyed by each field’s custom ID',
+  user_id: 'Discord user ID of the person who triggered this event or interaction',
+  username: 'Discord username of the person who invoked this command'
+};
+function VariableJSONFallback({ type, value, onChange }) {
+  const [draft, setDraft] = React.useState(null);
+  const text = draft ?? JSON.stringify(value ?? defaultValueForType(type), null, 2);
+  let valid = false;
+  try {
+    const parsed = JSON.parse(text);
+    valid = type === 'array' ? Array.isArray(parsed) : Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed));
+  } catch {}
+  return <div className="node-config-stack">
+    <textarea rows={3} value={text} onChange={(event) => {
+      const nextText = event.target.value;
+      setDraft(nextText);
+      try {
+        const parsed = JSON.parse(nextText);
+        const rightShape = type === 'array' ? Array.isArray(parsed) : parsed && typeof parsed === 'object' && !Array.isArray(parsed);
+        if (rightShape) onChange(parsed);
+      } catch {}
+    }} onBlur={() => { if (valid) setDraft(null); }} onPointerDown={(event) => event.stopPropagation()} placeholder={type === 'array' ? '[]' : '{}'} aria-label="Variable fallback JSON value" />
+    {!valid && <small className="node-config-hint">Enter a valid JSON {type === 'array' ? 'array' : 'object'}.</small>}
+  </div>;
+}
 function variableValuePaths(value, root, depth = 0, output = []) {
   if (depth >= 4 || value == null || typeof value !== 'object') return output;
   const entries = Array.isArray(value) ? value.slice(0, 10).map((_item, index) => [index, value[index]]) : Object.entries(value).slice(0, 40).filter(([key]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key));
@@ -55,25 +79,47 @@ function getSlashCommandDescriptionIssue(value) {
 }
 
 function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', ...props }) {
+  const onBlur = props.onBlur;
+  const inputProps = { ...props };
+  delete inputProps.onBlur;
   const [draft, setDraft] = React.useState(value == null ? '' : String(value));
   React.useEffect(() => setDraft(value == null ? '' : String(value)), [value]);
-  return <input {...props} type="number" value={draft} className={`${className} ${draft === '' ? 'is-empty-number' : ''}`.trim()} aria-invalid={draft === '' || props['aria-invalid'] || undefined} onChange={(event) => {
-    const next = event.target.value;
+  const emptyIsInvalid = draft === '' && !allowEmpty;
+  return <input {...inputProps} type="number" value={draft} className={`${className} ${emptyIsInvalid ? 'is-empty-number' : ''}`.trim()} aria-invalid={emptyIsInvalid || props['aria-invalid'] || undefined} onChange={(event) => {
+    let next = event.target.value;
+    const maximum = Number(props.max);
+    if (next !== '' && Number.isFinite(maximum) && Number(next) > maximum) {
+      next = String(maximum);
+      event.target.value = next;
+    }
     setDraft(next);
     if (next !== '' || allowEmpty) onChange?.(event);
+  }} onBlur={(event) => {
+    if (draft !== '') {
+      const minimum = Number(props.min);
+      const maximum = Number(props.max);
+      const number = Number(draft);
+      const bounded = Math.max(Number.isFinite(minimum) ? minimum : -Infinity, Math.min(Number.isFinite(maximum) ? maximum : Infinity, number));
+      if (Number.isFinite(bounded) && String(bounded) !== draft) {
+        const normalized = String(bounded);
+        setDraft(normalized);
+        onChange?.({ target: { value: normalized } });
+      }
+    }
+    onBlur?.(event);
   }} />;
 }
 
 export function CanvasNode({
   node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, selected = false, illuminated = false, isLocked = false,
-  snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
+  snappedPin = null, appEmojis = [], modalFieldOptions = [], templateSocketSuggestions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
   const inputs = execFirst(nodeDef.inputs);
   const outputs = execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
-  const update = (key, value) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value });
+  const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
   const selectedVariable = graphVariables.find((variable) => variable.id === node.data?.variableId && (variable.scope || 'graph') === (node.data?.scope || 'graph'));
   const configureTextFields = (element) => {
     if (!element) return;
@@ -85,8 +131,19 @@ export function CanvasNode({
   };
 
   const renderPin = (pin, direction, index) => {
-    const pinColor = PinColors[pin.type] || '#c7cedb';
+    const displayType = pin.colorType || pin.type;
+    const pinColor = PinColors[displayType] || '#c7cedb';
     const isSnapped = snappedPin?.nodeId === node.id && snappedPin?.pinId === pin.id && snappedPin?.direction === direction;
+    const socketHint = direction === 'output' && nodeDef.type?.startsWith('event_') ? eventSocketHints[pin.id] : '';
+    const description = pin.description || (pin.type === 'exec'
+      ? direction === 'input'
+        ? 'Execution input · accepts multiple incoming paths · runs once for each active path'
+        : 'Execution output · each connected path runs in order'
+      : socketHint
+        ? socketHint
+        : direction === 'input'
+          ? `Input socket for ${pin.label} · accepts a compatible ${displayType} wire · without one, the configured fallback is used`
+          : `Output socket for ${pin.label} · carries a ${displayType} value to connected inputs`);
     return (
       <div
         key={`${direction}-${pin.id}`}
@@ -96,8 +153,8 @@ export function CanvasNode({
         data-pin-index={index}
         data-direction={direction}
         data-pin-type={pin.type}
-        data-tooltip={`${pin.label} · ${pin.type}`}
-        data-pin-description={`${pin.description || (pin.type === 'exec' ? direction === 'input' ? 'Execution input · accepts multiple incoming paths; runs once for each active path' : 'Execution output · each connected path runs in order' : pin.label)} · ${pin.type}`}
+        data-tooltip={`${pin.label} · ${displayType}`}
+        data-pin-description={`${pin.label} · ${description} · ${displayType}`}
         onPointerDown={(event) => {
           if (direction !== 'output') { event.stopPropagation(); return; }
           onPinStartConnect?.(event, node.id, pin.id, direction, pin.type, index);
@@ -143,12 +200,12 @@ export function CanvasNode({
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions)}
+      {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions)}
     </article>
   );
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   const textEditor = (id, label, maxLength = 2000, placeholder = '', autocomplete = true) => {
     const value = String(node.data?.[id] ?? '');
@@ -178,6 +235,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'event_slash_command') {
     const commandNameIssue = getSlashCommandNameIssue(node.data?.commandName);
     const commandDescriptionIssue = getSlashCommandDescriptionIssue(node.data?.description);
+    const commandPermissionBits = String(node.data?.defaultMemberPermissions ?? '').trim();
+    const selectedCommandPermissions = bitfieldToPermissions(commandPermissionBits).map((key) => DISCORD_PERMISSIONS.find((permission) => permission.key === key)?.label || key);
+    const commandPermissionSummary = commandPermissionBits === '0'
+      ? 'Administrators only'
+      : selectedCommandPermissions.length === 1
+        ? selectedCommandPermissions[0]
+        : selectedCommandPermissions.length > 1
+          ? `${selectedCommandPermissions.length} permissions`
+        : 'Everyone';
     const usesAppDefaults = !Array.isArray(node.data?.integrationTypes) && !Array.isArray(node.data?.contexts);
     const integrationTypes = Array.isArray(node.data?.integrationTypes) ? node.data.integrationTypes : [];
     const commandContexts = Array.isArray(node.data?.contexts) ? node.data.contexts : [];
@@ -192,9 +258,12 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <label><span className="slash-command-field-label"><span>Description</span>{warning(commandDescriptionIssue, 'Command description issue')}</span><CharacterLimit value={node.data?.description ?? ''} maxLength={100}><input value={node.data?.description ?? ''} maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('description', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="What this command does" aria-label="Slash command description" /></CharacterLimit></label>
       <section className="slash-command-options-compact">
         <div><strong>Arguments</strong><span>{options.length}/25</span></div>
-        <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenSlashCommandStudio?.(node); }}><Plus size={12} /> Edit arguments</button>
+        <button type="button" className="node-config-action node-config-studio-action is-static-hover" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenSlashCommandStudio?.(node); }}><Plus size={12} /> Edit arguments</button>
       </section>
-      <label><span className="slash-command-field-label"><span>Who can use this command</span></span><AnimatedDropdown value={String(node.data?.defaultMemberPermissions ?? '')} options={slashCommandPermissionOptions} onChange={(value) => update('defaultMemberPermissions', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Required permission for slash command" className="node-select" /></label>
+      <section className="slash-command-options-compact">
+        <div><strong>Who can use this command</strong><span>{commandPermissionSummary}</span></div>
+        <button type="button" className="node-config-action node-config-studio-action is-static-hover" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenPermissionStudio?.(node); }}><Plus size={12} /> Edit command permissions</button>
+      </section>
       <details className="slash-command-availability">
         <summary>Installation and context</summary>
         <label className="slash-command-choice"><AnimatedCheckbox checked={usesAppDefaults} label="Use application defaults" onChange={(value) => update({ integrationTypes: value ? undefined : [0], contexts: value ? undefined : [0] })} onPointerDown={(event) => event.stopPropagation()} /><span>Use application defaults</span></label>
@@ -213,6 +282,15 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <FallbackField label="Cron (min hour day month weekday)"><input value={node.data?.cronExpression ?? '*/5 * * * *'} onChange={(event) => update('cronExpression', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="*/5 * * * *" aria-label="Cron schedule expression" /></FallbackField>
       <FallbackField label="Time zone"><input value={node.data?.timeZone ?? 'UTC'} onChange={(event) => update('timeZone', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="UTC or Asia/Tokyo" aria-label="Cron time zone" /></FallbackField>
       <span className="node-config-hint">Five-field cron. Runs once per matching minute; use an IANA time zone.</span>
+    </div>;
+  }
+  if (node.type === 'action_set_presence') {
+    const activityTypes = [{ value: '0', label: 'Playing' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
+    const statuses = [{ value: 'online', label: 'Online' }, { value: 'idle', label: 'Idle' }, { value: 'dnd', label: 'Do not disturb' }, { value: 'invisible', label: 'Invisible' }];
+    return <div className="node-config node-config-stack">
+      {!isConnected('activity_text') && <FallbackField label="Activity text"><input value={node.data?.activity_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('activity_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="ARC Studio" aria-label="Presence activity text" /></FallbackField>}
+      {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
+      {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
     </div>;
   }
   if (node.type === 'function_input') {
@@ -245,7 +323,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack function-node-config">
       <AnimatedDropdown value={node.data?.graphId || ''} options={callableGraphs.map((graph) => ({ value: graph.id, label: graph.name || 'Untitled graph' }))} onChange={(value) => {
         const selectedGraph = callableGraphs.find((graph) => graph.id === value);
-        onNodeDataChange?.(node.id, { ...node.data, graphId: value }, `Call ${selectedGraph?.name || 'Graph'}`);
+        update({ graphId: value }, undefined, `Call ${selectedGraph?.name || 'Graph'}`);
       }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Graph to call" placeholder={callableGraphs.length ? 'Select graph' : 'Save a graph first'} className="node-select" disabled={!callableGraphs.length} />
       {target && <span className="node-config-hint">{parameters.length ? `${requiredCount} required · ${optionalCount} optional input${parameters.length === 1 ? '' : 's'}` : 'No inputs'}</span>}
       {target && hasReturn
@@ -258,7 +336,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack function-node-config">
       <AnimatedDropdown value={node.data?.graphId || ''} options={eventGraphs.map((graph) => ({ value: graph.id, label: graph.name || 'Untitled graph' }))} onChange={(value) => {
         const selectedGraph = eventGraphs.find((graph) => graph.id === value);
-        onNodeDataChange?.(node.id, { ...node.data, graphId: value }, `Run ${selectedGraph?.name || 'Graph'}`);
+        update({ graphId: value }, undefined, `Run ${selectedGraph?.name || 'Graph'}`);
       }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Event graph to run" placeholder={eventGraphs.length ? 'Select event graph' : 'Create an event graph first'} className="node-select" disabled={!eventGraphs.length} />
       <span className="node-config-hint">Runs with the current Discord event. The target needs a matching trigger.</span>
     </div>;
@@ -297,6 +375,27 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'value_boolean') {
     return <div className="node-config node-config-inline"><div className="node-checkbox-label"><AnimatedCheckbox checked={node.data?.value ?? true} onChange={(checked) => update('value', checked)} onPointerDown={(event) => event.stopPropagation()} label="Boolean value" /> <span>True</span></div></div>;
   }
+  if (node.type === 'variable_create') {
+    const type = ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
+    const variableTypes = [{ value: 'string', label: 'Text' }, { value: 'number', label: 'Number' }, { value: 'boolean', label: 'Boolean' }, { value: 'array', label: 'Array' }, { value: 'object', label: 'Object' }];
+    const inferredType = nodeDef?.inputs?.find((pin) => pin.id === 'value')?.colorType || type;
+    const setFallbackType = (nextType) => update({ valueType: nextType, value: defaultValueForType(nextType) });
+    return <div className="node-config node-config-stack">
+      <FallbackField label="Variable name"><input value={node.data?.name ?? ''} maxLength={64} onChange={(event) => update('name', event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64))} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. current-score" aria-label="Created variable name" /></FallbackField>
+      {isConnected('value')
+        ? <span className="node-config-hint">Value type comes from the connected socket: {inferredType}.</span>
+        : <>
+          <FallbackField label="Variable type"><AnimatedDropdown value={type} options={variableTypes} onChange={setFallbackType} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Created variable type" className="node-select" /></FallbackField>
+          {type === 'boolean'
+            ? <FallbackCheckbox label="Fallback value" checked={node.data?.value ?? false} onChange={(value) => update('value', value)} />
+            : ['array', 'object'].includes(type)
+              ? <FallbackField label={`Fallback ${type === 'array' ? 'array' : 'JSON object'}`}><VariableJSONFallback key={type} type={type} value={node.data?.value} onChange={(value) => update('value', value)} /></FallbackField>
+              : <FallbackField label="Fallback value">{type === 'number'
+                ? <NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable fallback number" />
+                : <input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Variable fallback text" />}</FallbackField>}
+        </>}
+    </div>;
+  }
   if (node.type === 'variable_get' || node.type === 'variable_set') {
     const currentScope = node.data?.scope || 'graph';
     const variableOptions = graphVariables.map((variable) => ({ value: `${variable.scope || 'graph'}:${variable.id}`, label: `${variable.scope === 'project' ? 'Project' : 'Graph'} · ${variable.name} · ${variable.type}` }));
@@ -309,7 +408,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const value = String(node.data?.template ?? '');
     const openTextEditor = () => onOpenTextStudio?.(node, 'template', 'Text template', value);
     const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} templateAutocomplete templateValuePaths={valuePaths} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} /></div>;
+    const inputSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id) || (pin.id.startsWith('slot_') && connectedInputIds.has(pin.id))).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
+    const templateSuggestions = [...templateSocketSuggestions.filter((item) => item.nodeId !== node.id), ...inputSuggestions];
+    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} /></div>;
   }
   if (node.type === 'data_permission_overwrites') {
     return <div className="node-config node-config-stack">
@@ -394,14 +495,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </>}
       {node.type === 'action_edit_channel' && <>
         {textField('channel_id', 'Channel ID')}{textField('name', 'New name')}{textField('topic', 'Description / topic')}{textField('parent_id', 'New category ID')}
-        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', event.target.value === '' ? '' : Math.max(0, Math.min(21600, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /></FallbackField>}
+        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', event.target.value === '' ? '' : Math.max(0, Math.min(21600, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
         {!isConnected('nsfw') && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
         {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions</button>}
-        {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /></FallbackField>}
-        {!isConnected('user_limit') && <FallbackField label="Voice user limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="99" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /></FallbackField>}
+        {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" step="1" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Custom values: 8,000–384,000. The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
+        {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
         {textField('rtc_region', 'Voice region (blank = automatic)')}
-        {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? 1)} onChange={(value) => update('video_quality_mode', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
-        {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? 1440)} onChange={(value) => update('default_auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))} className="node-select" /></FallbackField>}
+        {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '')} onChange={(value) => update('video_quality_mode', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '', label: 'Leave unchanged' }, { value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
+        {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? '')} onChange={(value) => update('default_auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))]} className="node-select" /></FallbackField>}
         {reason}
       </>}
       {node.type === 'action_delete_channel' && <>{textField('channel_id', 'Channel ID')}{reason}<span className="node-config-warning"><AlertTriangle size={12} /> Deleting a channel cannot be undone.</span></>}
@@ -458,7 +559,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         const input = pin.editor === 'json-schema'
           ? <JsonSchemaEditor value={node.data?.[pin.id] ?? pin.defaultValue ?? '{}'} onChange={(value) => update(pin.id, value)} onOpenTextEditor={() => onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000)} label={pin.label} />
           : pin.editor === 'json'
-            ? <div className="plugin-json-editor"><textarea rows={3} value={node.data?.[pin.id] ?? pin.defaultValue ?? '{}'} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="{}" aria-label={pin.label} /><button type="button" className="node-config-editor-button" onClick={(event) => { event.stopPropagation(); onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000); }}><FileCode2 size={13} />Edit JSON</button></div>
+            ? <div className="plugin-json-editor"><button type="button" className="node-config-editor-button" aria-label={`Edit ${pin.label} JSON`} onClick={(event) => { event.stopPropagation(); onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000); }}><FileCode2 size={13} />Edit JSON</button></div>
           : pin.id === 'svg'
           ? <textarea rows={4} value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Paste SVG markup" aria-label={pin.label} />
           : <input value={node.data?.[pin.id] ?? pin.defaultValue ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} />;
