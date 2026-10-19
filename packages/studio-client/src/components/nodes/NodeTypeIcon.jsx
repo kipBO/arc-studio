@@ -16,6 +16,8 @@ const icons = {
   event_reaction_remove: MousePointerClick,
   event_message_reaction_remove_all: MousePointerClick,
   event_slash_command: Slash,
+  event_slash_autocomplete: Slash,
+  action_respond_autocomplete: MessageSquareReply,
   event_button_click: MousePointerClick,
   event_select_menu: MousePointerClick,
   event_modal_submit: TextCursorInput,
