@@ -37,7 +37,7 @@ function openExternal(event) {
   invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
@@ -103,7 +103,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
         const disabled = (tab.id === 'shortcuts' || tab.id === 'discord' || tab.id === 'data') && !desktopMode;
-        return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}</button>;
+        return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
       })}
     </div>
 
@@ -213,13 +213,16 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
           <span>Chezcord <code>v{chezcordPackage.version}</code></span>
         </div>
       </div>
-      {desktopMode && <section className="settings-about-section" aria-labelledby="about-updates-heading">
-        <h3 id="about-updates-heading">Updates</h3>
+      <section className="settings-about-section" aria-labelledby="about-updates-heading">
+        <h3 id="about-updates-heading">Updates{serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</h3>
         <Toggle label="Check for updates automatically" description="Checks for ARC Studio releases when you’re online." checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
-        <SelectInput label="Release channel" value={settings.updateChannel === 'nightly' ? 'nightly' : 'stable'} options={[{ value: 'stable', label: 'Stable' }, { value: 'nightly', label: 'Nightly' }]} onChange={(value) => update('updateChannel', value)} />
-        {appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>{appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v{appUpdate.version}</span><ExternalLink size={12} /></a>
-          : <div className="settings-about-credit"><strong>{networkOnline ? 'ARC Studio is up to date' : 'Update check when online'}</strong></div>}
-      </section>}
+        {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div>
+        <p className="settings-description">{releaseChannel === 'nightly' ? 'Nightly updates ask before downloading and installing.' : 'Stable updates download automatically and apply next launch.'}</p></>}
+        {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
+        {stableUpdateReady && <div className="settings-update-explainer"><strong>ARC Studio v{stableUpdateReady.version} is ready</strong><span>It will be applied the next time you launch the app.</span></div>}
+        {appUpdate ? <a href={appUpdate.url} target="_blank" rel="noreferrer" onClick={(event) => { if (appUpdate.native) { event.preventDefault(); onOpenStudioUpdate?.(appUpdate.url); } else openExternal(event); }}><Download size={14} /><span>{appUpdate.native ? `Install update · v${appUpdate.version}` : `${appUpdate.kind === 'major' ? 'Major' : appUpdate.kind === 'feature' ? 'Feature' : 'Maintenance'} update · v${appUpdate.version}`}</span>{appUpdate.native ? null : <ExternalLink size={12} />}</a>
+          : !serverUpdate && !stableUpdateReady && <div className="settings-about-credit"><strong>{networkOnline ? 'No updates available' : 'Update check when online'}</strong></div>}
+      </section>
       <section className="settings-about-section" aria-labelledby="about-project-heading">
         <h3 id="about-project-heading">Project</h3>
         <a href="https://github.com/relentiousdragon/arc-studio" target="_blank" rel="noreferrer" onClick={openExternal}><Github size={14} /><span>ARC Studio on GitHub</span><ExternalLink size={12} /></a>
