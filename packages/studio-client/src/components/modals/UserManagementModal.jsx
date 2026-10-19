@@ -50,6 +50,9 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   const [editingUserId, setEditingUserId] = useState('');
   const [permissionDraft, setPermissionDraft] = useState([]);
   const [savingPermissions, setSavingPermissions] = useState(false);
+  const [permissionLogoutTarget, setPermissionLogoutTarget] = useState(null);
+  const [permissionLogoutError, setPermissionLogoutError] = useState('');
+  const [loggingOutUser, setLoggingOutUser] = useState(false);
   const createFormRef = useRef(null);
 
   const shakeInvalidFields = () => {
@@ -166,13 +169,38 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
       if (!response.ok) throw new Error(data.error || 'Could not update permissions.');
       setEditingUserId('');
       await fetchUsers();
-      arcEvents.emit('toast:notify', { title: 'Permissions updated', message: `${user.username} must sign in again for the changes to take effect.`, type: 'success' });
+      if (data.user?.hasActiveSession) {
+        setPermissionLogoutError('');
+        setPermissionLogoutTarget({ id: user.id, username: user.username });
+      } else {
+        arcEvents.emit('toast:notify', { title: 'Permissions updated', message: 'Changes take effect on the next request.', type: 'success' });
+      }
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Permissions not updated', message: error.message, type: 'error' });
     } finally { setSavingPermissions(false); }
   };
 
-  return <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl">
+  const signOutAfterPermissionChange = async () => {
+    if (!permissionLogoutTarget || !authToken || loggingOutUser) return;
+    setLoggingOutUser(true);
+    setPermissionLogoutError('');
+    try {
+      const response = await fetch(apiUrl(`/api/users/${encodeURIComponent(permissionLogoutTarget.id)}/logout`), {
+        method: 'POST', headers: { 'x-arc-token': authToken }
+      });
+      const data = await readApiResponse(response);
+      if (!response.ok) throw new Error(data.error || 'Could not sign out this member.');
+      const username = permissionLogoutTarget.username;
+      setPermissionLogoutTarget(null);
+      await fetchUsers();
+      arcEvents.emit('toast:notify', { title: 'Member signed out', message: `${username} must sign in again to continue.`, type: 'success' });
+    } catch (error) {
+      setPermissionLogoutError(error.message || 'Could not sign out this member.');
+    } finally { setLoggingOutUser(false); }
+  };
+
+  return <>
+  <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl">
     <form ref={createFormRef} className="team-create-form" noValidate onSubmit={createUser}>
       <div className="team-form-title"><span><UserPlus size={16} /></span><div><strong>Add a member</strong><small>Create a separate sign-in for a collaborator.</small></div></div>
       <div className="team-form-grid">
@@ -194,7 +222,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
               <div className="team-user-actions">{!primary && user.username !== currentUsername && <><button className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button className="icon-button" onClick={() => { setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
             </div>
             {editingUserId === user.id && <div className="team-permissions-editor">
-              <div className="team-permissions-heading"><strong>Workspace permissions</strong><small>Selecting every permission grants full Admin access, including Team access. Changes sign this member out so the new access takes effect.</small></div>
+              <div className="team-permissions-heading"><strong>Workspace permissions</strong><small>Selecting every permission grants full Admin access, including Team access. Changes take effect on the member’s next request. You can sign them out now to end their current session.</small></div>
               <div className="team-permissions-grid">{PERMISSION_OPTIONS.map((permission) => <label className="team-permission-option" key={permission.value}>
                 <input type="checkbox" checked={permissionDraft.includes(permission.value)} onChange={(event) => setPermissionDraft((current) => event.target.checked ? [...current, permission.value] : current.filter((item) => item !== permission.value))} />
                 <span><strong>{permission.label}</strong><small>{permission.detail}</small></span>
@@ -221,5 +249,14 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
         </div>
       </article>)}</div> : <div className="team-empty">No activity recorded yet</div>}
     </section>}
-  </Modal>;
+  </Modal>
+  <Modal isOpen={Boolean(permissionLogoutTarget)} onClose={() => !loggingOutUser && setPermissionLogoutTarget(null)} title="Sign out this member?" subtitle="Their permissions have already been updated" icon={Shield} maxWidth="max-w-md">
+    <p className="team-empty">{permissionLogoutTarget?.username} is currently signed in. Their new permissions apply immediately to future requests. Signing them out now ends the current session and requires them to sign in again.</p>
+    {permissionLogoutError && <p className="form-error" role="alert">{permissionLogoutError}</p>}
+    <div className="team-reset-actions">
+      <Button type="button" variant="secondary" disabled={loggingOutUser} onClick={() => setPermissionLogoutTarget(null)}>Keep signed in</Button>
+      <Button type="button" variant="danger" loading={loggingOutUser} onClick={signOutAfterPermissionChange}>Sign out now</Button>
+    </div>
+  </Modal>
+  </>;
 }
