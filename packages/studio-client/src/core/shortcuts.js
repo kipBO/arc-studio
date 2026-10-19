@@ -1,4 +1,13 @@
 export const DEFAULT_SHORTCUTS = {
+  newGraph: 'mod+t',
+  newBlankGraph: 'mod+shift+t',
+  switchTabNext: 'ctrl+tab',
+  switchTabPrevious: 'ctrl+shift+tab',
+  closeTab: 'mod+w',
+  connectGateway: 'f5',
+  renameNode: 'mod+r',
+  reloadStudio: 'mod+shift+r',
+  toggleConsole: 'mod+shift+j',
   addNode: 'shift+a',
   arrangeNodes: 'shift+r',
   toggleLibrary: 'shift+l',
@@ -14,6 +23,14 @@ const displayAliases = { plus: '+', minus: '−', comma: ',', period: '.', slash
 const arrowLabels = { arrowup: '↑', arrowdown: '↓', arrowleft: '←', arrowright: '→' };
 const normalizeKey = (key) => keyAliases[key] || key.toLowerCase();
 //
+export function normalizeShortcutBinding(binding, platform = '') {
+  const parts = String(binding || '').toLowerCase().split('+').filter(Boolean);
+  const key = normalizeKey(parts.pop() || '');
+  const mac = platform === 'macos' || (platform === 'browser' && /Mac|iPhone|iPad/.test(navigator.platform || ''));
+  const modifiers = new Set(parts.map((part) => part === 'mod' ? (mac ? 'meta' : 'ctrl') : part));
+  return [...['meta', 'ctrl', 'alt', 'shift'].filter((modifier) => modifiers.has(modifier)), key].join('+');
+}
+
 export function shortcutMatches(event, binding) {
   if (!binding) return false;
   const parts = String(binding).toLowerCase().split('+');
@@ -65,15 +82,9 @@ export function getShortcutReservation(binding, platform = '') {
   const alt = has('alt');
   const control = has('ctrl');
   if (command && key === 'tab') return '⌘+Tab is reserved by macOS for switching apps.';
-  if (command && ['q', 'h', 'm', 'space', 'grave', 'comma', 'n', 'o', 'p', 'r', 'l'].includes(key) && !alt) return 'That Command shortcut is reserved by macOS or ARC Studio.';
+  if (command && key === 'space' && !alt && !shift) return '⌘+Space is reserved by macOS for Spotlight.';
   if (command && alt && key === 'escape') return '⌘+Option+Esc is reserved by macOS.';
-  if (command && alt && key === 'h') return '⌘+Option+H is reserved by macOS.';
   if (command && shift && ['3', '4', '5', '6'].includes(key) && !alt) return 'That screenshot shortcut is reserved by macOS.';
   if (control && ['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'f2', 'f3', 'f4'].includes(key) && !shift && !alt) return 'That Control shortcut is reserved by macOS.';
-  if (command && key === 'w' && !shift && !alt) return '⌘+W is reserved for closing the active graph.';
-  if (command && key === 't' && !alt) return '⌘+T is reserved for creating a graph.';
-  if (control && key === 'tab' && !alt) return 'Ctrl+Tab is reserved for switching graph tabs.';
-  if (command && shift && key === 'r' && !alt) return '⌘+Shift+R is reserved for reloading ARC Studio.';
-  if (command && shift && key === 'j' && !alt) return '⌘+Shift+J is reserved for the server console.';
   return '';
 }
