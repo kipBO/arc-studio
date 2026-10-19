@@ -841,6 +841,16 @@ export function App() {
   const permissionStudioOpenForActiveGraph = Boolean(permissionStudio && permissionStudio.graphId === activeTabId && permissionStudio.projectId === activeProjectId);
   const slashCommandStudioOpenForActiveGraph = Boolean(slashCommandStudio && slashCommandStudio.graphId === activeTabId && slashCommandStudio.projectId === activeProjectId);
   const modalStudioOpenForActiveGraph = Boolean(modalStudio && modalStudio.graphId === activeTabId && modalStudio.projectId === activeProjectId);
+  const embedTemplateSuggestions = useMemo(() => {
+    if (!embedStudio?.nodeId) return [];
+    const argumentNumbers = new Set(activeConnections
+      .filter((wire) => wire.targetNodeId === embedStudio.nodeId)
+      .map((wire) => /^arg_(\d+)$/.exec(wire.targetPinId)?.[1])
+      .filter(Boolean));
+    return [...argumentNumbers]
+      .sort((left, right) => Number(left) - Number(right))
+      .map((number) => ({ name: `arg${number}`, label: `arg${number}` }));
+  }, [activeConnections, embedStudio?.nodeId]);
   const anyStudioOpenForActiveGraph = embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph;
   useEffect(() => {
     if (anyStudioOpenForActiveGraph) { studioWasOpenRef.current = true; return; }
@@ -4328,7 +4338,7 @@ export function App() {
             componentsSourceLabel={embedStudio.componentsSourceLabel}
             appEmojis={appEmojis}
             graphVariables={availableVariables}
-            templateValuePaths={discordTextStudio.templateValuePaths || []}
+            templateSuggestions={embedTemplateSuggestions}
             botProfile={botProfile}
             botStatus={botStatus}
             theme={theme}
