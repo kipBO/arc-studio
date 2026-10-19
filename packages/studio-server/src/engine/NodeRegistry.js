@@ -89,6 +89,21 @@ export const NodeDefinitions = {
     ]
   },
 
+  event_slash_autocomplete: {
+    type: 'event_slash_autocomplete', category: NodeCategories.EVENTS, label: 'On Command Autocomplete', color: '#5865F2',
+    gatewayEvent: 'INTERACTION_CREATE', gatewayInteractionType: 4, gatewayCommandType: 1, inputs: [],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'command_name', label: 'Command Name', type: PinTypes.STRING },
+      { id: 'focused_option', label: 'Focused Option', type: PinTypes.STRING },
+      { id: 'query', label: 'Typed Text', type: PinTypes.STRING },
+      { id: 'options', label: 'Other Arguments', type: PinTypes.OBJECT },
+      { id: 'user_id', label: 'User ID', type: PinTypes.STRING },
+      { id: 'interaction_id', label: 'Interaction ID', type: PinTypes.STRING },
+      { id: 'interaction_token', label: 'Interaction Token', type: PinTypes.STRING }
+    ]
+  },
+
   event_button_click: {
     type: 'event_button_click',
     category: NodeCategories.EVENTS,
@@ -519,6 +534,13 @@ export const NodeDefinitions = {
     ]
   },
 
+  action_respond_autocomplete: {
+    type: 'action_respond_autocomplete', category: NodeCategories.ACTIONS, label: 'Respond to Autocomplete', color: '#10b981',
+    description: 'Returns up to 25 suggestions from an array of name and value objects.',
+    inputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }, { id: 'interaction_id', label: 'Interaction ID', type: PinTypes.STRING, defaultValue: '' }, { id: 'interaction_token', label: 'Interaction Token', type: PinTypes.STRING, defaultValue: '' }, { id: 'choices', label: 'Suggestions', type: PinTypes.OBJECT, defaultValue: [] }],
+    outputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }, { id: 'choice_count', label: 'Suggestions Sent', type: PinTypes.NUMBER }]
+  },
+
   action_show_modal: {
     type: 'action_show_modal', category: NodeCategories.ACTIONS, label: 'Show Popup Modal', color: '#10b981',
     description: 'Opens a configured Discord modal as the initial response to an interaction.',
@@ -669,6 +691,26 @@ export const NodeDefinitions = {
       { id: 'reason', label: 'Audit Log Reason', type: PinTypes.STRING, defaultValue: '' }
     ],
     outputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }]
+  },
+  action_moderate_member: {
+    type: 'action_moderate_member', category: NodeCategories.ACTIONS, label: 'Moderate Member', color: '#ef4444',
+    description: 'Times out, kicks, bans, or unbans a member. Each Discord command should also require the matching moderator permission.',
+    inferredPermissions: ['Moderate Members', 'Kick Members', 'Ban Members'],
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'guild_id', label: 'Server ID', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'user_id', label: 'User ID', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'operation', label: 'Action', type: PinTypes.STRING, defaultValue: 'timeout' },
+      { id: 'duration_minutes', label: 'Timeout (minutes)', type: PinTypes.NUMBER, defaultValue: 10 },
+      { id: 'delete_message_seconds', label: 'Ban message deletion (seconds)', type: PinTypes.NUMBER, defaultValue: 0 },
+      { id: 'reason', label: 'Reason', type: PinTypes.STRING, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Succeeded', type: PinTypes.EXEC },
+      { id: 'failure_exec', label: 'Failed', type: PinTypes.EXEC },
+      { id: 'success', label: 'Success', type: PinTypes.BOOLEAN },
+      { id: 'error', label: 'Error', type: PinTypes.STRING }
+    ]
   },
   action_voice_channel_status: {
     type: 'action_voice_channel_status', category: NodeCategories.ACTIONS, label: 'Set Voice Channel Status', color: '#10b981',
