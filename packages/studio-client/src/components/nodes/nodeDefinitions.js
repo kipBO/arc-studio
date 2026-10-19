@@ -888,6 +888,25 @@ export const BuiltInNodeDefinitions = [
     outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }]
   },
   {
+    type: 'action_moderate_member', category: NodeCategories.ACTIONS, label: 'Moderate Member', color: '#ef4444',
+    description: 'Times out, kicks, bans, or unbans a server member. Route failures through the Failed output.',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'guild_id', label: 'Server ID', type: 'string', defaultValue: '' },
+      { id: 'user_id', label: 'User ID', type: 'string', defaultValue: '' },
+      { id: 'operation', label: 'Action', type: 'string', defaultValue: 'timeout' },
+      { id: 'duration_minutes', label: 'Timeout (minutes)', type: 'number', defaultValue: 10 },
+      { id: 'delete_message_seconds', label: 'Ban message deletion (seconds)', type: 'number', defaultValue: 0 },
+      { id: 'reason', label: 'Reason', type: 'string', defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Succeeded', type: 'exec' },
+      { id: 'failure_exec', label: 'Failed', type: 'exec' },
+      { id: 'success', label: 'Success', type: 'boolean' },
+      { id: 'error', label: 'Error', type: 'string' }
+    ]
+  },
+  {
     type: 'action_voice_channel_status', category: NodeCategories.ACTIONS, label: 'Set Voice Channel Status', color: '#10b981',
     description: 'Sets or clears a voice channel status. Requires Set Voice Channel Status; Manage Channels may also be required.',
     inputs: [
