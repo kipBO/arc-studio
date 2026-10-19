@@ -63,7 +63,7 @@ export function NodeCanvas({
   nodes = [], connections = [], graphId = '', projectId = '', focusRequest = null, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], currentUser = null, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
-  onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction
+  onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction
 }) {
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const containerRef = useRef(null);
@@ -332,6 +332,14 @@ export function NodeCanvas({
   }, [nodes, selectedNodeId, selectedNodeIds]);
 
   const definitionsByType = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+  const modalFieldOptions = useMemo(() => nodes.flatMap((modalNode) => {
+    if (modalNode.type !== 'build_modal') return [];
+    const modal = modalNode.data?.modal || {};
+    return (modal.components || []).filter((field) => field.customId).map((field) => ({
+      value: field.customId,
+      label: `${modal.title || modal.customId || 'Popup modal'} · ${field.label || field.customId} (${field.customId})`
+    }));
+  }), [nodes]);
 
   const getNodeDefinition = useCallback((node) => {
     const definition = definitionsByType.get(node.type);
@@ -483,6 +491,8 @@ export function NodeCanvas({
     }
     return withArgumentPins(definition);
   }, [definitionsByType, callableGraphs, graphVariables, connections, nodes]);
+  const breadcrumbNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
+  const breadcrumbNodeLabel = breadcrumbNode?.label || (breadcrumbNode ? getNodeDefinition(breadcrumbNode)?.label || breadcrumbNode.type : '');
 
   useEffect(() => {
     if (!focusRequest || focusRequest.graphId !== graphId || handledFocusRequestRef.current === focusRequest.requestId) return undefined;
@@ -772,7 +782,7 @@ export function NodeCanvas({
 
   const updateNodeData = (nodeId, data, label) => {
     onCollaborationAction?.({ kind: 'node-edit', nodeId });
-    const nextNodes = nodes.map((node) => node.id === nodeId ? { ...node, data, ...(label !== undefined ? { label } : {}) } : node);
+    const nextNodes = nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...data }, ...(label !== undefined ? { label } : {}) } : node);
     const nodesById = new Map(nextNodes.map((node) => [node.id, node]));
     const nextConnections = connections.filter((connection) => {
       const sourceNode = nodesById.get(connection.sourceNodeId);
@@ -1412,6 +1422,7 @@ export function NodeCanvas({
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 graphVariables={graphVariables}
+                modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
                 functionGraphs={functionGraphs}
                 callableGraphs={callableGraphs}
@@ -1428,6 +1439,8 @@ export function NodeCanvas({
                 onOpenEmbedStudio={onOpenEmbedStudio}
                 onOpenTextStudio={onOpenTextStudio}
                 onOpenPermissionStudio={onOpenPermissionStudio}
+                onOpenSlashCommandStudio={onOpenSlashCommandStudio}
+                onOpenModalStudio={onOpenModalStudio}
                 onOpenFunctionGraph={onOpenFunctionGraph}
               />
             </div>
@@ -1489,7 +1502,7 @@ export function NodeCanvas({
             {peer.action.kind === 'node-edit' && <small>Editing node</small>}
             {peer.action.kind === 'library-drag' && <small>Adding {peer.action.label || 'node'}</small>}
             {peer.action.kind === 'studio-focus' && <small>Editing {peer.action.label || peer.action.studioType}</small>}
-            {peer.action.kind === 'studio-draft' && <small>Editing {peer.action.studioType === 'text' ? 'text' : 'embed'}</small>}
+            {peer.action.kind === 'studio-draft' && <small>Editing {peer.action.studioType === 'text' ? 'text' : peer.action.studioType === 'arguments' ? 'command arguments' : 'embed'}</small>}
           </div>)}
         </div>
         {remoteActions.filter((peer) => peer.action?.kind === 'library-drag' && peer.action.cursor).map((peer) => {
@@ -1518,7 +1531,7 @@ export function NodeCanvas({
         <button className="breadcrumb-library" onClick={onOpenLibrary} aria-label="Open Library" title="Library"><FolderTree size={13} /><span>Library</span></button><span>/</span>
         <span className="breadcrumb-graph"><FileCode2 size={13} />{graphName}</span>
         {viewportSectionId && tagGroups.find((group) => group.id === viewportSectionId) && <><span>/</span><span className="breadcrumb-section"><i style={{ '--tag-group-color': tagGroups.find((group) => group.id === viewportSectionId)?.color || '#5865f2' }} />{tagGroups.find((group) => group.id === viewportSectionId)?.name}</span></>}
-        {selectedNodeId && nodes.find((node) => node.id === selectedNodeId) && <><span>/</span><span className="breadcrumb-node">{nodes.find((node) => node.id === selectedNodeId)?.label || 'Node'}</span></>}
+        {breadcrumbNode && <><span>/</span><span className="breadcrumb-node" title={breadcrumbNodeLabel} aria-label={`Selected node: ${breadcrumbNodeLabel}`}>{breadcrumbNodeLabel}</span></>}
       </nav>
 
       {nodes.length === 0 && <div className="canvas-empty-hint"><span className="empty-hint-glyph"><Plus size={17} /></span><span>Build a graph</span><button onClick={() => onOpenPalette?.()}>Add first node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button></div>}
@@ -1571,7 +1584,7 @@ export function NodeCanvas({
             const connected = connections.filter((wire) => ids.includes(wire.sourceNodeId) || ids.includes(wire.targetNodeId));
             return <button role="menuitem" disabled={isLocked || !connected.length} onClick={() => { const selected = new Set(ids); onConnectionsChange?.(connections.filter((wire) => !selected.has(wire.sourceNodeId) && !selected.has(wire.targetNodeId))); setContextMenu(null); }}>Disconnect all sockets{ids.length > 1 ? ` (${connected.length})` : ''}</button>;
           })()}
-          <button role="menuitem" onClick={() => { copyNodes(contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]); setContextMenu(null); }}>Copy {contextMenu.nodeIds?.length > 1 ? `${contextMenu.nodeIds.length} nodes` : 'node'} <kbd>{shortcutModifier} C</kbd></button>
+          <button role="menuitem" onClick={() => { copyNodes(contextMenu.nodeIds?.length ? contextMenu.nodeIds : [contextMenu.nodeId]); setContextMenu(null); }}>Copy {contextMenu.nodeIds?.length > 1 ? `${contextMenu.nodeIds.length} nodes` : 'node'} <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>C</kbd></span></button>
           <button role="menuitem" disabled={isLocked} onClick={() => { onRenameNode?.(nodes.find((node) => node.id === contextMenu.nodeId)); setContextMenu(null); }}>Rename node <span className="context-shortcut"><kbd>{shortcutModifier}</kbd><kbd>R</kbd></span><span className="context-shortcut"><kbd>F11</kbd></span></button>
           <button role="menuitem" disabled={isLocked} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
           {(() => {
