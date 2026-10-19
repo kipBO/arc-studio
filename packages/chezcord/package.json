@@ -1,0 +1,27 @@
+{
+  "name": "chezcord",
+  "version": "0.3.0",
+  "description": "Discord API v10 and Gateway v10 library for Node.js",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./constants": "./src/constants.js",
+    "./builders": "./src/builders/index.js"
+  },
+  "scripts": {
+    "test": "node --test tests/unit.test.js"
+  },
+  "keywords": [
+    "discord",
+    "discord-api",
+    "gateway",
+    "bot",
+    "chezcord"
+  ],
+  "author": "relentiousdragon (https://github.com/relentiousdragon)",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
