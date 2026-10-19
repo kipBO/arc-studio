@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 //
-export function TemplateVariableHints({ value, graphVariables = [] }) {
+export function TemplateVariableHints({ value, graphVariables = [], inputSlots = [], connectedInputIds = new Set() }) {
   const tokens = useMemo(() => Array.from(new Map(Array.from(
     String(value || '').matchAll(/(?<!\\)\{\{\s*([^{}]+?)\s*\}\}/g), (match) => {
       const expression = match[1];
@@ -11,14 +11,21 @@ export function TemplateVariableHints({ value, graphVariables = [] }) {
   ).filter(Boolean)).values()).filter(({ name }) => !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name)), [value]);
   if (!tokens.length) return null;
   return <div className="template-token-hints" aria-label="Template values">
-    {tokens.map(({ name, token, pipeline }) => {
+    {tokens.map(({ name, token, pipeline, expression }) => {
       const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
+      const inputPin = inputSlots.find((pin) => pin.id === `slot_${name}`);
       const label = <><span>{'{{'}{name}</span>{pipeline && <small>{pipeline}</small>}<span>{'}}'}</span></>;
+      if (inputPin && connectedInputIds.has(inputPin.id)) {
+        return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · value supplied by its connected wire`}>{label}</span>;
+      }
       if (!variable && /\|\s*default\s*\(/i.test(expression)) {
         const fallback = previewTemplateValue(undefined, pipeline, token, expression, graphVariables);
         return <span className="template-token-chip" key={token} data-tooltip={`Fallback preview · ${fallback}`}>{label}</span>;
       }
-      if (!variable) return <span className="template-token-chip is-unresolved" key={token} data-tooltip="No matching graph variable or function input exists. This placeholder will stay as written.">{label}</span>;
+      if (!variable && inputPin) {
+        return <span className="template-token-chip" key={token} data-tooltip={`${name} input socket · connect a wire to supply this placeholder`}>{label}</span>;
+      }
+      if (!variable) return <span className="template-token-chip is-unresolved" key={token} data-tooltip="No matching graph variable or input socket exists. This placeholder will stay as written.">{label}</span>;
       const type = variable.valueType || variable.type || 'text';
       const initial = variable.initialValue;
       const preview = previewTemplateValue(initial, pipeline, token, expression, graphVariables);
