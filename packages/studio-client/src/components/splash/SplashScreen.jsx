@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Bot, Braces, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, Plus, ShieldCheck, Shield, Sun, Ticket, TrendingUp } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { Modal } from '../ui/Modal.jsx';
@@ -32,6 +32,7 @@ export function SplashScreen({
   onConnectWorkspace,
   onRetryWorkspace,
   onCreateFirstProject,
+  projectStarters = [],
   onLocalSetupRequired,
   canResetPrimaryAdminWithMasterKey = false
 }) {
@@ -511,14 +512,7 @@ export function SplashScreen({
               <div className={`auth-input-wrap ${firstProjectError ? 'has-error' : ''}`}><input id="first-project-name" autoFocus autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck="false" maxLength={64} value={firstProjectName} onChange={(event) => { setFirstProjectName(event.target.value); setFirstProjectNameManuallyEdited(true); setFirstProjectError(''); }} placeholder="e.g. Community bot" aria-invalid={Boolean(firstProjectError)} /></div>
               <span className="field-label">Choose a starting point</span>
               <div className="splash-project-templates">
-                {[
-                  { id: 'blank', name: 'Start Blank', description: 'An empty project, ready for your first graph.', Icon: Plus },
-                  { id: 'ticket', name: 'Ticket Bot', description: 'Ticket command examples and a message trigger.', Icon: Ticket },
-                  { id: 'leveling', name: 'Leveling Bot', description: 'A shared XP counter and rank command.', Icon: TrendingUp },
-                  { id: 'moderation', name: 'Basic Moderation', description: 'Rules and report command examples.', Icon: Shield },
-                  { id: 'basic', name: 'Basic Bot', description: 'A ping reply and help command.', Icon: Bot },
-                  { id: 'utility', name: 'Utility Bot', description: 'Random rolls, server info, rules, and a message trigger.', Icon: Braces }
-                ].map(({ id, name, description, Icon }) => <button key={id} type="button" className={`splash-project-template ${firstProjectTemplate === id ? 'is-selected' : ''}`} aria-pressed={firstProjectTemplate === id} onClick={() => { setFirstProjectTemplate(id); if (!firstProjectNameManuallyEdited) setFirstProjectName(name); }}><Icon size={16} /><span><strong>{name}</strong><small>{description}</small></span></button>)}
+                {projectStarters.map(({ id, name, description, Icon }) => <button key={id} type="button" className={`splash-project-template ${firstProjectTemplate === id ? 'is-selected' : ''}`} aria-pressed={firstProjectTemplate === id} onClick={() => { setFirstProjectTemplate(id); if (!firstProjectNameManuallyEdited) setFirstProjectName(name); }}><Icon size={16} /><span><strong>{name}</strong><small>{description}</small></span></button>)}
               </div>
               {firstProjectError && <p className="form-error" role="alert">{firstProjectError}</p>}
               <button className="auth-submit" type="submit" disabled={creatingFirstProject || !firstProjectName.trim()}>{creatingFirstProject ? <><LoaderCircle size={16} className="is-spinning" /> Creating project</> : <>{firstProjectTemplate === 'blank' ? 'Start Blank' : 'Create project'} <ArrowRight size={16} /></>}</button>
