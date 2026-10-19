@@ -16,7 +16,7 @@ function insertAtSelection(element, value, start, end, text) {
 
 const TEMPLATE_FILTERS = ['lower', 'upper', 'title', 'capitalize', 'trim', 'trimStart', 'trimEnd', 'replace("_", " ")', 'replaceFirst("old", "new")', 'join(", ")', 'slice(0, 3)', 'length', 'json', 'default("fallback")'];
 //
-export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], discordAutocomplete = false, templateAutocomplete = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
+export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], templateValuePaths = [], discordAutocomplete = false, templateAutocomplete = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
   const inputRef = useRef(null);
   const pickerRef = useRef(null);
   const [match, setMatch] = useState(null);
@@ -33,7 +33,9 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       const query = match.query.toLowerCase();
       const list = match.filterStage
         ? TEMPLATE_FILTERS.map((name) => ({ key: `filter:${name}`, label: name, insert: name }))
-        : graphVariables.map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean).map((name) => ({ key: `variable:${name}`, label: name, insert: `${name}}}` }));
+        : match.pathStage
+          ? templateValuePaths.map((item) => typeof item === 'string' ? { path: item, label: item } : item).filter((item) => item?.path).map((item) => ({ key: `path:${item.path}`, label: item.label || item.path, insert: `${item.path}}}` }))
+          : graphVariables.map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean).map((name) => ({ key: `variable:${name}`, label: name, insert: `${name}}}` }));
       return list.filter((item) => item.label.toLowerCase().includes(query)).slice(0, 8);
     }
     const query = match.query.toLowerCase();
@@ -52,7 +54,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         image: `https://cdn.discordapp.com/emojis/${encodeURIComponent(item.id)}.${item.animated ? 'gif' : 'webp'}?size=48`
       }));
     return [...custom, ...builtIn].slice(0, 6);
-  }, [appEmojis, graphVariables, match]);
+  }, [appEmojis, graphVariables, match, templateValuePaths]);
 
 
   useEffect(() => {
@@ -128,8 +130,9 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         const filterStage = pipe >= 0;
         const fragment = filterStage ? expression.slice(pipe + 1) : expression;
         const leading = fragment.match(/^\s*/)?.[0].length || 0;
-        const start = textBeforeCaret.length - fragment.length + leading;
-        setMatch({ kind: 'template', start, end: event.target.selectionStart ?? event.target.value.length, query: fragment.slice(leading), filterStage });
+        const pathStage = !filterStage && /^[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*(?:[A-Za-z_$][A-Za-z0-9_$]*)?|\s*\[\s*\d*)+/.test(fragment.trim());
+        const start = pathStage ? token.index + 2 : textBeforeCaret.length - fragment.length + leading;
+        setMatch({ kind: 'template', start, end: event.target.selectionStart ?? event.target.value.length, query: pathStage ? fragment.trim().replace(/\.\s*\[/g, '[') : fragment.slice(leading), filterStage, pathStage });
         return;
       }
     }
@@ -188,12 +191,12 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     <Component {...fieldProps} ref={inputRef} className={className} value={value} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
     {(discordAutocomplete || templateAutocomplete) && match && position && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
-      <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
+      <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
       {suggestions.length ? suggestions.map((item, index) => <button type="button" role="option" aria-selected={index === selectedIndex} className={`discord-emoji-suggestion ${index === selectedIndex ? 'is-selected' : ''}`} key={item.key} onPointerDown={(event) => event.preventDefault()} onMouseEnter={() => setSelectedIndex(index)} onClick={() => selectSuggestion(item)}>
         {match.kind === 'template' ? <span className="discord-emoji-suggestion-glyph">{match.filterStage ? 'ƒ' : '{{'}</span> : item.isCustom ? <img src={item.image} alt="" /> : <span className="discord-emoji-suggestion-glyph">{item.emoji}</span>}
         <span className="discord-emoji-suggestion-label">{match.kind === 'template' ? item.label : `:${item.label}:`}</span>
         {item.custom?.animated && <small>GIF</small>}
-      </button>) : <div className="discord-emoji-suggestion-empty">No matching emoji</div>}
+      </button>) : <div className="discord-emoji-suggestion-empty">{match.kind === 'template' ? 'No matching suggestions' : 'No matching emoji'}</div>}
       <div className="discord-emoji-suggestion-footer">↑ ↓ to browse <kbd>Enter</kbd> to insert</div>
     </div>, document.body)}
   </>;
