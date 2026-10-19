@@ -524,7 +524,7 @@ export function EmbedStudioView({
                   type="button"
                   className={`preview-theme-btn ${previewTheme === 'dark' ? 'is-active' : ''}`}
                   onClick={() => setPreviewTheme('dark')}
-                  title="Preview in Discord Dark Theme"
+                  title="Dark mode preview"
                 >
                   <Moon size={11} />
                   <span>Dark</span>
@@ -533,7 +533,7 @@ export function EmbedStudioView({
                   type="button"
                   className={`preview-theme-btn ${previewTheme === 'light' ? 'is-active' : ''}`}
                   onClick={() => setPreviewTheme('light')}
-                  title="Preview in Discord Light Theme"
+                  title="Light mode preview"
                 >
                   <Sun size={11} />
                   <span>Light</span>
