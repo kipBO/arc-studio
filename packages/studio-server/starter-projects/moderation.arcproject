@@ -1,0 +1,2844 @@
+{
+  "format": "arc-project",
+  "version": 1,
+  "project": {
+    "name": "Moderation Bot",
+    "createdWithVersion": "2026.1.1-alpha.6",
+    "starter": {
+      "id": "moderation",
+      "name": "Moderation Bot",
+      "description": "Timeout, kick, and ban commands with reports and logs.",
+      "icon": "ShieldCheck",
+      "highlights": [
+        "Timeout, kick, ban, and unban use Discord REST actions",
+        "Slash commands require matching Discord permissions",
+        "Audit log reasons and clear success/failure replies",
+        "Private report and appeal forms",
+        "AutoMod and ban event logging",
+        "Six rotating bot activities, updated every ten minutes"
+      ],
+      "setup": [
+        "Set moderation-log-channel-id before using reports, appeals, warnings, or case notes.",
+        "Grant the bot Moderate Members, Kick Members, and Ban Members as needed; keep its role above members it manages.",
+        "Set staff roles and channel access in Discord. Slash command permission gates are not a substitute for bot permissions.",
+        "Enable the Auto Moderation Execution and Server Members intents if you want event logs.",
+        "Edit Bot Presence to change the activity messages and timing."
+      ],
+      "order": 3
+    }
+  },
+  "files": {
+    "graphs.json": {
+      "graphs": [
+        {
+          "id": "moderation_timeout",
+          "name": "Slash: /timeout",
+          "description": "Runs timeout with a moderator-only Discord permission gate and an audit-log reason.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_timeout_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "timeout",
+                "description": "Timeout a member.",
+                "defaultMemberPermissions": "1099511627776",
+                "options": [
+                  {
+                    "name": "member",
+                    "description": "Member to time out.",
+                    "type": 6,
+                    "required": true
+                  },
+                  {
+                    "name": "duration",
+                    "description": "Timeout duration in minutes.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 40320
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Reason shown in the audit log.",
+                    "type": 3,
+                    "required": false,
+                    "max_length": 500
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_timeout_defer",
+              "type": "action_defer_reply",
+              "x": 360,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_timeout_action",
+              "type": "action_moderate_member",
+              "x": 700,
+              "y": 120,
+              "data": {
+                "operation": "timeout",
+                "duration_minutes": 10
+              }
+            },
+            {
+              "id": "moderation_timeout_success_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "Timeout a member. completed for <@{{arg1}}>."
+              }
+            },
+            {
+              "id": "moderation_timeout_error_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 620,
+              "data": {
+                "template": "Discord could not complete this action: {{arg1}}"
+              }
+            },
+            {
+              "id": "moderation_timeout_success",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 80,
+              "data": {}
+            },
+            {
+              "id": "moderation_timeout_failure",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 330,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_timeout_event_exec_moderation_timeout_defer_exec",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_timeout_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_timeout_event_interaction_id_moderation_timeout_defer_interaction_id",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_timeout_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_timeout_event_interaction_token_moderation_timeout_defer_interaction_token",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_timeout_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_timeout_defer_exec_moderation_timeout_action_exec",
+              "sourceNodeId": "moderation_timeout_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_timeout_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_timeout_event_guild_id_moderation_timeout_action_guild_id",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "moderation_timeout_action",
+              "targetPinId": "guild_id"
+            },
+            {
+              "id": "moderation_timeout_event_option_member_moderation_timeout_action_user_id",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_timeout_action",
+              "targetPinId": "user_id"
+            },
+            {
+              "id": "moderation_timeout_event_option_duration_moderation_timeout_action_duration_minutes",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "option_duration",
+              "targetNodeId": "moderation_timeout_action",
+              "targetPinId": "duration_minutes"
+            },
+            {
+              "id": "moderation_timeout_event_option_reason_moderation_timeout_action_reason",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_timeout_action",
+              "targetPinId": "reason"
+            },
+            {
+              "id": "moderation_timeout_event_option_member_moderation_timeout_success_text_arg_1",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_timeout_success_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_timeout_action_error_moderation_timeout_error_text_arg_1",
+              "sourceNodeId": "moderation_timeout_action",
+              "sourcePinId": "error",
+              "targetNodeId": "moderation_timeout_error_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_timeout_action_exec_moderation_timeout_success_exec",
+              "sourceNodeId": "moderation_timeout_action",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_timeout_success",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_timeout_action_failure_exec_moderation_timeout_failure_exec",
+              "sourceNodeId": "moderation_timeout_action",
+              "sourcePinId": "failure_exec",
+              "targetNodeId": "moderation_timeout_failure",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_timeout_success_text_text_moderation_timeout_success_content",
+              "sourceNodeId": "moderation_timeout_success_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_timeout_success",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_timeout_error_text_text_moderation_timeout_failure_content",
+              "sourceNodeId": "moderation_timeout_error_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_timeout_failure",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_timeout_event_application_id_moderation_timeout_success_application_id",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_timeout_success",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_timeout_defer_interaction_token_moderation_timeout_success_interaction_token",
+              "sourceNodeId": "moderation_timeout_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_timeout_success",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_timeout_event_application_id_moderation_timeout_failure_application_id",
+              "sourceNodeId": "moderation_timeout_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_timeout_failure",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_timeout_defer_interaction_token_moderation_timeout_failure_interaction_token",
+              "sourceNodeId": "moderation_timeout_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_timeout_failure",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_kick",
+          "name": "Slash: /kick",
+          "description": "Runs kick with a moderator-only Discord permission gate and an audit-log reason.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_kick_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "kick",
+                "description": "Remove a member from this server.",
+                "defaultMemberPermissions": "2",
+                "options": [
+                  {
+                    "name": "member",
+                    "description": "Member to kick.",
+                    "type": 6,
+                    "required": true
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Reason shown in the audit log.",
+                    "type": 3,
+                    "required": false,
+                    "max_length": 500
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_kick_defer",
+              "type": "action_defer_reply",
+              "x": 360,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_kick_action",
+              "type": "action_moderate_member",
+              "x": 700,
+              "y": 120,
+              "data": {
+                "operation": "kick"
+              }
+            },
+            {
+              "id": "moderation_kick_success_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "Remove a member from this server. completed for <@{{arg1}}>."
+              }
+            },
+            {
+              "id": "moderation_kick_error_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 620,
+              "data": {
+                "template": "Discord could not complete this action: {{arg1}}"
+              }
+            },
+            {
+              "id": "moderation_kick_success",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 80,
+              "data": {}
+            },
+            {
+              "id": "moderation_kick_failure",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 330,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_kick_event_exec_moderation_kick_defer_exec",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_kick_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_kick_event_interaction_id_moderation_kick_defer_interaction_id",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_kick_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_kick_event_interaction_token_moderation_kick_defer_interaction_token",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_kick_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_kick_defer_exec_moderation_kick_action_exec",
+              "sourceNodeId": "moderation_kick_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_kick_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_kick_event_guild_id_moderation_kick_action_guild_id",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "moderation_kick_action",
+              "targetPinId": "guild_id"
+            },
+            {
+              "id": "moderation_kick_event_option_member_moderation_kick_action_user_id",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_kick_action",
+              "targetPinId": "user_id"
+            },
+            {
+              "id": "moderation_kick_event_option_reason_moderation_kick_action_reason",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_kick_action",
+              "targetPinId": "reason"
+            },
+            {
+              "id": "moderation_kick_event_option_member_moderation_kick_success_text_arg_1",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_kick_success_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_kick_action_error_moderation_kick_error_text_arg_1",
+              "sourceNodeId": "moderation_kick_action",
+              "sourcePinId": "error",
+              "targetNodeId": "moderation_kick_error_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_kick_action_exec_moderation_kick_success_exec",
+              "sourceNodeId": "moderation_kick_action",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_kick_success",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_kick_action_failure_exec_moderation_kick_failure_exec",
+              "sourceNodeId": "moderation_kick_action",
+              "sourcePinId": "failure_exec",
+              "targetNodeId": "moderation_kick_failure",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_kick_success_text_text_moderation_kick_success_content",
+              "sourceNodeId": "moderation_kick_success_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_kick_success",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_kick_error_text_text_moderation_kick_failure_content",
+              "sourceNodeId": "moderation_kick_error_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_kick_failure",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_kick_event_application_id_moderation_kick_success_application_id",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_kick_success",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_kick_defer_interaction_token_moderation_kick_success_interaction_token",
+              "sourceNodeId": "moderation_kick_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_kick_success",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_kick_event_application_id_moderation_kick_failure_application_id",
+              "sourceNodeId": "moderation_kick_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_kick_failure",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_kick_defer_interaction_token_moderation_kick_failure_interaction_token",
+              "sourceNodeId": "moderation_kick_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_kick_failure",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_ban",
+          "name": "Slash: /ban",
+          "description": "Runs ban with a moderator-only Discord permission gate and an audit-log reason.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_ban_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "ban",
+                "description": "Ban a member from this server.",
+                "defaultMemberPermissions": "4",
+                "options": [
+                  {
+                    "name": "member",
+                    "description": "Member to ban.",
+                    "type": 6,
+                    "required": true
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Reason shown in the audit log.",
+                    "type": 3,
+                    "required": false,
+                    "max_length": 500
+                  },
+                  {
+                    "name": "delete_messages",
+                    "description": "Delete recent message seconds (up to 7 days).",
+                    "type": 4,
+                    "required": false,
+                    "min_value": 0,
+                    "max_value": 604800
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_ban_defer",
+              "type": "action_defer_reply",
+              "x": 360,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_ban_action",
+              "type": "action_moderate_member",
+              "x": 700,
+              "y": 120,
+              "data": {
+                "operation": "ban"
+              }
+            },
+            {
+              "id": "moderation_ban_success_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "Ban a member from this server. completed for <@{{arg1}}>."
+              }
+            },
+            {
+              "id": "moderation_ban_error_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 620,
+              "data": {
+                "template": "Discord could not complete this action: {{arg1}}"
+              }
+            },
+            {
+              "id": "moderation_ban_success",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 80,
+              "data": {}
+            },
+            {
+              "id": "moderation_ban_failure",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 330,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_ban_event_exec_moderation_ban_defer_exec",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_ban_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_event_interaction_id_moderation_ban_defer_interaction_id",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_ban_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_ban_event_interaction_token_moderation_ban_defer_interaction_token",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_ban_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_ban_defer_exec_moderation_ban_action_exec",
+              "sourceNodeId": "moderation_ban_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_ban_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_event_guild_id_moderation_ban_action_guild_id",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "moderation_ban_action",
+              "targetPinId": "guild_id"
+            },
+            {
+              "id": "moderation_ban_event_option_member_moderation_ban_action_user_id",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_ban_action",
+              "targetPinId": "user_id"
+            },
+            {
+              "id": "moderation_ban_event_option_delete_messages_moderation_ban_action_delete_message_seconds",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "option_delete_messages",
+              "targetNodeId": "moderation_ban_action",
+              "targetPinId": "delete_message_seconds"
+            },
+            {
+              "id": "moderation_ban_event_option_reason_moderation_ban_action_reason",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_ban_action",
+              "targetPinId": "reason"
+            },
+            {
+              "id": "moderation_ban_event_option_member_moderation_ban_success_text_arg_1",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_ban_success_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_ban_action_error_moderation_ban_error_text_arg_1",
+              "sourceNodeId": "moderation_ban_action",
+              "sourcePinId": "error",
+              "targetNodeId": "moderation_ban_error_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_ban_action_exec_moderation_ban_success_exec",
+              "sourceNodeId": "moderation_ban_action",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_ban_success",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_action_failure_exec_moderation_ban_failure_exec",
+              "sourceNodeId": "moderation_ban_action",
+              "sourcePinId": "failure_exec",
+              "targetNodeId": "moderation_ban_failure",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_success_text_text_moderation_ban_success_content",
+              "sourceNodeId": "moderation_ban_success_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_ban_success",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_ban_error_text_text_moderation_ban_failure_content",
+              "sourceNodeId": "moderation_ban_error_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_ban_failure",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_ban_event_application_id_moderation_ban_success_application_id",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_ban_success",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_ban_defer_interaction_token_moderation_ban_success_interaction_token",
+              "sourceNodeId": "moderation_ban_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_ban_success",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_ban_event_application_id_moderation_ban_failure_application_id",
+              "sourceNodeId": "moderation_ban_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_ban_failure",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_ban_defer_interaction_token_moderation_ban_failure_interaction_token",
+              "sourceNodeId": "moderation_ban_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_ban_failure",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_unban",
+          "name": "Slash: /unban",
+          "description": "Runs unban with a moderator-only Discord permission gate and an audit-log reason.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_unban_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "unban",
+                "description": "Remove a server ban by user ID.",
+                "defaultMemberPermissions": "4",
+                "options": [
+                  {
+                    "name": "user_id",
+                    "description": "Discord user ID to unban.",
+                    "type": 3,
+                    "required": true,
+                    "min_length": 15,
+                    "max_length": 22
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Reason shown in the audit log.",
+                    "type": 3,
+                    "required": false,
+                    "max_length": 500
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_unban_defer",
+              "type": "action_defer_reply",
+              "x": 360,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_unban_action",
+              "type": "action_moderate_member",
+              "x": 700,
+              "y": 120,
+              "data": {
+                "operation": "unban"
+              }
+            },
+            {
+              "id": "moderation_unban_success_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "Remove a server ban by user ID. completed for <@{{arg1}}>."
+              }
+            },
+            {
+              "id": "moderation_unban_error_text",
+              "type": "format_text",
+              "x": 700,
+              "y": 620,
+              "data": {
+                "template": "Discord could not complete this action: {{arg1}}"
+              }
+            },
+            {
+              "id": "moderation_unban_success",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 80,
+              "data": {}
+            },
+            {
+              "id": "moderation_unban_failure",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 330,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_unban_event_exec_moderation_unban_defer_exec",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_unban_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_event_interaction_id_moderation_unban_defer_interaction_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_unban_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_unban_event_interaction_token_moderation_unban_defer_interaction_token",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_unban_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_unban_defer_exec_moderation_unban_action_exec",
+              "sourceNodeId": "moderation_unban_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_unban_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_event_guild_id_moderation_unban_action_guild_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "moderation_unban_action",
+              "targetPinId": "guild_id"
+            },
+            {
+              "id": "moderation_unban_event_option_user_id_moderation_unban_action_user_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "option_user_id",
+              "targetNodeId": "moderation_unban_action",
+              "targetPinId": "user_id"
+            },
+            {
+              "id": "moderation_unban_event_option_user_id_moderation_unban_action_user_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "option_user_id",
+              "targetNodeId": "moderation_unban_action",
+              "targetPinId": "user_id"
+            },
+            {
+              "id": "moderation_unban_event_option_reason_moderation_unban_action_reason",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_unban_action",
+              "targetPinId": "reason"
+            },
+            {
+              "id": "moderation_unban_event_option_user_id_moderation_unban_success_text_arg_1",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "option_user_id",
+              "targetNodeId": "moderation_unban_success_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_unban_action_error_moderation_unban_error_text_arg_1",
+              "sourceNodeId": "moderation_unban_action",
+              "sourcePinId": "error",
+              "targetNodeId": "moderation_unban_error_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_unban_action_exec_moderation_unban_success_exec",
+              "sourceNodeId": "moderation_unban_action",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_unban_success",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_action_failure_exec_moderation_unban_failure_exec",
+              "sourceNodeId": "moderation_unban_action",
+              "sourcePinId": "failure_exec",
+              "targetNodeId": "moderation_unban_failure",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_success_text_text_moderation_unban_success_content",
+              "sourceNodeId": "moderation_unban_success_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_unban_success",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_unban_error_text_text_moderation_unban_failure_content",
+              "sourceNodeId": "moderation_unban_error_text",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_unban_failure",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_unban_event_application_id_moderation_unban_success_application_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_unban_success",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_unban_defer_interaction_token_moderation_unban_success_interaction_token",
+              "sourceNodeId": "moderation_unban_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_unban_success",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_unban_event_application_id_moderation_unban_failure_application_id",
+              "sourceNodeId": "moderation_unban_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_unban_failure",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_unban_defer_interaction_token_moderation_unban_failure_interaction_token",
+              "sourceNodeId": "moderation_unban_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_unban_failure",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_warn",
+          "name": "Slash: /warn",
+          "description": "Writes member warning to the configured staff log.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_warn_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "warn",
+                "description": "Member warning",
+                "defaultMemberPermissions": "8192",
+                "options": [
+                  {
+                    "name": "member",
+                    "description": "Member who received the warning.",
+                    "type": 6,
+                    "required": true
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Why the warning was issued.",
+                    "type": 3,
+                    "required": true,
+                    "max_length": 500
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_warn_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_warn_log_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 400,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_warn_configured",
+              "type": "compare_text",
+              "x": 650,
+              "y": 400,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_warn_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_warn_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 530,
+              "data": {
+                "template": "⚠️ **Warning recorded**\nMember: <@{{arg1}}>\nModerator: <@{{arg2}}>\nReason: {{arg3}}"
+              }
+            },
+            {
+              "id": "moderation_warn_send",
+              "type": "action_send_message",
+              "x": 1250,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_warn_missing",
+              "type": "action_edit_interaction_reply",
+              "x": 1250,
+              "y": 420,
+              "data": {
+                "content": "Staff logging is not configured. Set moderation-log-channel-id in Project Variables."
+              }
+            },
+            {
+              "id": "moderation_warn_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1580,
+              "y": 120,
+              "data": {
+                "content": "Member warning recorded in the moderation log."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_warn_event_exec_moderation_warn_defer_exec",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_warn_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_warn_event_interaction_id_moderation_warn_defer_interaction_id",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_warn_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_warn_event_interaction_token_moderation_warn_defer_interaction_token",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_warn_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_warn_event_option_member_moderation_warn_format_arg_1",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_warn_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_warn_event_user_id_moderation_warn_format_arg_2",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_warn_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "moderation_warn_event_option_reason_moderation_warn_format_arg_3",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_warn_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "moderation_warn_log_channel_value_moderation_warn_configured_text_a",
+              "sourceNodeId": "moderation_warn_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_warn_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_warn_defer_exec_moderation_warn_branch_exec",
+              "sourceNodeId": "moderation_warn_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_warn_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_warn_configured_result_moderation_warn_branch_condition",
+              "sourceNodeId": "moderation_warn_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_warn_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_warn_branch_true_exec_moderation_warn_missing_exec",
+              "sourceNodeId": "moderation_warn_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_warn_missing",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_warn_event_application_id_moderation_warn_missing_application_id",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_warn_missing",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_warn_defer_interaction_token_moderation_warn_missing_interaction_token",
+              "sourceNodeId": "moderation_warn_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_warn_missing",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_warn_branch_false_exec_moderation_warn_send_exec",
+              "sourceNodeId": "moderation_warn_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_warn_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_warn_log_channel_value_moderation_warn_send_channel_id",
+              "sourceNodeId": "moderation_warn_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_warn_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_warn_format_text_moderation_warn_send_content",
+              "sourceNodeId": "moderation_warn_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_warn_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_warn_send_exec_moderation_warn_done_exec",
+              "sourceNodeId": "moderation_warn_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_warn_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_warn_event_application_id_moderation_warn_done_application_id",
+              "sourceNodeId": "moderation_warn_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_warn_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_warn_defer_interaction_token_moderation_warn_done_interaction_token",
+              "sourceNodeId": "moderation_warn_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_warn_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_report",
+          "name": "Slash: /report",
+          "description": "Handles /report.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_report_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "report",
+                "description": "Send a private report to the moderation team.",
+                "options": []
+              }
+            },
+            {
+              "id": "moderation_report_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 360,
+              "data": {
+                "modal": {
+                  "customId": "moderation_report_form",
+                  "title": "Report a concern",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "report_subject",
+                      "label": "What happened?",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 5,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "report_details",
+                      "label": "Details",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "moderation_report_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_report_event_exec_moderation_report_form_show_exec",
+              "sourceNodeId": "moderation_report_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_report_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_event_interaction_id_moderation_report_form_show_interaction_id",
+              "sourceNodeId": "moderation_report_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_report_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_report_event_interaction_token_moderation_report_form_show_interaction_token",
+              "sourceNodeId": "moderation_report_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_report_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_report_form_builder_modal_moderation_report_form_show_modal",
+              "sourceNodeId": "moderation_report_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "moderation_report_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "moderation_appeal",
+          "name": "Slash: /appeal",
+          "description": "Handles /appeal.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_appeal_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "appeal",
+                "description": "Submit a private moderation appeal.",
+                "options": []
+              }
+            },
+            {
+              "id": "moderation_appeal_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 360,
+              "data": {
+                "modal": {
+                  "customId": "moderation_appeal_form",
+                  "title": "Moderation appeal",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "appeal_action",
+                      "label": "What action are you appealing?",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "appeal_context",
+                      "label": "Context for the moderation team",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "moderation_appeal_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_appeal_event_exec_moderation_appeal_form_show_exec",
+              "sourceNodeId": "moderation_appeal_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_appeal_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_event_interaction_id_moderation_appeal_form_show_interaction_id",
+              "sourceNodeId": "moderation_appeal_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_appeal_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_appeal_event_interaction_token_moderation_appeal_form_show_interaction_token",
+              "sourceNodeId": "moderation_appeal_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_appeal_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_appeal_form_builder_modal_moderation_appeal_form_show_modal",
+              "sourceNodeId": "moderation_appeal_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "moderation_appeal_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "moderation_report_submit",
+          "name": "On Report Submitted",
+          "description": "Routes member report to the staff log after verifying its form ID.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_report_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_report_submit_filter",
+              "type": "compare_text",
+              "x": 350,
+              "y": 380,
+              "data": {
+                "text_b": "moderation_report_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_report_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_report_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_report_submit_log_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 400,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_report_submit_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 400,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_report_submit_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_report_submit_missing",
+              "type": "action_edit_interaction_reply",
+              "x": 1760,
+              "y": 420,
+              "data": {
+                "content": "Staff logging is not configured. Set moderation-log-channel-id in Project Variables."
+              }
+            },
+            {
+              "id": "moderation_report_submit_format",
+              "type": "format_text",
+              "x": 1450,
+              "y": 680,
+              "data": {
+                "template": "**Member report** from <@{{arg1}}>\nSummary: {{arg2}}\nDetails: {{arg3}}"
+              }
+            },
+            {
+              "id": "moderation_report_submit_send",
+              "type": "action_send_message",
+              "x": 1760,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_report_submit_done",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Your member report was sent privately to the moderation team."
+              }
+            },
+            {
+              "id": "moderation_report_submit_get_report_subject",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 720,
+              "data": {
+                "custom_id": "report_subject"
+              }
+            },
+            {
+              "id": "moderation_report_submit_get_report_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 860,
+              "data": {
+                "custom_id": "report_details"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_report_submit_event_exec_moderation_report_submit_filter_branch_exec",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_report_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_event_custom_id_moderation_report_submit_filter_text_a",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "moderation_report_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_report_submit_filter_result_moderation_report_submit_filter_branch_condition",
+              "sourceNodeId": "moderation_report_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_report_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_report_submit_filter_branch_true_exec_moderation_report_submit_defer_exec",
+              "sourceNodeId": "moderation_report_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_report_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_event_interaction_id_moderation_report_submit_defer_interaction_id",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_report_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_report_submit_event_interaction_token_moderation_report_submit_defer_interaction_token",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_report_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_report_submit_defer_exec_moderation_report_submit_branch_exec",
+              "sourceNodeId": "moderation_report_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_report_submit_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_log_channel_value_moderation_report_submit_configured_text_a",
+              "sourceNodeId": "moderation_report_submit_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_report_submit_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_report_submit_configured_result_moderation_report_submit_branch_condition",
+              "sourceNodeId": "moderation_report_submit_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_report_submit_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_report_submit_branch_true_exec_moderation_report_submit_missing_exec",
+              "sourceNodeId": "moderation_report_submit_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_report_submit_missing",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_event_application_id_moderation_report_submit_missing_application_id",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_report_submit_missing",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_report_submit_defer_interaction_token_moderation_report_submit_missing_interaction_token",
+              "sourceNodeId": "moderation_report_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_report_submit_missing",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_report_submit_branch_false_exec_moderation_report_submit_send_exec",
+              "sourceNodeId": "moderation_report_submit_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_report_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_log_channel_value_moderation_report_submit_send_channel_id",
+              "sourceNodeId": "moderation_report_submit_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_report_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_report_submit_event_user_id_moderation_report_submit_format_arg_1",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_report_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_report_submit_event_submitted_values_moderation_report_submit_get_report_subject_submitted_values",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "moderation_report_submit_get_report_subject",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "moderation_report_submit_get_report_subject_value_moderation_report_submit_format_arg_2",
+              "sourceNodeId": "moderation_report_submit_get_report_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_report_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "moderation_report_submit_event_submitted_values_moderation_report_submit_get_report_details_submitted_values",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "moderation_report_submit_get_report_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "moderation_report_submit_get_report_details_value_moderation_report_submit_format_arg_3",
+              "sourceNodeId": "moderation_report_submit_get_report_details",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_report_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "moderation_report_submit_format_text_moderation_report_submit_send_content",
+              "sourceNodeId": "moderation_report_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_report_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_report_submit_send_exec_moderation_report_submit_done_exec",
+              "sourceNodeId": "moderation_report_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_report_submit_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_report_submit_event_application_id_moderation_report_submit_done_application_id",
+              "sourceNodeId": "moderation_report_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_report_submit_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_report_submit_defer_interaction_token_moderation_report_submit_done_interaction_token",
+              "sourceNodeId": "moderation_report_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_report_submit_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_appeal_submit",
+          "name": "On Appeal Submitted",
+          "description": "Routes moderation appeal to the staff log after verifying its form ID.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_appeal_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_appeal_submit_filter",
+              "type": "compare_text",
+              "x": 350,
+              "y": 380,
+              "data": {
+                "text_b": "moderation_appeal_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_appeal_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_log_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 400,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 400,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_appeal_submit_missing",
+              "type": "action_edit_interaction_reply",
+              "x": 1760,
+              "y": 420,
+              "data": {
+                "content": "Staff logging is not configured. Set moderation-log-channel-id in Project Variables."
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_format",
+              "type": "format_text",
+              "x": 1450,
+              "y": 680,
+              "data": {
+                "template": "**Moderation appeal** from <@{{arg1}}>\nAction: {{arg2}}\nAppeal: {{arg3}}"
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_send",
+              "type": "action_send_message",
+              "x": 1760,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_appeal_submit_done",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Your moderation appeal was sent privately to the moderation team."
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_get_appeal_action",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 720,
+              "data": {
+                "custom_id": "appeal_action"
+              }
+            },
+            {
+              "id": "moderation_appeal_submit_get_appeal_context",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 860,
+              "data": {
+                "custom_id": "appeal_context"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_appeal_submit_event_exec_moderation_appeal_submit_filter_branch_exec",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_appeal_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_event_custom_id_moderation_appeal_submit_filter_text_a",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "moderation_appeal_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_appeal_submit_filter_result_moderation_appeal_submit_filter_branch_condition",
+              "sourceNodeId": "moderation_appeal_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_appeal_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_appeal_submit_filter_branch_true_exec_moderation_appeal_submit_defer_exec",
+              "sourceNodeId": "moderation_appeal_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_appeal_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_event_interaction_id_moderation_appeal_submit_defer_interaction_id",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_appeal_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_appeal_submit_event_interaction_token_moderation_appeal_submit_defer_interaction_token",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_appeal_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_appeal_submit_defer_exec_moderation_appeal_submit_branch_exec",
+              "sourceNodeId": "moderation_appeal_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_appeal_submit_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_log_channel_value_moderation_appeal_submit_configured_text_a",
+              "sourceNodeId": "moderation_appeal_submit_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_appeal_submit_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_appeal_submit_configured_result_moderation_appeal_submit_branch_condition",
+              "sourceNodeId": "moderation_appeal_submit_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_appeal_submit_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_appeal_submit_branch_true_exec_moderation_appeal_submit_missing_exec",
+              "sourceNodeId": "moderation_appeal_submit_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_appeal_submit_missing",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_event_application_id_moderation_appeal_submit_missing_application_id",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_appeal_submit_missing",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_appeal_submit_defer_interaction_token_moderation_appeal_submit_missing_interaction_token",
+              "sourceNodeId": "moderation_appeal_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_appeal_submit_missing",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_appeal_submit_branch_false_exec_moderation_appeal_submit_send_exec",
+              "sourceNodeId": "moderation_appeal_submit_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_appeal_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_log_channel_value_moderation_appeal_submit_send_channel_id",
+              "sourceNodeId": "moderation_appeal_submit_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_appeal_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_appeal_submit_event_user_id_moderation_appeal_submit_format_arg_1",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_appeal_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_appeal_submit_event_submitted_values_moderation_appeal_submit_get_appeal_action_submitted_values",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "moderation_appeal_submit_get_appeal_action",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "moderation_appeal_submit_get_appeal_action_value_moderation_appeal_submit_format_arg_2",
+              "sourceNodeId": "moderation_appeal_submit_get_appeal_action",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_appeal_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "moderation_appeal_submit_event_submitted_values_moderation_appeal_submit_get_appeal_context_submitted_values",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "moderation_appeal_submit_get_appeal_context",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "moderation_appeal_submit_get_appeal_context_value_moderation_appeal_submit_format_arg_3",
+              "sourceNodeId": "moderation_appeal_submit_get_appeal_context",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_appeal_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "moderation_appeal_submit_format_text_moderation_appeal_submit_send_content",
+              "sourceNodeId": "moderation_appeal_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_appeal_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_appeal_submit_send_exec_moderation_appeal_submit_done_exec",
+              "sourceNodeId": "moderation_appeal_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_appeal_submit_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_appeal_submit_event_application_id_moderation_appeal_submit_done_application_id",
+              "sourceNodeId": "moderation_appeal_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_appeal_submit_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_appeal_submit_defer_interaction_token_moderation_appeal_submit_done_interaction_token",
+              "sourceNodeId": "moderation_appeal_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_appeal_submit_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_case_note",
+          "name": "Slash: /case-note",
+          "description": "Writes case note to the configured staff log.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_case_note_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "case-note",
+                "description": "Case note",
+                "defaultMemberPermissions": "16",
+                "options": [
+                  {
+                    "name": "member",
+                    "description": "Member this note concerns.",
+                    "type": 6,
+                    "required": true
+                  },
+                  {
+                    "name": "reason",
+                    "description": "Internal staff note.",
+                    "type": 3,
+                    "required": true,
+                    "max_length": 1000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "moderation_case_note_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_case_note_log_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 400,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_case_note_configured",
+              "type": "compare_text",
+              "x": 650,
+              "y": 400,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_case_note_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_case_note_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 530,
+              "data": {
+                "template": "📝 **Staff case note**\nMember: <@{{arg1}}>\nModerator: <@{{arg2}}>\nNote: {{arg3}}"
+              }
+            },
+            {
+              "id": "moderation_case_note_send",
+              "type": "action_send_message",
+              "x": 1250,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_case_note_missing",
+              "type": "action_edit_interaction_reply",
+              "x": 1250,
+              "y": 420,
+              "data": {
+                "content": "Staff logging is not configured. Set moderation-log-channel-id in Project Variables."
+              }
+            },
+            {
+              "id": "moderation_case_note_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1580,
+              "y": 120,
+              "data": {
+                "content": "Case note recorded in the moderation log."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_case_note_event_exec_moderation_case_note_defer_exec",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_case_note_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_case_note_event_interaction_id_moderation_case_note_defer_interaction_id",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_case_note_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_case_note_event_interaction_token_moderation_case_note_defer_interaction_token",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_case_note_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_case_note_event_option_member_moderation_case_note_format_arg_1",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "option_member",
+              "targetNodeId": "moderation_case_note_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_case_note_event_user_id_moderation_case_note_format_arg_2",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_case_note_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "moderation_case_note_event_option_reason_moderation_case_note_format_arg_3",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "option_reason",
+              "targetNodeId": "moderation_case_note_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "moderation_case_note_log_channel_value_moderation_case_note_configured_text_a",
+              "sourceNodeId": "moderation_case_note_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_case_note_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_case_note_defer_exec_moderation_case_note_branch_exec",
+              "sourceNodeId": "moderation_case_note_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_case_note_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_case_note_configured_result_moderation_case_note_branch_condition",
+              "sourceNodeId": "moderation_case_note_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_case_note_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_case_note_branch_true_exec_moderation_case_note_missing_exec",
+              "sourceNodeId": "moderation_case_note_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "moderation_case_note_missing",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_case_note_event_application_id_moderation_case_note_missing_application_id",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_case_note_missing",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_case_note_defer_interaction_token_moderation_case_note_missing_interaction_token",
+              "sourceNodeId": "moderation_case_note_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_case_note_missing",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_case_note_branch_false_exec_moderation_case_note_send_exec",
+              "sourceNodeId": "moderation_case_note_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_case_note_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_case_note_log_channel_value_moderation_case_note_send_channel_id",
+              "sourceNodeId": "moderation_case_note_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_case_note_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_case_note_format_text_moderation_case_note_send_content",
+              "sourceNodeId": "moderation_case_note_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_case_note_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_case_note_send_exec_moderation_case_note_done_exec",
+              "sourceNodeId": "moderation_case_note_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_case_note_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_case_note_event_application_id_moderation_case_note_done_application_id",
+              "sourceNodeId": "moderation_case_note_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_case_note_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_case_note_defer_interaction_token_moderation_case_note_done_interaction_token",
+              "sourceNodeId": "moderation_case_note_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_case_note_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "moderation_help",
+          "name": "Slash: /mod-help",
+          "description": "Handles /mod-help.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_help_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "mod-help",
+                "description": "List the moderation tools and their access rules.",
+                "options": [],
+                "defaultMemberPermissions": "8192"
+              }
+            },
+            {
+              "id": "moderation_help_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_help_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "moderation_help_embed_title",
+                    "type": "title",
+                    "value": "Moderator tools"
+                  },
+                  {
+                    "id": "moderation_help_embed_description",
+                    "type": "description",
+                    "value": "**Timeout:** /timeout · requires Moderate Members\n**Kick:** /kick · requires Kick Members\n**Ban / unban:** /ban and /unban · requires Ban Members\n**Warn:** /warn · requires Manage Messages\n**Case note:** /case-note · requires Manage Channels\nUse /report and /appeal to route member forms to the configured log channel."
+                  },
+                  {
+                    "id": "moderation_help_embed_color",
+                    "type": "color",
+                    "value": "#D95B5B"
+                  },
+                  {
+                    "id": "moderation_help_embed_footer",
+                    "type": "footer",
+                    "value": "The bot also needs the matching server permissions and a role above its targets."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_help_event_exec_moderation_help_reply_exec",
+              "sourceNodeId": "moderation_help_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_help_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_help_event_application_id_moderation_help_reply_application_id",
+              "sourceNodeId": "moderation_help_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_help_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_help_event_interaction_id_moderation_help_reply_interaction_id",
+              "sourceNodeId": "moderation_help_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_help_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_help_event_interaction_token_moderation_help_reply_interaction_token",
+              "sourceNodeId": "moderation_help_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_help_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_help_embed_embed_moderation_help_reply_embed",
+              "sourceNodeId": "moderation_help_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "moderation_help_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "moderation_rules",
+          "name": "Slash: /safety",
+          "description": "Handles /safety.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_rules_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "safety",
+                "description": "Show reporting and safety guidance.",
+                "options": []
+              }
+            },
+            {
+              "id": "moderation_rules_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "moderation_rules_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "moderation_rules_embed_title",
+                    "type": "title",
+                    "value": "Safety and reports"
+                  },
+                  {
+                    "id": "moderation_rules_embed_description",
+                    "type": "description",
+                    "value": "Use /report for a server concern or /appeal to ask staff to review a moderation action. Do not use reports for emergencies that require immediate real-world help. Staff actions are sent through Discord and may fail if the bot lacks permissions or role hierarchy."
+                  },
+                  {
+                    "id": "moderation_rules_embed_color",
+                    "type": "color",
+                    "value": "#D95B5B"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_rules_event_exec_moderation_rules_reply_exec",
+              "sourceNodeId": "moderation_rules_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_rules_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_rules_event_application_id_moderation_rules_reply_application_id",
+              "sourceNodeId": "moderation_rules_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "moderation_rules_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "moderation_rules_event_interaction_id_moderation_rules_reply_interaction_id",
+              "sourceNodeId": "moderation_rules_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "moderation_rules_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "moderation_rules_event_interaction_token_moderation_rules_reply_interaction_token",
+              "sourceNodeId": "moderation_rules_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "moderation_rules_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "moderation_rules_embed_embed_moderation_rules_reply_embed",
+              "sourceNodeId": "moderation_rules_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "moderation_rules_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "moderation_automod_log",
+          "name": "On AutoMod Action",
+          "description": "Writes the event to moderation-log-channel-id when configured.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_automod_log_event",
+              "type": "event_automod_action",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_automod_log_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_automod_log_configured",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_automod_log_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_automod_log_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 420,
+              "data": {
+                "template": "🛡️ AutoMod action {{arg1}}\nMember: <@{{arg2}}>\nMatched term: `{{arg3}}`"
+              }
+            },
+            {
+              "id": "moderation_automod_log_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_automod_log_event_exec_moderation_automod_log_branch_exec",
+              "sourceNodeId": "moderation_automod_log_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_automod_log_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_automod_log_channel_value_moderation_automod_log_configured_text_a",
+              "sourceNodeId": "moderation_automod_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_automod_log_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_automod_log_configured_result_moderation_automod_log_branch_condition",
+              "sourceNodeId": "moderation_automod_log_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_automod_log_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_automod_log_branch_false_exec_moderation_automod_log_send_exec",
+              "sourceNodeId": "moderation_automod_log_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_automod_log_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_automod_log_channel_value_moderation_automod_log_send_channel_id",
+              "sourceNodeId": "moderation_automod_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_automod_log_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_automod_log_event_action_type_moderation_automod_log_format_arg_1",
+              "sourceNodeId": "moderation_automod_log_event",
+              "sourcePinId": "action_type",
+              "targetNodeId": "moderation_automod_log_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_automod_log_event_user_id_moderation_automod_log_format_arg_2",
+              "sourceNodeId": "moderation_automod_log_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_automod_log_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "moderation_automod_log_format_text_moderation_automod_log_send_content",
+              "sourceNodeId": "moderation_automod_log_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_automod_log_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "moderation_automod_keyword",
+              "sourceNodeId": "moderation_automod_log_event",
+              "sourcePinId": "keyword",
+              "targetNodeId": "moderation_automod_log_format",
+              "targetPinId": "arg_3"
+            }
+          ]
+        },
+        {
+          "id": "moderation_ban_log",
+          "name": "On Member Banned",
+          "description": "Writes the event to moderation-log-channel-id when configured.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_ban_log_event",
+              "type": "event_guild_ban_add",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_ban_log_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_ban_log_configured",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_ban_log_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_ban_log_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 420,
+              "data": {
+                "template": "🔨 Member <@{{arg1}}> was banned."
+              }
+            },
+            {
+              "id": "moderation_ban_log_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_ban_log_event_exec_moderation_ban_log_branch_exec",
+              "sourceNodeId": "moderation_ban_log_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_ban_log_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_log_channel_value_moderation_ban_log_configured_text_a",
+              "sourceNodeId": "moderation_ban_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_ban_log_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_ban_log_configured_result_moderation_ban_log_branch_condition",
+              "sourceNodeId": "moderation_ban_log_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_ban_log_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_ban_log_branch_false_exec_moderation_ban_log_send_exec",
+              "sourceNodeId": "moderation_ban_log_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_ban_log_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_ban_log_channel_value_moderation_ban_log_send_channel_id",
+              "sourceNodeId": "moderation_ban_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_ban_log_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_ban_log_event_user_id_moderation_ban_log_format_arg_1",
+              "sourceNodeId": "moderation_ban_log_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_ban_log_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_ban_log_format_text_moderation_ban_log_send_content",
+              "sourceNodeId": "moderation_ban_log_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_ban_log_send",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "moderation_unban_log",
+          "name": "On Member Unbanned",
+          "description": "Writes the event to moderation-log-channel-id when configured.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_unban_log_event",
+              "type": "event_guild_ban_remove",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_unban_log_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_moderation_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "moderation_unban_log_configured",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "moderation_unban_log_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "moderation_unban_log_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 420,
+              "data": {
+                "template": "↩️ Member <@{{arg1}}> was unbanned."
+              }
+            },
+            {
+              "id": "moderation_unban_log_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_unban_log_event_exec_moderation_unban_log_branch_exec",
+              "sourceNodeId": "moderation_unban_log_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_unban_log_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_log_channel_value_moderation_unban_log_configured_text_a",
+              "sourceNodeId": "moderation_unban_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_unban_log_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "moderation_unban_log_configured_result_moderation_unban_log_branch_condition",
+              "sourceNodeId": "moderation_unban_log_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "moderation_unban_log_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "moderation_unban_log_branch_false_exec_moderation_unban_log_send_exec",
+              "sourceNodeId": "moderation_unban_log_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "moderation_unban_log_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_unban_log_channel_value_moderation_unban_log_send_channel_id",
+              "sourceNodeId": "moderation_unban_log_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "moderation_unban_log_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "moderation_unban_log_event_user_id_moderation_unban_log_format_arg_1",
+              "sourceNodeId": "moderation_unban_log_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "moderation_unban_log_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "moderation_unban_log_format_text_moderation_unban_log_send_content",
+              "sourceNodeId": "moderation_unban_log_format",
+              "sourcePinId": "text",
+              "targetNodeId": "moderation_unban_log_send",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "moderation_presence_rotation",
+          "name": "Bot Presence",
+          "description": "Changes activity every ten minutes.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "moderation_presence_schedule_1",
+              "type": "event_cron",
+              "x": 60,
+              "y": 80,
+              "data": {
+                "cronExpression": "0 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_1",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 80,
+              "data": {
+                "status": "online",
+                "activity_text": "Server moderation",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "moderation_presence_schedule_2",
+              "type": "event_cron",
+              "x": 60,
+              "y": 260,
+              "data": {
+                "cronExpression": "10 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_2",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 260,
+              "data": {
+                "status": "online",
+                "activity_text": "Reports and appeals",
+                "activity_type": 2
+              }
+            },
+            {
+              "id": "moderation_presence_schedule_3",
+              "type": "event_cron",
+              "x": 60,
+              "y": 440,
+              "data": {
+                "cronExpression": "20 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_3",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 440,
+              "data": {
+                "status": "online",
+                "activity_text": "A safer community",
+                "activity_type": 5
+              }
+            },
+            {
+              "id": "moderation_presence_schedule_4",
+              "type": "event_cron",
+              "x": 60,
+              "y": 620,
+              "data": {
+                "cronExpression": "30 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_4",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 620,
+              "data": {
+                "status": "online",
+                "activity_text": "Moderation tools",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "moderation_presence_schedule_5",
+              "type": "event_cron",
+              "x": 60,
+              "y": 800,
+              "data": {
+                "cronExpression": "40 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_5",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 800,
+              "data": {
+                "status": "online",
+                "activity_text": "Audit log activity",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "moderation_presence_schedule_6",
+              "type": "event_cron",
+              "x": 60,
+              "y": 980,
+              "data": {
+                "cronExpression": "50 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "moderation_presence_activity_6",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 980,
+              "data": {
+                "status": "online",
+                "activity_text": "Case reviews",
+                "activity_type": 5
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "moderation_presence_schedule_1_exec_moderation_presence_activity_1_exec",
+              "sourceNodeId": "moderation_presence_schedule_1",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_presence_schedule_2_exec_moderation_presence_activity_2_exec",
+              "sourceNodeId": "moderation_presence_schedule_2",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_presence_schedule_3_exec_moderation_presence_activity_3_exec",
+              "sourceNodeId": "moderation_presence_schedule_3",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_presence_schedule_4_exec_moderation_presence_activity_4_exec",
+              "sourceNodeId": "moderation_presence_schedule_4",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_presence_schedule_5_exec_moderation_presence_activity_5_exec",
+              "sourceNodeId": "moderation_presence_schedule_5",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_5",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "moderation_presence_schedule_6_exec_moderation_presence_activity_6_exec",
+              "sourceNodeId": "moderation_presence_schedule_6",
+              "sourcePinId": "exec",
+              "targetNodeId": "moderation_presence_activity_6",
+              "targetPinId": "exec"
+            }
+          ]
+        }
+      ],
+      "deletedIds": []
+    },
+    "graph-library.json": {
+      "defaultGraphId": "moderation_timeout",
+      "templates": [],
+      "snapshots": []
+    },
+    "bot-config.json": {},
+    "statistics.json": {},
+    "embeds.json": [],
+    "project-variables.json": [
+      {
+        "id": "project_var_moderation_log_channel_id",
+        "name": "moderation-log-channel-id",
+        "type": "string",
+        "initialValue": ""
+      }
+    ]
+  }
+}
