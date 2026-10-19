@@ -938,6 +938,13 @@ export class BotManager {
           if (!valid || JSON.stringify(value).length > 10000) throw new TypeError(`Variable “${name}” needs a JSON ${type} under 10,000 characters.`);
         } else if (type === 'string' && String(variable.initialValue ?? '').length > 10000) throw new TypeError(`Variable “${name}” exceeds the 10,000 character value limit.`);
       }
+      for (const node of graphData.nodes.filter((item) => item?.type === 'variable_create')) {
+        const name = String(node.data?.name || '').trim();
+        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) || /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
+        if (!validName) throw new TypeError('Create Variable nodes need a valid 1–64 character variable name.');
+        if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
+        names.add(name.toLowerCase());
+      }
     }
     const previousGraph = this.graphs.get(tabId);
     if (Array.isArray(graphData.variables)) {
@@ -1108,6 +1115,7 @@ export class BotManager {
     this.client.rest.rateLimiter.on('rateLimit', this.restRateLimitListener);
     this.publishGatewayMetrics();
 
+    const activeReadyGraphRuns = new Set();
     const dispatchGraphEvent = async (eventName, payload, onlyGraphId = null, sharedInteractionState = null) => {
       const normalizedEventName = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
       const interactionState = normalizedEventName === 'INTERACTION_CREATE'
@@ -1117,6 +1125,9 @@ export class BotManager {
         && (!onlyGraphId || graph.id === onlyGraphId)
         && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName));
       await Promise.all(listeningGraphs.map(async (graph) => {
+        const isReadyEvent = normalizedEventName === 'READY';
+        if (isReadyEvent && activeReadyGraphRuns.has(graph.id)) return;
+        if (isReadyEvent) activeReadyGraphRuns.add(graph.id);
         try {
           const result = await GraphRunner.execute(graph, eventName, payload, {
             projectDir: this.projectDir,
@@ -1148,6 +1159,8 @@ export class BotManager {
           }
         } catch (error) {
           this.log('ERROR', `Graph “${graph.name || graph.id}” failed while handling ${normalizedEventName}: ${error.message}`);
+        } finally {
+          if (isReadyEvent) activeReadyGraphRuns.delete(graph.id);
         }
       }));
     };
@@ -1164,6 +1177,7 @@ export class BotManager {
       this.status = 'ONLINE';
       this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.client.user } });
       this.log('INFO', `Bot is ONLINE as ${this.client.user.username}`);
+      dispatchGraphEvent('READY', { user: this.client.user }).catch((error) => this.log('ERROR', `Bot-ready graph failed: ${error.message}`));
       this.stopCronScheduler?.();
       this.stopCronScheduler = startCronScheduler({
         getGraphs: () => [...this.graphs.values()],
@@ -1239,7 +1253,7 @@ export class BotManager {
     const graphGatewayEvents = new Set([...this.graphs.values()].flatMap((graph) => (graph.nodes || [])
       .map((node) => NodeDefinitions[node.type]?.gatewayEvent).filter(Boolean)));
     this.client.on('gatewayDispatch', (eventName, payload) => {
-      if (!graphGatewayEvents.has(eventName) || ['MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
+      if (!graphGatewayEvents.has(eventName) || ['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
       dispatchGraphEvent(eventName, payload).catch((error) => this.log('ERROR', `Graph event ${eventName} failed: ${error.message}`));
     });
 
