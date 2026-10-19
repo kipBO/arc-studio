@@ -14,6 +14,7 @@ export const NodeCategories = Object.freeze({
 
 export const PinTypes = Object.freeze({
   EXEC: 'exec',
+  VARIABLE: 'variable',
   STRING: 'string',
   NUMBER: 'number',
   BOOLEAN: 'boolean',
@@ -117,6 +118,8 @@ export const NodeDefinitions = {
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
       { id: 'custom_id', label: 'Custom ID', type: PinTypes.STRING },
       { id: 'user_id', label: 'User ID', type: PinTypes.STRING },
+      { id: 'guild_id', label: 'Server ID', type: PinTypes.STRING, eventPath: 'guild_id' },
+      { id: 'channel_id', label: 'Channel ID', type: PinTypes.STRING, eventPath: 'channel_id' },
       { id: 'application_id', label: 'Application ID', type: PinTypes.STRING },
       { id: 'interaction_id', label: 'Interaction ID', type: PinTypes.STRING },
       { id: 'interaction_token', label: 'Interaction Token', type: PinTypes.STRING }
@@ -241,6 +244,7 @@ export const NodeDefinitions = {
     gatewayEventDefinition('event_invite_delete', 'On Invite Deleted', 'INVITE_DELETE', ['GUILD_INVITES'], [
       ['code', 'Invite Code', 'string', 'code'], ['channel_id', 'Channel ID', 'string', 'channel_id'], ['guild_id', 'Server ID', 'string', 'guild_id']
     ]),
+    gatewayEventDefinition('event_bot_ready', 'On Bot Ready', 'READY', [], []),
     gatewayEventDefinition('event_cron', 'On Schedule', 'CRON_TICK', [], [
       ['scheduled_at', 'Scheduled At', 'string', 'scheduledAt'], ['time_zone', 'Time Zone', 'string', 'timeZone']
     ])
@@ -274,8 +278,25 @@ export const NodeDefinitions = {
     category: NodeCategories.VARIABLES,
     label: 'Get Variable',
     color: '#38bdf8',
-    inputs: [],
-    outputs: [{ id: 'value', label: 'Value', type: PinTypes.STRING }]
+    inputs: [{ id: 'variable', label: 'Variable', type: PinTypes.VARIABLE }],
+    outputs: [{ id: 'variable', label: 'Variable', type: PinTypes.VARIABLE }, { id: 'value', label: 'Value', type: PinTypes.STRING }]
+  },
+
+  variable_create: {
+    type: 'variable_create',
+    category: NodeCategories.VARIABLES,
+    label: 'Create Variable',
+    color: '#38bdf8',
+    description: 'Creates or updates a graph variable. Its value type follows the connected value; otherwise choose a type and fallback value.',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'variable', label: 'Variable', type: PinTypes.VARIABLE },
+      { id: 'value', label: 'Value', type: PinTypes.ARG }
+    ]
   },
 
   variable_set: {
@@ -285,9 +306,10 @@ export const NodeDefinitions = {
     color: '#38bdf8',
     inputs: [
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'variable', label: 'Variable', type: PinTypes.VARIABLE },
       { id: 'value', label: 'Value', type: PinTypes.STRING, defaultValue: '' }
     ],
-    outputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }]
+    outputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }, { id: 'variable', label: 'Variable', type: PinTypes.VARIABLE }]
   },
 
   function_input: {
@@ -616,7 +638,8 @@ export const NodeDefinitions = {
     inputs: [
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
       { id: 'status', label: 'Status (online/dnd/idle)', type: PinTypes.STRING, defaultValue: 'online' },
-      { id: 'activity_text', label: 'Activity Text', type: PinTypes.STRING, defaultValue: 'Arc Studio' }
+      { id: 'activity_text', label: 'Activity Text', type: PinTypes.STRING, defaultValue: 'ARC Studio' },
+      { id: 'activity_type', label: 'Activity Type', type: PinTypes.NUMBER, defaultValue: 0 }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC }
@@ -651,8 +674,8 @@ export const NodeDefinitions = {
       { id: 'bitrate', label: 'Voice bitrate', type: PinTypes.NUMBER, defaultValue: 64000 },
       { id: 'user_limit', label: 'Voice user limit', type: PinTypes.NUMBER, defaultValue: 0 },
       { id: 'rtc_region', label: 'Voice region', type: PinTypes.STRING, defaultValue: '' },
-      { id: 'video_quality_mode', label: 'Voice video quality mode', type: PinTypes.NUMBER, defaultValue: 1 },
-      { id: 'default_auto_archive_duration', label: 'Thread auto archive (minutes)', type: PinTypes.NUMBER, defaultValue: 1440 },
+      { id: 'video_quality_mode', label: 'Voice video quality mode', type: PinTypes.NUMBER, defaultValue: '' },
+      { id: 'default_auto_archive_duration', label: 'Thread auto archive (minutes)', type: PinTypes.NUMBER, defaultValue: '' },
       { id: 'reason', label: 'Audit Log Reason', type: PinTypes.STRING, defaultValue: '' }
     ],
     outputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }, { id: 'channel_id_out', label: 'Channel ID', type: PinTypes.STRING }]
