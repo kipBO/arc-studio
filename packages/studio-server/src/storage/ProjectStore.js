@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { dataDir } from '../storage.js';
 import { serverConfig } from '../config.js';
 import { getStarterProject } from './StarterProjects.js';
+import { compareArcStudioVersions, currentArcStudioVersion, projectVersionAge } from '../versioning/arcProjectCompatibility.js';
 
 const registryPath = path.join(dataDir, 'projects.json');
 const projectRoot = path.join(dataDir, 'projects');
@@ -18,6 +19,31 @@ function cleanName(value) {
 
 function normalizedName(value) {
   return String(value || '').normalize('NFKC').trim().toLowerCase();
+}
+
+function writeStarterFiles(destination, starter) {
+  const files = starter?.files;
+  if (!files || typeof files !== 'object') throw new TypeError('The selected project starter is invalid.');
+  const temporaryFiles = [];
+  try {
+    for (const filename of projectFiles) {
+      const fallback = filename === 'graphs.json'
+        ? { graphs: [], deletedIds: [] }
+        : filename === 'graph-library.json'
+          ? { defaultGraphId: '', templates: [], snapshots: [] }
+          : filename === 'embeds.json' || filename === 'project-variables.json' ? [] : {};
+      const value = Object.hasOwn(files, filename) ? structuredClone(files[filename]) : fallback;
+      const temporaryPath = path.join(destination, `.${filename}.tmp`);
+      fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), { mode: 0o600 });
+      temporaryFiles.push([temporaryPath, path.join(destination, filename)]);
+    }
+    for (const [temporaryPath, targetPath] of temporaryFiles) fs.renameSync(temporaryPath, targetPath);
+  } catch (error) {
+    for (const [temporaryPath] of temporaryFiles) {
+      try { fs.rmSync(temporaryPath, { force: true }); } catch {}
+    }
+    throw error;
+  }
 }
 
 export class ProjectStore {
@@ -94,16 +120,23 @@ export class ProjectStore {
 
   create(name, starterId = 'blank', ownerId = '') {
     if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
-    const starter = getStarterProject(starterId) || getStarterProject('blank');
+    const starter = getStarterProject(starterId || 'blank');
+    if (!starter) throw new TypeError('Choose one of the available project starters.');
     const projectName = cleanName(name);
     this.assertUniqueName(projectName);
     const project = { id: `project_${randomUUID()}`, name: projectName, createdAt: new Date().toISOString(), ...(ownerId ? { ownerId } : {}), emptyStart: true, trusted: true, idleDisconnectMinutes: 15 };
-    fs.mkdirSync(this.directory(project.id), { recursive: true, mode: 0o700 });
-    if (starter.graphs.length) fs.writeFileSync(path.join(this.directory(project.id), 'graphs.json'), JSON.stringify({ graphs: starter.graphs, deletedIds: [] }, null, 2), { mode: 0o600 });
-    if (starter.projectVariables?.length) fs.writeFileSync(path.join(this.directory(project.id), 'project-variables.json'), JSON.stringify(starter.projectVariables, null, 2), { mode: 0o600 });
-    this.projects.push(project);
-    this.persist();
-    return { ...project };
+    const destination = this.directory(project.id);
+    fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
+    try {
+      writeStarterFiles(destination, starter);
+      this.projects.push(project);
+      this.persist();
+      return { ...project };
+    } catch (error) {
+      this.projects = this.projects.filter((item) => item.id !== project.id);
+      fs.rmSync(destination, { recursive: true, force: true });
+      throw error;
+    }
   }
 
   initializeFirstProject(name, starterId = 'blank', ownerId = '') {
@@ -113,16 +146,14 @@ export class ProjectStore {
     if (!starter) throw new TypeError('Choose one of the available project starters.');
     const projectName = cleanName(name);
     this.assertUniqueName(projectName, project.id);
+    const directory = this.directory(project.id);
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeStarterFiles(directory, starter);
     project.name = projectName;
     if (ownerId) project.ownerId = ownerId;
     project.emptyStart = true;
     project.pendingStarterChoice = false;
     project.trusted = true;
-    const directory = this.directory(project.id);
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(directory, 'graphs.json'), JSON.stringify({ graphs: starter.graphs, deletedIds: [] }, null, 2), { mode: 0o600 });
-    fs.writeFileSync(path.join(directory, 'graph-library.json'), JSON.stringify({ defaultGraphId: starter.graphs[0]?.id || '', templates: [], snapshots: [] }, null, 2), { mode: 0o600 });
-    fs.writeFileSync(path.join(directory, 'project-variables.json'), JSON.stringify(starter.projectVariables || [], null, 2), { mode: 0o600 });
     this.persist();
     return { ...project };
   }
@@ -166,12 +197,31 @@ export class ProjectStore {
       }));
     };
     const exportedFiles = redact(files);
-    return { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString() }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
+    return { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
   }
 
-  importProject(bundle, { trusted = false, ownerId = '' } = {}) {
+  importProject(bundle, { trusted = false, allowOldVersion = false, ownerId = '' } = {}) {
     if (!trusted) throw new Error('Confirm that you trust this project file before importing it.');
     if (!bundle || bundle.format !== 'arc-project' || bundle.version !== 1 || !bundle.files || typeof bundle.files !== 'object' || Array.isArray(bundle.files)) throw new TypeError('This is not a supported ARC project file.');
+    const createdWithVersion = bundle.project?.createdWithVersion;
+    const versionOrder = createdWithVersion ? compareArcStudioVersions(createdWithVersion, currentArcStudioVersion) : null;
+    if (versionOrder === 1) {
+      const error = new Error(`This project was created with ARC Studio ${createdWithVersion}. Update ARC Studio to ${createdWithVersion} or newer before importing it.`);
+      error.code = 'PROJECT_REQUIRES_NEWER_ARC';
+      error.projectVersion = createdWithVersion;
+      throw error;
+    }
+    const age = projectVersionAge(createdWithVersion, currentArcStudioVersion);
+    if (age.veryOld && !allowOldVersion) {
+      const error = new Error(age.unknown
+        ? 'This project has no recognized ARC Studio version. It may use an older project format.'
+        : `This project was created with ARC Studio ${createdWithVersion}, at least ten releases ago. Its graphs or settings may behave differently.`);
+      error.code = 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED';
+      error.projectVersion = createdWithVersion || null;
+      error.currentVersion = currentArcStudioVersion;
+      error.unknownProjectVersion = age.unknown;
+      throw error;
+    }
     if (this.maxProjects !== null && this.projects.length >= this.maxProjects) throw new RangeError(`This workspace has reached its ${this.maxProjects}-project limit.`);
     const name = cleanName(bundle.project?.name || 'Imported Project');
     this.assertUniqueName(name);
