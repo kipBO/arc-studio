@@ -48,8 +48,14 @@ try {
       .map((name) => path.join(nightlyIconDirectory, name));
   }
   tauriBuildConfig.plugins = { updater: { endpoints: [expectedUpdateEndpoint] } };
-  tauriArgs.push('--config', JSON.stringify(tauriBuildConfig));
-  await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target, ARC_RELEASE_CHANNEL: releaseChannel, ARC_UPDATE_REPOSITORY: updateRepository } });
+  const tauriBuildConfigPath = path.join(repoRoot, 'packages', 'studio-desktop', 'src-tauri', `.arc-build-config-${process.pid}.json`);
+  fs.writeFileSync(tauriBuildConfigPath, JSON.stringify(tauriBuildConfig));
+  tauriArgs.push('--config', tauriBuildConfigPath);
+  try {
+    await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target, ARC_RELEASE_CHANNEL: releaseChannel, ARC_UPDATE_REPOSITORY: updateRepository } });
+  } finally {
+    fs.rmSync(tauriBuildConfigPath, { force: true });
+  }
   if (process.platform === 'darwin') {
     const config = JSON.parse(fs.readFileSync(path.join('src-tauri', 'tauri.conf.json'), 'utf8'));
     const arch = target === 'universal-apple-darwin' ? 'universal' : target.startsWith('aarch64') ? 'arm64' : 'x64';
