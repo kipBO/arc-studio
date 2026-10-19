@@ -151,6 +151,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   };
 
   const startPermissionEdit = (user) => {
+    setResetTarget(null);
     const current = Array.isArray(user.permissions) ? user.permissions : [];
     setPermissionDraft(current.includes('*') ? PERMISSION_OPTIONS.map((item) => item.value) : current);
     setEditingUserId(user.id);
@@ -223,7 +224,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
             <div className="team-user-row">
               <span className="team-avatar">{(user.username?.[0] || 'U').toUpperCase()}</span>
               <div className="team-user-copy"><strong>{user.username}{primary && <small>Primary</small>}</strong><span><i className={`role-dot role-${user.role}`} />{user.role === 'custom' ? 'Custom permissions' : user.role} <em>· {String(user.id).slice(0, 8)}</em></span><small className="team-last-login">Last sign-in: {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}</small></div>
-              <div className="team-user-actions">{!primary && user.id !== currentUserId && user.username?.toLowerCase() !== String(currentUsername).toLowerCase() && <><button className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button className="icon-button" onClick={() => { setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
+              <div className="team-user-actions">{!primary && user.id !== currentUserId && user.username?.toLowerCase() !== String(currentUsername).toLowerCase() && <><button type="button" className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button type="button" className="icon-button" onClick={() => { setEditingUserId(''); setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button type="button" className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
             </div>
             {editingUserId === user.id && <div className="team-permissions-editor">
               <div className="team-permissions-heading"><strong>Workspace permissions</strong><small>Selecting every permission grants full Admin access, including Team access. Changes take effect on the member’s next request. You can sign them out now to end their current session.</small></div>
@@ -233,17 +234,17 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
               </label>)}</div>
               <div className="team-permissions-actions"><Button type="button" variant="secondary" disabled={savingPermissions} onClick={() => setEditingUserId('')}>Cancel</Button><Button type="button" loading={savingPermissions} onClick={() => saveUserPermissions(user)}>Save permissions</Button></div>
             </div>}
+            {resetTarget?.id === user.id && <form className="team-create-form team-inline-reset-form" onSubmit={resetUserPassword}>
+              <div className="team-form-title"><span><KeyRound size={16} /></span><div><strong>Reset {resetTarget.username}’s password</strong><small>They must choose a new password before continuing.</small></div></div>
+              <PasswordInput label="Temporary password" placeholder="At least 6 characters" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} minLength={6} autoComplete="new-password" />
+              <PasswordInput label="Confirm temporary password" placeholder="Confirm password" value={resetConfirmPassword} onChange={(event) => setResetConfirmPassword(event.target.value)} minLength={6} autoComplete="new-password" />
+              {resetError && <p className="form-error" role="alert">{resetError}</p>}
+              <div className="team-reset-actions"><Button type="button" variant="secondary" onClick={() => setResetTarget(null)}>Cancel</Button><Button type="submit" loading={resetting}>Reset password</Button></div>
+            </form>}
           </article>;
         })}
       </div>}
     </section>
-    {resetTarget && <form className="team-create-form" onSubmit={resetUserPassword}>
-      <div className="team-form-title"><span><KeyRound size={16} /></span><div><strong>Reset {resetTarget.username}’s password</strong><small>They must choose a new password before continuing.</small></div></div>
-      <PasswordInput label="Temporary password" placeholder="At least 6 characters" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} minLength={6} autoComplete="new-password" />
-      <PasswordInput label="Confirm temporary password" placeholder="Confirm password" value={resetConfirmPassword} onChange={(event) => setResetConfirmPassword(event.target.value)} minLength={6} autoComplete="new-password" />
-      {resetError && <p className="form-error" role="alert">{resetError}</p>}
-      <div className="team-reset-actions"><Button type="button" variant="secondary" onClick={() => setResetTarget(null)}>Cancel</Button><Button type="submit" loading={resetting}>Reset password</Button></div>
-    </form>}
     {users.length > 1 && <section className="team-activity-section">
       <div className="team-list-heading"><h3><Activity size={15} /> Recent activity</h3><span>{activity.length}</span></div>
       {activity.length ? <div className="team-activity-list">{activity.map((entry) => <article className="team-activity-row" key={entry.id}>
