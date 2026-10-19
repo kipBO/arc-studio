@@ -1,0 +1,86 @@
+name: CI / CD Pipeline
+
+on:
+  push:
+    branches: [ "main", "master", "develop" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  version-consistency:
+    name: ARC Version Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Check package and Tauri versions
+        run: node scripts/check-version-consistency.mjs
+
+  test-chezcord:
+    name: Test Chezcord lib (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20.x, 22.x]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: npm ci
+
+      - name: Run Chezcord Unit & Integration Tests
+        run: npm run test:chezcord
+
+  build-client:
+    name: Build Studio Client
+    runs-on: ubuntu-latest
+    needs: test-chezcord
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: npm ci
+
+      - name: Build Vite Frontend Bundle
+        run: npm run build:client
+
+  server-diagnostics:
+    name: Server Pre-flight Diagnostics
+    runs-on: ubuntu-latest
+    needs: test-chezcord
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: npm ci
+
+      - name: Run Diagnostics Check
+        run: node -e "import('./packages/studio-server/src/engine/StartupDiagnostics.js').then(m => { const r = m.StartupDiagnostics.run(); console.log(r); if (!r.healthy) process.exit(1); })"
