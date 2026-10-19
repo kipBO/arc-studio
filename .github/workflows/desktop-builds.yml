@@ -1,0 +1,81 @@
+name: Desktop Builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Universal
+            runner: macos-latest
+            target: universal-apple-darwin
+            artifact: packages/studio-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg*
+          - name: Windows 10 and 11 x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: packages/studio-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe*
+          - name: Linux x86_64 AppImage
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact: packages/studio-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+          - name: Linux ARM64 AppImage
+            runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: packages/studio-desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - name: Install Rust targets
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "universal-apple-darwin" ]; then
+            rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          else
+            rustup target add "${{ matrix.target }}"
+          fi
+      - run: npm ci
+      - name: Build desktop installer
+        shell: bash
+        env:
+          ARC_DESKTOP_TARGET: ${{ matrix.target }}
+        run: npm run build:desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arc-studio-${{ matrix.target }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish Build
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          fail_on_unmatched_files: true
