@@ -383,7 +383,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </div>;
     }
   }
-  if (node.type.startsWith('action_') && ['action_create_channel', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
+  if (node.type.startsWith('action_') && ['action_create_channel', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
     return <div className="node-config node-config-stack">
@@ -416,6 +416,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {node.type === 'action_member_role' && <>
         {textField('guild_id', 'Server ID')}{textField('user_id', 'User ID')}{textField('role_id', 'Role ID')}
         {!isConnected('operation') && <FallbackField label="Operation"><AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'Add role' }, { value: 'remove', label: 'Remove role' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Role operation" className="node-select" /></FallbackField>}{reason}
+      </>}
+      {node.type === 'action_moderate_member' && <>
+        {textField('guild_id', 'Server ID')}{textField('user_id', 'Member ID')}
+        {!isConnected('operation') && <FallbackField label="Action"><AnimatedDropdown value={node.data?.operation || 'timeout'} options={[{ value: 'timeout', label: 'Timeout' }, { value: 'kick', label: 'Kick' }, { value: 'ban', label: 'Ban' }, { value: 'unban', label: 'Unban' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Moderation action" className="node-select" /></FallbackField>}
+        {node.data?.operation === 'timeout' && !isConnected('duration_minutes') && <FallbackField label="Timeout (minutes)"><NodeNumberInput min="1" max="40320" value={node.data?.duration_minutes ?? 10} onChange={(event) => update('duration_minutes', Math.max(1, Math.min(40320, Number(event.target.value) || 1)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Timeout duration in minutes" /></FallbackField>}
+        {node.data?.operation === 'ban' && !isConnected('delete_message_seconds') && <FallbackField label="Delete recent messages (seconds)"><NodeNumberInput min="0" max="604800" value={node.data?.delete_message_seconds ?? 0} onChange={(event) => update('delete_message_seconds', Math.max(0, Math.min(604800, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Ban message deletion period" /></FallbackField>}
+        {textField('reason', 'Audit Log Reason')}
+        <span className="node-config-warning"><AlertTriangle size={12} /> Discord checks the bot’s role position and server permissions.</span>
       </>}
       {node.type === 'action_voice_channel_status' && <>{textField('channel_id', 'Voice channel ID')}{textField('status', 'Status (blank clears)')}{reason}</>}
       {node.type === 'action_voice_state' && <>
