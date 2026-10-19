@@ -236,8 +236,10 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
             </div>}
             {resetTarget?.id === user.id && <form className="team-create-form team-inline-reset-form" onSubmit={resetUserPassword}>
               <div className="team-form-title"><span><KeyRound size={16} /></span><div><strong>Reset {resetTarget.username}’s password</strong><small>They must choose a new password before continuing.</small></div></div>
-              <PasswordInput label="Temporary password" placeholder="At least 6 characters" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} minLength={6} autoComplete="new-password" />
-              <PasswordInput label="Confirm temporary password" placeholder="Confirm password" value={resetConfirmPassword} onChange={(event) => setResetConfirmPassword(event.target.value)} minLength={6} autoComplete="new-password" />
+              <div className="team-reset-password-grid">
+                <PasswordInput label="Temporary password" placeholder="At least 6 characters" value={resetPassword} onChange={(event) => setResetPassword(event.target.value)} minLength={6} autoComplete="new-password" />
+                <PasswordInput label="Confirm temporary password" placeholder="Confirm password" value={resetConfirmPassword} onChange={(event) => setResetConfirmPassword(event.target.value)} minLength={6} autoComplete="new-password" />
+              </div>
               {resetError && <p className="form-error" role="alert">{resetError}</p>}
               <div className="team-reset-actions"><Button type="button" variant="secondary" onClick={() => setResetTarget(null)}>Cancel</Button><Button type="submit" loading={resetting}>Reset password</Button></div>
             </form>}
