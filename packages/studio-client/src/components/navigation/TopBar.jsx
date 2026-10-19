@@ -107,12 +107,12 @@ export function TopBar({
             </div>
           );
         })}
-        <button className="topbar-icon-button new-tab-button" onClick={() => onAddTab?.()} onContextMenu={(event) => {
+        <button className={`topbar-icon-button new-tab-button${tabs.length === 0 ? ' is-empty' : ''}`} onClick={() => onAddTab?.()} onContextMenu={(event) => {
           event.preventDefault();
           const templatesHeight = Math.min(graphTemplates.length, 4) * 32 + (graphTemplates.length ? 30 : 0);
           const height = 200 + templatesHeight;
           setNewGraphMenu({ x: Math.max(8, Math.min(event.clientX, window.innerWidth - 218 * uiScale)) / uiScale, y: Math.max(8, Math.min(event.clientY, window.innerHeight - (height + 8) * uiScale)) / uiScale });
-        }} data-tooltip="New graph · right-click for quick actions" aria-label="New graph"><FilePlus2 size={16} /></button>
+        }} data-tooltip="New graph · right-click for quick actions" aria-label="New graph"><FilePlus2 size={16} />{tabs.length === 0 && <span>New</span>}</button>
       </div>
 
       {newGraphMenu && <div className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
