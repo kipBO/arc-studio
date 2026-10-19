@@ -1,0 +1,2064 @@
+{
+  "format": "arc-project",
+  "version": 1,
+  "project": {
+    "name": "Utility Bot",
+    "createdWithVersion": "2026.1.1-alpha.6",
+    "starter": {
+      "id": "utility",
+      "name": "Utility Bot",
+      "description": "Reminders, dice, random picks, and text tools.",
+      "icon": "Braces",
+      "highlights": [
+        "Random range and dice commands",
+        "Choice from three live arguments",
+        "Delayed reminders with a ten-minute limit",
+        "SHA-256 text utility",
+        "Private feedback form",
+        "Six rotating bot activities, updated every ten minutes"
+      ],
+      "setup": [
+        "Configure utility-feedback-channel-id in Project Variables before using /feedback.",
+        "The /remind command waits in memory for up to ten minutes; a server restart cancels pending reminders.",
+        "Grant the bot Send Messages and Embed Links in channels where it should respond.",
+        "Edit Bot Presence to change the activity messages and timing."
+      ],
+      "order": 5
+    }
+  },
+  "files": {
+    "graphs.json": {
+      "graphs": [
+        {
+          "id": "utility_roll",
+          "name": "Slash: /roll",
+          "description": "Handles /roll.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_roll_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "roll",
+                "description": "Roll an integer within a range.",
+                "options": [
+                  {
+                    "name": "minimum",
+                    "description": "Lowest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": -1000000,
+                    "max_value": 1000000
+                  },
+                  {
+                    "name": "maximum",
+                    "description": "Highest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": -1000000,
+                    "max_value": 1000000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_roll_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_roll_random",
+              "type": "math_random",
+              "x": 380,
+              "y": 360,
+              "data": {}
+            },
+            {
+              "id": "utility_roll_format",
+              "type": "format_text",
+              "x": 720,
+              "y": 360,
+              "data": {
+                "template": "🎲 **{{arg1}}**"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_roll_event_exec_utility_roll_reply_exec",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_roll_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_roll_event_application_id_utility_roll_reply_application_id",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_roll_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_roll_event_interaction_id_utility_roll_reply_interaction_id",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_roll_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_roll_event_interaction_token_utility_roll_reply_interaction_token",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_roll_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_roll_event_option_minimum_utility_roll_random_min",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "option_minimum",
+              "targetNodeId": "utility_roll_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "utility_roll_event_option_maximum_utility_roll_random_max",
+              "sourceNodeId": "utility_roll_event",
+              "sourcePinId": "option_maximum",
+              "targetNodeId": "utility_roll_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "utility_roll_random_result_utility_roll_format_arg_1",
+              "sourceNodeId": "utility_roll_random",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_roll_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_roll_format_text_utility_roll_reply_content",
+              "sourceNodeId": "utility_roll_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_roll_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "utility_coinflip",
+          "name": "Slash: /coinflip",
+          "description": "Handles /coinflip.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_coinflip_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "coinflip",
+                "description": "Flip a fair coin.",
+                "options": []
+              }
+            },
+            {
+              "id": "utility_coin_random",
+              "type": "math_random",
+              "x": 360,
+              "y": 340,
+              "data": {}
+            },
+            {
+              "id": "utility_coin_half",
+              "type": "value_number",
+              "x": 360,
+              "y": 500,
+              "data": {
+                "value": 0.5
+              }
+            },
+            {
+              "id": "utility_coin_compare",
+              "type": "math_compare",
+              "x": 640,
+              "y": 390,
+              "data": {
+                "operation": "less_than"
+              }
+            },
+            {
+              "id": "utility_coin_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_coin_heads",
+              "type": "action_reply_interaction",
+              "x": 1200,
+              "y": 80,
+              "data": {
+                "content": "🪙 Heads!",
+                "ephemeral": false
+              }
+            },
+            {
+              "id": "utility_coin_tails",
+              "type": "action_reply_interaction",
+              "x": 1200,
+              "y": 330,
+              "data": {
+                "content": "🪙 Tails!",
+                "ephemeral": false
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_coin_random_result_utility_coin_compare_a",
+              "sourceNodeId": "utility_coin_random",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_coin_compare",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_coin_half_value_utility_coin_compare_b",
+              "sourceNodeId": "utility_coin_half",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_coin_compare",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_coin_event_exec_utility_coin_branch_exec",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_coin_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_coin_compare_result_utility_coin_branch_condition",
+              "sourceNodeId": "utility_coin_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_coin_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_coin_branch_true_exec_utility_coin_heads_exec",
+              "sourceNodeId": "utility_coin_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_coin_heads",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_coin_event_application_id_utility_coin_heads_application_id",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_coin_heads",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_coin_event_interaction_id_utility_coin_heads_interaction_id",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_coin_heads",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_coin_event_interaction_token_utility_coin_heads_interaction_token",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_coin_heads",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_coin_branch_false_exec_utility_coin_tails_exec",
+              "sourceNodeId": "utility_coin_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_coin_tails",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_coin_event_application_id_utility_coin_tails_application_id",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_coin_tails",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_coin_event_interaction_id_utility_coin_tails_interaction_id",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_coin_tails",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_coin_event_interaction_token_utility_coin_tails_interaction_token",
+              "sourceNodeId": "utility_coinflip_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_coin_tails",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "utility_choose",
+          "name": "Slash: /choose",
+          "description": "Handles /choose.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_choose_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "choose",
+                "description": "Choose one of three options at random.",
+                "options": [
+                  {
+                    "name": "first",
+                    "description": "First option.",
+                    "type": 3,
+                    "required": true
+                  },
+                  {
+                    "name": "second",
+                    "description": "Second option.",
+                    "type": 3,
+                    "required": true
+                  },
+                  {
+                    "name": "third",
+                    "description": "Third option.",
+                    "type": 3,
+                    "required": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_choose_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_choose_values",
+              "type": "data_array_create",
+              "x": 390,
+              "y": 350,
+              "data": {}
+            },
+            {
+              "id": "utility_choose_zero",
+              "type": "value_number",
+              "x": 390,
+              "y": 560,
+              "data": {
+                "value": 0
+              }
+            },
+            {
+              "id": "utility_choose_two",
+              "type": "value_number",
+              "x": 390,
+              "y": 680,
+              "data": {
+                "value": 2
+              }
+            },
+            {
+              "id": "utility_choose_random",
+              "type": "math_random",
+              "x": 680,
+              "y": 540,
+              "data": {}
+            },
+            {
+              "id": "utility_choose_get",
+              "type": "data_array_get",
+              "x": 970,
+              "y": 410,
+              "data": {}
+            },
+            {
+              "id": "utility_choose_format",
+              "type": "format_text",
+              "x": 1240,
+              "y": 410,
+              "data": {
+                "template": "My pick: **{{arg1}}**"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_choose_event_exec_utility_choose_reply_exec",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_choose_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_choose_event_application_id_utility_choose_reply_application_id",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_choose_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_choose_event_interaction_id_utility_choose_reply_interaction_id",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_choose_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_choose_event_interaction_token_utility_choose_reply_interaction_token",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_choose_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_choose_event_option_first_utility_choose_values_item_1",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "option_first",
+              "targetNodeId": "utility_choose_values",
+              "targetPinId": "item_1"
+            },
+            {
+              "id": "utility_choose_event_option_second_utility_choose_values_item_2",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "option_second",
+              "targetNodeId": "utility_choose_values",
+              "targetPinId": "item_2"
+            },
+            {
+              "id": "utility_choose_event_option_third_utility_choose_values_item_3",
+              "sourceNodeId": "utility_choose_event",
+              "sourcePinId": "option_third",
+              "targetNodeId": "utility_choose_values",
+              "targetPinId": "item_3"
+            },
+            {
+              "id": "utility_choose_values_array_utility_choose_get_array",
+              "sourceNodeId": "utility_choose_values",
+              "sourcePinId": "array",
+              "targetNodeId": "utility_choose_get",
+              "targetPinId": "array"
+            },
+            {
+              "id": "utility_choose_zero_value_utility_choose_random_min",
+              "sourceNodeId": "utility_choose_zero",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_choose_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "utility_choose_two_value_utility_choose_random_max",
+              "sourceNodeId": "utility_choose_two",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_choose_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "utility_choose_random_result_utility_choose_get_index",
+              "sourceNodeId": "utility_choose_random",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_choose_get",
+              "targetPinId": "index"
+            },
+            {
+              "id": "utility_choose_get_value_utility_choose_format_arg_1",
+              "sourceNodeId": "utility_choose_get",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_choose_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_choose_format_text_utility_choose_reply_content",
+              "sourceNodeId": "utility_choose_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_choose_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "utility_dice",
+          "name": "Slash: /dice",
+          "description": "Handles /dice.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_dice_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "dice",
+                "description": "Roll a die with the selected number of sides.",
+                "options": [
+                  {
+                    "name": "sides",
+                    "description": "Number of sides, from 2 to 1000.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 2,
+                    "max_value": 1000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_dice_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_dice_one",
+              "type": "value_number",
+              "x": 390,
+              "y": 390,
+              "data": {
+                "value": 1
+              }
+            },
+            {
+              "id": "utility_dice_random",
+              "type": "math_random",
+              "x": 680,
+              "y": 300,
+              "data": {}
+            },
+            {
+              "id": "utility_dice_format",
+              "type": "format_text",
+              "x": 980,
+              "y": 300,
+              "data": {
+                "template": "🎲 {{arg1}}-sided die: **{{arg2}}**"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_dice_event_exec_utility_dice_reply_exec",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_dice_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_dice_event_application_id_utility_dice_reply_application_id",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_dice_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_dice_event_interaction_id_utility_dice_reply_interaction_id",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_dice_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_dice_event_interaction_token_utility_dice_reply_interaction_token",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_dice_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_dice_one_value_utility_dice_random_min",
+              "sourceNodeId": "utility_dice_one",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_dice_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "utility_dice_event_option_sides_utility_dice_random_max",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "option_sides",
+              "targetNodeId": "utility_dice_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "utility_dice_event_option_sides_utility_dice_format_arg_1",
+              "sourceNodeId": "utility_dice_event",
+              "sourcePinId": "option_sides",
+              "targetNodeId": "utility_dice_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_dice_random_result_utility_dice_format_arg_2",
+              "sourceNodeId": "utility_dice_random",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_dice_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "utility_dice_format_text_utility_dice_reply_content",
+              "sourceNodeId": "utility_dice_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_dice_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "utility_repeat",
+          "name": "Slash: /repeat",
+          "description": "Handles /repeat.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_repeat_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "repeat",
+                "description": "Repeat a message privately.",
+                "options": [
+                  {
+                    "name": "message",
+                    "description": "Text to repeat.",
+                    "type": 3,
+                    "required": true,
+                    "max_length": 1000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_repeat_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_repeat_format",
+              "type": "format_text",
+              "x": 400,
+              "y": 320,
+              "data": {
+                "template": "{{arg1}}"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_repeat_event_exec_utility_repeat_reply_exec",
+              "sourceNodeId": "utility_repeat_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_repeat_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_repeat_event_application_id_utility_repeat_reply_application_id",
+              "sourceNodeId": "utility_repeat_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_repeat_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_repeat_event_interaction_id_utility_repeat_reply_interaction_id",
+              "sourceNodeId": "utility_repeat_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_repeat_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_repeat_event_interaction_token_utility_repeat_reply_interaction_token",
+              "sourceNodeId": "utility_repeat_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_repeat_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_repeat_event_option_message_utility_repeat_format_arg_1",
+              "sourceNodeId": "utility_repeat_event",
+              "sourcePinId": "option_message",
+              "targetNodeId": "utility_repeat_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_repeat_format_text_utility_repeat_reply_content",
+              "sourceNodeId": "utility_repeat_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_repeat_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "utility_remind",
+          "name": "Slash: /remind",
+          "description": "Waits up to ten minutes, then posts a reminder in the command channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_remind_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "remind",
+                "description": "Post a reminder in this channel after a short delay.",
+                "options": [
+                  {
+                    "name": "minutes",
+                    "description": "Wait from 1 to 10 minutes.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 10
+                  },
+                  {
+                    "name": "message",
+                    "description": "What should the bot remind you about?",
+                    "type": 3,
+                    "required": true,
+                    "max_length": 1000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_remind_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_remind_minute",
+              "type": "value_number",
+              "x": 350,
+              "y": 390,
+              "data": {
+                "value": 60000
+              }
+            },
+            {
+              "id": "utility_remind_ms",
+              "type": "math_multiply",
+              "x": 640,
+              "y": 390,
+              "data": {}
+            },
+            {
+              "id": "utility_remind_delay",
+              "type": "delay",
+              "x": 930,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_remind_format",
+              "type": "format_text",
+              "x": 930,
+              "y": 390,
+              "data": {
+                "template": "⏰ Reminder for <@{{arg1}}>: {{arg2}}"
+              }
+            },
+            {
+              "id": "utility_remind_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_remind_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1580,
+              "y": 120,
+              "data": {
+                "content": "Reminder posted."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_remind_event_exec_utility_remind_defer_exec",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_remind_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_remind_event_interaction_id_utility_remind_defer_interaction_id",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_remind_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_remind_event_interaction_token_utility_remind_defer_interaction_token",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_remind_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_remind_event_option_minutes_utility_remind_ms_a",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "option_minutes",
+              "targetNodeId": "utility_remind_ms",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_remind_minute_value_utility_remind_ms_b",
+              "sourceNodeId": "utility_remind_minute",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_remind_ms",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_remind_ms_result_utility_remind_delay_ms",
+              "sourceNodeId": "utility_remind_ms",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_remind_delay",
+              "targetPinId": "ms"
+            },
+            {
+              "id": "utility_remind_defer_exec_utility_remind_delay_exec",
+              "sourceNodeId": "utility_remind_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_remind_delay",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_remind_event_user_id_utility_remind_format_arg_1",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "utility_remind_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_remind_event_option_message_utility_remind_format_arg_2",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "option_message",
+              "targetNodeId": "utility_remind_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "utility_remind_format_text_utility_remind_send_content",
+              "sourceNodeId": "utility_remind_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_remind_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "utility_remind_event_channel_id_utility_remind_send_channel_id",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "utility_remind_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "utility_remind_delay_exec_utility_remind_send_exec",
+              "sourceNodeId": "utility_remind_delay",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_remind_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_remind_send_exec_utility_remind_done_exec",
+              "sourceNodeId": "utility_remind_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_remind_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_remind_event_application_id_utility_remind_done_application_id",
+              "sourceNodeId": "utility_remind_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_remind_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_remind_defer_interaction_token_utility_remind_done_interaction_token",
+              "sourceNodeId": "utility_remind_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_remind_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "utility_sha256",
+          "name": "Slash: /sha256",
+          "description": "Calculates a SHA-256 digest and returns it privately.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_sha_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "sha256",
+                "description": "Calculate a SHA-256 digest for text.",
+                "options": [
+                  {
+                    "name": "text",
+                    "description": "Text to hash.",
+                    "type": 3,
+                    "required": true,
+                    "max_length": 1000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "utility_sha_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_sha_action",
+              "type": "action_crypto_hash",
+              "x": 680,
+              "y": 120,
+              "data": {
+                "algorithm": "sha256"
+              }
+            },
+            {
+              "id": "utility_sha_format",
+              "type": "format_text",
+              "x": 680,
+              "y": 390,
+              "data": {
+                "template": "SHA-256: `{{arg1}}`"
+              }
+            },
+            {
+              "id": "utility_sha_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1040,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_sha_event_exec_utility_sha_defer_exec",
+              "sourceNodeId": "utility_sha_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_sha_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_sha_event_interaction_id_utility_sha_defer_interaction_id",
+              "sourceNodeId": "utility_sha_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_sha_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_sha_event_interaction_token_utility_sha_defer_interaction_token",
+              "sourceNodeId": "utility_sha_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_sha_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_sha_defer_exec_utility_sha_action_exec",
+              "sourceNodeId": "utility_sha_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_sha_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_sha_event_option_text_utility_sha_action_data",
+              "sourceNodeId": "utility_sha_event",
+              "sourcePinId": "option_text",
+              "targetNodeId": "utility_sha_action",
+              "targetPinId": "data"
+            },
+            {
+              "id": "utility_sha_action_hash_utility_sha_format_arg_1",
+              "sourceNodeId": "utility_sha_action",
+              "sourcePinId": "hash",
+              "targetNodeId": "utility_sha_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_sha_action_exec_utility_sha_done_exec",
+              "sourceNodeId": "utility_sha_action",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_sha_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_sha_format_text_utility_sha_done_content",
+              "sourceNodeId": "utility_sha_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_sha_done",
+              "targetPinId": "content"
+            },
+            {
+              "id": "utility_sha_event_application_id_utility_sha_done_application_id",
+              "sourceNodeId": "utility_sha_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_sha_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_sha_defer_interaction_token_utility_sha_done_interaction_token",
+              "sourceNodeId": "utility_sha_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_sha_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "utility_help",
+          "name": "Slash: /help",
+          "description": "Handles /help.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_help_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "help",
+                "description": "Show utility command help.",
+                "options": []
+              }
+            },
+            {
+              "id": "utility_help_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_help_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "utility_help_embed_title",
+                    "type": "title",
+                    "value": "Utility commands"
+                  },
+                  {
+                    "id": "utility_help_embed_description",
+                    "type": "description",
+                    "value": "**Random:** /roll, /dice, /coinflip, /choose\n**Tools:** /repeat, /remind, /sha256, /ping\nUse `/remind` for up to ten minutes; reminders are lost if the bot process stops before delivery."
+                  },
+                  {
+                    "id": "utility_help_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "utility_help_embed_footer",
+                    "type": "footer",
+                    "value": "ARC Studio · Utility & Games"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_help_event_exec_utility_help_reply_exec",
+              "sourceNodeId": "utility_help_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_help_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_help_event_application_id_utility_help_reply_application_id",
+              "sourceNodeId": "utility_help_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_help_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_help_event_interaction_id_utility_help_reply_interaction_id",
+              "sourceNodeId": "utility_help_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_help_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_help_event_interaction_token_utility_help_reply_interaction_token",
+              "sourceNodeId": "utility_help_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_help_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_help_embed_embed_utility_help_reply_embed",
+              "sourceNodeId": "utility_help_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "utility_help_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "utility_about",
+          "name": "Slash: /about",
+          "description": "Handles /about.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_about_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "about",
+                "description": "Show bot and workspace information.",
+                "options": []
+              }
+            },
+            {
+              "id": "utility_about_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_about_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "utility_about_embed_title",
+                    "type": "title",
+                    "value": "Utility & Games"
+                  },
+                  {
+                    "id": "utility_about_embed_description",
+                    "type": "description",
+                    "value": "A working command set for random choices, delayed reminders, and text utilities. Use /help to see the commands."
+                  },
+                  {
+                    "id": "utility_about_embed_color",
+                    "type": "color",
+                    "value": "#8B5CF6"
+                  },
+                  {
+                    "id": "utility_about_embed_footer",
+                    "type": "footer",
+                    "value": "Configure and deploy commands in ARC Studio."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_about_event_exec_utility_about_reply_exec",
+              "sourceNodeId": "utility_about_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_about_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_about_event_application_id_utility_about_reply_application_id",
+              "sourceNodeId": "utility_about_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_about_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_about_event_interaction_id_utility_about_reply_interaction_id",
+              "sourceNodeId": "utility_about_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_about_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_about_event_interaction_token_utility_about_reply_interaction_token",
+              "sourceNodeId": "utility_about_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_about_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_about_embed_embed_utility_about_reply_embed",
+              "sourceNodeId": "utility_about_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "utility_about_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "utility_feedback",
+          "name": "Slash: /feedback",
+          "description": "Handles /feedback.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_feedback_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "feedback",
+                "description": "Send a private feedback form.",
+                "options": []
+              }
+            },
+            {
+              "id": "utility_feedback_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 350,
+              "data": {
+                "modal": {
+                  "customId": "utility_feedback_form",
+                  "title": "Send feedback",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "feedback_subject",
+                      "label": "Subject",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "feedback_details",
+                      "label": "Details",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "utility_feedback_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_feedback_event_exec_utility_feedback_form_show_exec",
+              "sourceNodeId": "utility_feedback_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_feedback_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_event_interaction_id_utility_feedback_form_show_interaction_id",
+              "sourceNodeId": "utility_feedback_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_feedback_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_feedback_event_interaction_token_utility_feedback_form_show_interaction_token",
+              "sourceNodeId": "utility_feedback_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_feedback_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_feedback_form_builder_modal_utility_feedback_form_show_modal",
+              "sourceNodeId": "utility_feedback_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "utility_feedback_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "utility_feedback_submit",
+          "name": "On Feedback Submitted",
+          "description": "Routes utility feedback to the configured channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_feedback_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_feedback_submit_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "utility_feedback_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "utility_feedback_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_feedback_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "utility_feedback_submit_get_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 410,
+              "data": {
+                "variableId": "project_var_utility_feedback_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "utility_feedback_submit_channel_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 390,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "utility_feedback_submit_config_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "utility_feedback_submit_missing_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 1740,
+              "y": 420,
+              "data": {
+                "content": "This form is not configured yet. Set UTILITY FEEDBACK CHANNEL ID in Project Variables, then try again."
+              }
+            },
+            {
+              "id": "utility_feedback_submit_format",
+              "type": "format_text",
+              "x": 1460,
+              "y": 620,
+              "data": {
+                "template": "Utility feedback from <@{{arg1}}>\nSubject: {{arg2}}\nDetails: {{arg3}}"
+              }
+            },
+            {
+              "id": "utility_feedback_submit_send",
+              "type": "action_send_message",
+              "x": 1780,
+              "y": 120,
+              "data": {
+                "content": ""
+              }
+            },
+            {
+              "id": "utility_feedback_submit_done_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Utility feedback has been sent to the staff team."
+              }
+            },
+            {
+              "id": "utility_feedback_submit_get_feedback_subject",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 650,
+              "data": {
+                "custom_id": "feedback_subject"
+              }
+            },
+            {
+              "id": "utility_feedback_submit_get_feedback_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 800,
+              "data": {
+                "custom_id": "feedback_details"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_feedback_submit_event_exec_utility_feedback_submit_filter_branch_exec",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_feedback_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_event_custom_id_utility_feedback_submit_filter_text_a",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "utility_feedback_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "utility_feedback_submit_filter_result_utility_feedback_submit_filter_branch_condition",
+              "sourceNodeId": "utility_feedback_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_feedback_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_feedback_submit_filter_branch_true_exec_utility_feedback_submit_defer_exec",
+              "sourceNodeId": "utility_feedback_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_feedback_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_event_interaction_id_utility_feedback_submit_defer_interaction_id",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "utility_feedback_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "utility_feedback_submit_event_interaction_token_utility_feedback_submit_defer_interaction_token",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_feedback_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_feedback_submit_defer_exec_utility_feedback_submit_config_branch_exec",
+              "sourceNodeId": "utility_feedback_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_feedback_submit_config_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_get_channel_value_utility_feedback_submit_channel_configured_text_a",
+              "sourceNodeId": "utility_feedback_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_feedback_submit_channel_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "utility_feedback_submit_channel_configured_result_utility_feedback_submit_config_branch_condition",
+              "sourceNodeId": "utility_feedback_submit_channel_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_feedback_submit_config_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_feedback_submit_config_branch_true_exec_utility_feedback_submit_missing_reply_exec",
+              "sourceNodeId": "utility_feedback_submit_config_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_feedback_submit_missing_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_config_branch_false_exec_utility_feedback_submit_send_exec",
+              "sourceNodeId": "utility_feedback_submit_config_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_feedback_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_event_application_id_utility_feedback_submit_missing_reply_application_id",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_feedback_submit_missing_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_feedback_submit_defer_interaction_token_utility_feedback_submit_missing_reply_interaction_token",
+              "sourceNodeId": "utility_feedback_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_feedback_submit_missing_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "utility_feedback_submit_get_channel_value_utility_feedback_submit_send_channel_id",
+              "sourceNodeId": "utility_feedback_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_feedback_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "utility_feedback_submit_event_user_id_utility_feedback_submit_format_arg_1",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "utility_feedback_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "utility_feedback_submit_event_submitted_values_utility_feedback_submit_get_feedback_subject_submitted_values",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "utility_feedback_submit_get_feedback_subject",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "utility_feedback_submit_get_feedback_subject_value_utility_feedback_submit_format_arg_2",
+              "sourceNodeId": "utility_feedback_submit_get_feedback_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_feedback_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "utility_feedback_submit_event_submitted_values_utility_feedback_submit_get_feedback_details_submitted_values",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "utility_feedback_submit_get_feedback_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "utility_feedback_submit_get_feedback_details_value_utility_feedback_submit_format_arg_3",
+              "sourceNodeId": "utility_feedback_submit_get_feedback_details",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_feedback_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "utility_feedback_submit_format_text_utility_feedback_submit_send_content",
+              "sourceNodeId": "utility_feedback_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "utility_feedback_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "utility_feedback_submit_send_exec_utility_feedback_submit_done_reply_exec",
+              "sourceNodeId": "utility_feedback_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_feedback_submit_done_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_feedback_submit_event_application_id_utility_feedback_submit_done_reply_application_id",
+              "sourceNodeId": "utility_feedback_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "utility_feedback_submit_done_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "utility_feedback_submit_defer_interaction_token_utility_feedback_submit_done_reply_interaction_token",
+              "sourceNodeId": "utility_feedback_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "utility_feedback_submit_done_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "utility_presence_rotation",
+          "name": "Bot Presence",
+          "description": "Chooses a random activity every ten minutes.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "utility_presence_schedule",
+              "type": "event_cron",
+              "x": 60,
+              "y": 280,
+              "data": {
+                "cronExpression": "*/10 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "utility_presence_random",
+              "type": "math_random",
+              "x": 330,
+              "y": 720,
+              "data": {
+                "min": 0,
+                "max": 6
+              }
+            },
+            {
+              "id": "utility_presence_floor",
+              "type": "math_floor",
+              "x": 590,
+              "y": 720,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_value_0",
+              "type": "value_number",
+              "x": 830,
+              "y": 100,
+              "data": {
+                "value": 0
+              }
+            },
+            {
+              "id": "utility_presence_value_1",
+              "type": "value_number",
+              "x": 830,
+              "y": 300,
+              "data": {
+                "value": 1
+              }
+            },
+            {
+              "id": "utility_presence_value_2",
+              "type": "value_number",
+              "x": 830,
+              "y": 500,
+              "data": {
+                "value": 2
+              }
+            },
+            {
+              "id": "utility_presence_value_3",
+              "type": "value_number",
+              "x": 830,
+              "y": 700,
+              "data": {
+                "value": 3
+              }
+            },
+            {
+              "id": "utility_presence_value_4",
+              "type": "value_number",
+              "x": 830,
+              "y": 900,
+              "data": {
+                "value": 4
+              }
+            },
+            {
+              "id": "utility_presence_compare_0",
+              "type": "math_compare",
+              "x": 1080,
+              "y": 100,
+              "data": {
+                "operation": "equal"
+              }
+            },
+            {
+              "id": "utility_presence_branch_0",
+              "type": "branch_if",
+              "x": 1330,
+              "y": 100,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_compare_1",
+              "type": "math_compare",
+              "x": 1080,
+              "y": 300,
+              "data": {
+                "operation": "equal"
+              }
+            },
+            {
+              "id": "utility_presence_branch_1",
+              "type": "branch_if",
+              "x": 1330,
+              "y": 300,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_compare_2",
+              "type": "math_compare",
+              "x": 1080,
+              "y": 500,
+              "data": {
+                "operation": "equal"
+              }
+            },
+            {
+              "id": "utility_presence_branch_2",
+              "type": "branch_if",
+              "x": 1330,
+              "y": 500,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_compare_3",
+              "type": "math_compare",
+              "x": 1080,
+              "y": 700,
+              "data": {
+                "operation": "equal"
+              }
+            },
+            {
+              "id": "utility_presence_branch_3",
+              "type": "branch_if",
+              "x": 1330,
+              "y": 700,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_compare_4",
+              "type": "math_compare",
+              "x": 1080,
+              "y": 900,
+              "data": {
+                "operation": "equal"
+              }
+            },
+            {
+              "id": "utility_presence_branch_4",
+              "type": "branch_if",
+              "x": 1330,
+              "y": 900,
+              "data": {}
+            },
+            {
+              "id": "utility_presence_activity_1",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 80,
+              "data": {
+                "status": "online",
+                "activity_text": "Utility commands",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "utility_presence_activity_2",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 270,
+              "data": {
+                "status": "online",
+                "activity_text": "Random picks",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "utility_presence_activity_3",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 460,
+              "data": {
+                "status": "online",
+                "activity_text": "Rolling the dice",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "utility_presence_activity_4",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 650,
+              "data": {
+                "status": "online",
+                "activity_text": "Reminders",
+                "activity_type": 2
+              }
+            },
+            {
+              "id": "utility_presence_activity_5",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 840,
+              "data": {
+                "status": "online",
+                "activity_text": "Dice challenge",
+                "activity_type": 5
+              }
+            },
+            {
+              "id": "utility_presence_activity_6",
+              "type": "action_set_presence",
+              "x": 1630,
+              "y": 1030,
+              "data": {
+                "status": "online",
+                "activity_text": "New utility tools",
+                "activity_type": 3
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "utility_utility_presence_schedule_exec_utility_presence_branch_0_exec",
+              "sourceNodeId": "utility_presence_schedule",
+              "sourcePinId": "exec",
+              "targetNodeId": "utility_presence_branch_0",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_random_result_utility_presence_floor_value",
+              "sourceNodeId": "utility_presence_random",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_floor",
+              "targetPinId": "value"
+            },
+            {
+              "id": "utility_utility_presence_floor_result_utility_presence_compare_0_a",
+              "sourceNodeId": "utility_presence_floor",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_compare_0",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_utility_presence_value_0_value_utility_presence_compare_0_b",
+              "sourceNodeId": "utility_presence_value_0",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_presence_compare_0",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_utility_presence_compare_0_result_utility_presence_branch_0_condition",
+              "sourceNodeId": "utility_presence_compare_0",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_branch_0",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_utility_presence_branch_0_true_exec_utility_presence_activity_1_exec",
+              "sourceNodeId": "utility_presence_branch_0",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_presence_activity_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_branch_0_false_exec_utility_presence_branch_1_exec",
+              "sourceNodeId": "utility_presence_branch_0",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_presence_branch_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_floor_result_utility_presence_compare_1_a",
+              "sourceNodeId": "utility_presence_floor",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_compare_1",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_utility_presence_value_1_value_utility_presence_compare_1_b",
+              "sourceNodeId": "utility_presence_value_1",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_presence_compare_1",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_utility_presence_compare_1_result_utility_presence_branch_1_condition",
+              "sourceNodeId": "utility_presence_compare_1",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_branch_1",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_utility_presence_branch_1_true_exec_utility_presence_activity_2_exec",
+              "sourceNodeId": "utility_presence_branch_1",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_presence_activity_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_branch_1_false_exec_utility_presence_branch_2_exec",
+              "sourceNodeId": "utility_presence_branch_1",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_presence_branch_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_floor_result_utility_presence_compare_2_a",
+              "sourceNodeId": "utility_presence_floor",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_compare_2",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_utility_presence_value_2_value_utility_presence_compare_2_b",
+              "sourceNodeId": "utility_presence_value_2",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_presence_compare_2",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_utility_presence_compare_2_result_utility_presence_branch_2_condition",
+              "sourceNodeId": "utility_presence_compare_2",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_branch_2",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_utility_presence_branch_2_true_exec_utility_presence_activity_3_exec",
+              "sourceNodeId": "utility_presence_branch_2",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_presence_activity_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_branch_2_false_exec_utility_presence_branch_3_exec",
+              "sourceNodeId": "utility_presence_branch_2",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_presence_branch_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_floor_result_utility_presence_compare_3_a",
+              "sourceNodeId": "utility_presence_floor",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_compare_3",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_utility_presence_value_3_value_utility_presence_compare_3_b",
+              "sourceNodeId": "utility_presence_value_3",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_presence_compare_3",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_utility_presence_compare_3_result_utility_presence_branch_3_condition",
+              "sourceNodeId": "utility_presence_compare_3",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_branch_3",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_utility_presence_branch_3_true_exec_utility_presence_activity_4_exec",
+              "sourceNodeId": "utility_presence_branch_3",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_presence_activity_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_branch_3_false_exec_utility_presence_branch_4_exec",
+              "sourceNodeId": "utility_presence_branch_3",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_presence_branch_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_floor_result_utility_presence_compare_4_a",
+              "sourceNodeId": "utility_presence_floor",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_compare_4",
+              "targetPinId": "a"
+            },
+            {
+              "id": "utility_utility_presence_value_4_value_utility_presence_compare_4_b",
+              "sourceNodeId": "utility_presence_value_4",
+              "sourcePinId": "value",
+              "targetNodeId": "utility_presence_compare_4",
+              "targetPinId": "b"
+            },
+            {
+              "id": "utility_utility_presence_compare_4_result_utility_presence_branch_4_condition",
+              "sourceNodeId": "utility_presence_compare_4",
+              "sourcePinId": "result",
+              "targetNodeId": "utility_presence_branch_4",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "utility_utility_presence_branch_4_true_exec_utility_presence_activity_5_exec",
+              "sourceNodeId": "utility_presence_branch_4",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "utility_presence_activity_5",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "utility_utility_presence_branch_4_false_exec_utility_presence_activity_6_exec",
+              "sourceNodeId": "utility_presence_branch_4",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "utility_presence_activity_6",
+              "targetPinId": "exec"
+            }
+          ]
+        }
+      ],
+      "deletedIds": []
+    },
+    "graph-library.json": {
+      "defaultGraphId": "utility_roll",
+      "templates": [],
+      "snapshots": []
+    },
+    "bot-config.json": {},
+    "statistics.json": {},
+    "embeds.json": [],
+    "project-variables.json": [
+      {
+        "id": "project_var_utility_feedback_channel_id",
+        "name": "utility-feedback-channel-id",
+        "type": "string",
+        "initialValue": ""
+      }
+    ]
+  }
+}
