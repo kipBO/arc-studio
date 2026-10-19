@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#191c21" />
+    <title>ARC Studio</title>
+    <meta name="description" content="ARC Studio visual graph editor and bot runtime." />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ARC Studio" />
+    <meta property="og:title" content="ARC Studio - Create your Discord Bot" />
+    <meta property="og:description" content="Build and debug Discord bots with visual node graphs." />
+    <meta property="og:image" content="https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png?v=2026.1.1-alpha.6" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1024" />
+    <meta property="og:image:height" content="1024" />
+    <meta property="og:image:alt" content="ARC Studio logo" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ARC Studio - Create your Discord Bot" />
+    <meta name="twitter:description" content="Build and debug Discord bots with visual node graphs." />
+    <meta name="twitter:image" content="https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png?v=2026.1.1-alpha.6" />
+    <link rel="icon" type="image/png" href="/arc.png" />
+  </head>
+  <body autocapitalize="off" autocorrect="off">
+    <div id="top-loading-bar" aria-hidden="true"></div>
+
+    <div id="root"></div>
+
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
+        window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+      }
+    </script>
+  </body>
+</html>
