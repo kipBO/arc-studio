@@ -1,4 +1,5 @@
 node_modules/
+arc-plugins/
 
 # Compiled frontend, desktop, and Rust outputs
 dist/
