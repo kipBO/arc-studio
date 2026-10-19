@@ -33,7 +33,7 @@ const PERMISSION_OPTIONS = [
   { value: 'emojis:upload', label: 'Manage emojis', detail: 'Upload and manage application emojis.' }
 ];
 
-export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '' }) {
+export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '' }) {
   const [users, setUsers] = useState([]);
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -169,11 +169,15 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
       if (!response.ok) throw new Error(data.error || 'Could not update permissions.');
       setEditingUserId('');
       await fetchUsers();
-      if (data.user?.hasActiveSession) {
+      if (data.sessionOnline) {
         setPermissionLogoutError('');
         setPermissionLogoutTarget({ id: user.id, username: user.username });
       } else {
-        arcEvents.emit('toast:notify', { title: 'Permissions updated', message: 'Changes take effect on the next request.', type: 'success' });
+        arcEvents.emit('toast:notify', {
+          title: 'Permissions updated',
+          message: data.sessionInvalidated ? `${user.username} will need to sign in again.` : 'Changes take effect on the next request.',
+          type: 'success'
+        });
       }
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Permissions not updated', message: error.message, type: 'error' });
@@ -219,7 +223,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
             <div className="team-user-row">
               <span className="team-avatar">{(user.username?.[0] || 'U').toUpperCase()}</span>
               <div className="team-user-copy"><strong>{user.username}{primary && <small>Primary</small>}</strong><span><i className={`role-dot role-${user.role}`} />{user.role === 'custom' ? 'Custom permissions' : user.role} <em>· {String(user.id).slice(0, 8)}</em></span><small className="team-last-login">Last sign-in: {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}</small></div>
-              <div className="team-user-actions">{!primary && user.username !== currentUsername && <><button className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button className="icon-button" onClick={() => { setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
+              <div className="team-user-actions">{!primary && user.id !== currentUserId && user.username?.toLowerCase() !== String(currentUsername).toLowerCase() && <><button className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button className="icon-button" onClick={() => { setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
             </div>
             {editingUserId === user.id && <div className="team-permissions-editor">
               <div className="team-permissions-heading"><strong>Workspace permissions</strong><small>Selecting every permission grants full Admin access, including Team access. Changes take effect on the member’s next request. You can sign them out now to end their current session.</small></div>
