@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Check, ExternalLink, MessageSquare, Layers, Save, Sparkles, Bot, Moon, Sun, Upload } from 'lucide-react';
+import { ArrowLeft, Check, ExternalLink, MessageSquare, Layers, Save, Bot, Moon, Sun, Upload } from 'lucide-react';
 import { EmbedNodeBuilder, getEmbedBlocks } from '../nodes/EmbedNodeBuilder.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { MessageComponentsBuilder, toDiscordComponents } from './MessageComponentsBuilder.jsx';
 import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
+import { Modal } from '../ui/Modal.jsx';
+import { Button } from '../ui/Button.jsx';
+import { useStudioEscape } from './useStudioEscape.js';
 
 const EMPTY_ATTACHMENTS = [];
 //
@@ -95,12 +98,16 @@ export function EmbedStudioView({
   name,
   content = '',
   blocks = [],
+  wiredFields = {},
   attachments = EMPTY_ATTACHMENTS,
   components = [],
   componentsOnly = false,
   isContentWired = false,
   isEmbedWired = false,
   isComponentsWired = false,
+  contentSourceLabel = '',
+  embedSourceLabel = '',
+  componentsSourceLabel = '',
   appEmojis = [],
   graphVariables = [],
   botProfile = null,
@@ -131,12 +138,14 @@ export function EmbedStudioView({
   const [thumbnailContextMenu, setThumbnailContextMenu] = useState(null);
   const [failedThumbnailUrl, setFailedThumbnailUrl] = useState('');
   const [failedImageUrl, setFailedImageUrl] = useState('');
+  const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const initialDraftRef = React.useRef(JSON.stringify({ name, content, blocks, components, attachments }));
   const closeStudio = () => {
     const currentDraft = JSON.stringify({ name, content, blocks, components, attachments: attachedFiles });
-    if (currentDraft !== initialDraftRef.current && !window.confirm('Discard unapplied embed or component changes?')) return;
+    if (currentDraft !== initialDraftRef.current) { setDiscardPromptOpen(true); return; }
     onClose?.();
   };
+  useStudioEscape(closeStudio);
 
   useEffect(() => {
     setPreviewTheme(theme === 'light' ? 'light' : 'dark');
@@ -168,22 +177,43 @@ export function EmbedStudioView({
     : '/arc.png';
 
   const items = getEmbedBlocks({ blocks });
-  const title = items.find((block) => block.type === 'title')?.value;
-  const description = items.find((block) => block.type === 'description')?.value;
-  const author = items.find((block) => block.type === 'author');
-  const footer = items.find((block) => block.type === 'footer');
-  const timestampBlock = footer ? items.find((block) => block.type === 'timestamp') : null;
-  const timestamp = timestampBlock?.now ? new Date().toISOString() : timestampBlock?.value;
-  const timestampLabel = timestamp && !Number.isNaN(new Date(timestamp).getTime())
+  const wireFor = (block, key) => wiredFields?.[`block_${block?.id}_${key}`] || null;
+  const previewItems = items.map((block) => {
+    const preview = { ...block };
+    const keys = block.type === 'title' || block.type === 'description' || block.type === 'color' || block.type === 'timestamp' ? ['value']
+      : block.type === 'field' ? ['name', 'value']
+        : block.type === 'author' ? ['name', 'url', 'icon']
+          : block.type === 'footer' ? ['text', 'icon']
+            : ['image', 'thumbnail', 'url'].includes(block.type) ? ['url'] : [];
+    for (const key of keys) {
+      const wire = wireFor(block, key);
+      if (wire) preview[key] = wire.token;
+    }
+    if (block.type === 'timestamp' && wireFor(block, 'value')) preview.now = false;
+    return preview;
+  });
+  const title = previewItems.find((block) => block.type === 'title')?.value;
+  const description = previewItems.find((block) => block.type === 'description')?.value;
+  const author = previewItems.find((block) => block.type === 'author');
+  const footer = previewItems.find((block) => block.type === 'footer');
+  const timestampBlock = footer ? previewItems.find((block) => block.type === 'timestamp') : null;
+  const timestampWire = timestampBlock && wireFor(timestampBlock, 'value');
+  const timestamp = timestampWire ? '' : timestampBlock?.now ? new Date().toISOString() : timestampBlock?.value;
+  const timestampLabel = timestampWire?.token || (timestamp && !Number.isNaN(new Date(timestamp).getTime())
     ? new Date(timestamp).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })
-    : '';
-  const image = items.find((block) => block.type === 'image')?.url;
-  const thumbnail = items.find((block) => block.type === 'thumbnail')?.url;
-  const colorBlock = items.find((block) => block.type === 'color');
-  const color = colorBlock ? (colorBlock.value || '') : '#5865F2';
+    : '');
+  const imageBlock = previewItems.find((block) => block.type === 'image');
+  const thumbnailBlock = previewItems.find((block) => block.type === 'thumbnail');
+  const imageWire = imageBlock && wireFor(imageBlock, 'url');
+  const thumbnailWire = thumbnailBlock && wireFor(thumbnailBlock, 'url');
+  const image = imageWire ? '' : imageBlock?.url;
+  const thumbnail = thumbnailWire ? '' : thumbnailBlock?.url;
+  const colorBlock = previewItems.find((block) => block.type === 'color');
+  const colorWire = colorBlock && wireFor(colorBlock, 'value');
+  const color = colorWire ? (items.find((block) => block.type === 'color')?.value || '#5865F2') : colorBlock ? (colorBlock.value || '') : '#5865F2';
   useEffect(() => { setFailedThumbnailUrl(''); }, [thumbnail]);
   useEffect(() => { setFailedImageUrl(''); }, [image]);
-  const fields = items.filter((block) => block.type === 'field' && (block.name || block.value));
+  const fields = previewItems.filter((block) => block.type === 'field' && (block.name || block.value));
   
   const textCount = items.reduce((total, block) => {
     if (block.type === 'title' || block.type === 'description') return total + String(block.value || '').length;
@@ -281,12 +311,17 @@ export function EmbedStudioView({
   const attachmentName = (value) => /^attachment:\/\/(.+)$/.exec(String(value || ''))?.[1] || '';
   const attachedImage = attachmentName(image);
   const attachedThumbnail = attachmentName(thumbnail);
-  const titleLink = safePreviewUrl(items.find((block) => block.type === 'url')?.url);
+  const titleUrlBlock = previewItems.find((block) => block.type === 'url');
+  const titleUrlWire = titleUrlBlock && wireFor(titleUrlBlock, 'url');
+  const titleLink = safePreviewUrl(titleUrlBlock?.url);
   const authorLink = safePreviewUrl(author?.url);
+  const authorUrlWire = author && wireFor(author, 'url');
+  const authorIconWire = author && wireFor(author, 'icon');
+  const footerIconWire = footer && wireFor(footer, 'icon');
 
   const hasEmbedContent = Boolean(
     title || description || fields.length || author?.name || footer?.text || timestampLabel ||
-    safePreviewUrl(image) || safePreviewUrl(thumbnail) || attachedImage || attachedThumbnail
+    safePreviewUrl(image) || safePreviewUrl(thumbnail) || attachedImage || attachedThumbnail || Object.keys(wiredFields || {}).length > 0
   );
 
   const focusEditorBlock = (blockType) => {
@@ -334,7 +369,6 @@ export function EmbedStudioView({
         </button>
 
         <div className="embed-studio-title">
-          <Sparkles size={16} className="embed-studio-sparkle" />
           <span>{componentsOnly ? 'Message Components' : 'Embed Studio'}</span>
           {!componentsOnly && (
             <>
@@ -420,13 +454,19 @@ export function EmbedStudioView({
           {activeTab === 'components' && isComponentsWired && (
             <div className="embed-wired-notice">
               <Layers size={14} />
-              <span>Message components are supplied by a connected wire. Edit the source component node on the canvas.</span>
+              <span>Supplied by {componentsSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
+            </div>
+          )}
+          {activeTab === 'components' && isContentWired && (
+            <div className="embed-wired-notice">
+              <Layers size={14} />
+              <span>Message content comes from {contentSourceLabel || 'a connected node'}; edit that source node on the canvas.</span>
             </div>
           )}
           {activeTab === 'embed' && isEmbedWired && (
             <div className="embed-wired-notice">
               <Layers size={14} />
-              <span>Embed content is supplied by a connected wire. Edit the source embed node on the canvas.</span>
+              <span>Supplied by {embedSourceLabel || 'a connected node'}. Edit that source node on the canvas.</span>
             </div>
           )}
 
@@ -435,6 +475,7 @@ export function EmbedStudioView({
               <EmbedNodeBuilder
                 mode="studio"
                 data={{ blocks: items }}
+                wiredFields={wiredFields}
                 appEmojis={appEmojis}
                 graphVariables={graphVariables}
                 onChange={onBlocksChange}
@@ -534,16 +575,17 @@ export function EmbedStudioView({
                     className="embed-preview-card"
                     style={{ '--embed-preview-accent': color || 'transparent' }}
                   >
+                    {colorWire && <div className="embed-preview-wire-note">Accent color: <code>{colorWire.token}</code></div>}
                     <div className="embed-preview-content">
                       <div className="embed-preview-main">
                         {/* Author */}
-                        {author?.name && (
+                        {(author?.name || authorUrlWire || authorIconWire) && (
                           <div
                             className="embed-preview-author is-interactive"
                             onClick={() => focusEditorBlock('author')}
                             title="Click to edit author"
                           >
-                            {safePreviewUrl(author.icon) && (
+                            {!authorIconWire && safePreviewUrl(author.icon) && (
                               <img src={author.icon} alt="" className="embed-preview-author-icon" />
                             )}
                             {authorLink ? (
@@ -553,6 +595,8 @@ export function EmbedStudioView({
                             ) : (
                               <span>{renderDiscordFormattedText(author.name)}</span>
                             )}
+                            {authorIconWire && <code className="embed-preview-wire-label">{authorIconWire.token}</code>}
+                            {authorUrlWire && <code className="embed-preview-wire-label">{authorUrlWire.token}</code>}
                           </div>
                         )}
 
@@ -571,6 +615,7 @@ export function EmbedStudioView({
                             )}
                           </div>
                         )}
+                        {titleUrlWire && <code className="embed-preview-wire-label is-block">Title URL: {titleUrlWire.token}</code>}
 
                         {description && (
                           <div
@@ -599,7 +644,7 @@ export function EmbedStudioView({
                         )}
                       </div>
 
-                      {safePreviewUrl(thumbnail) ? (failedThumbnailUrl === safePreviewUrl(thumbnail) ? (
+                      {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : safePreviewUrl(thumbnail) ? (failedThumbnailUrl === safePreviewUrl(thumbnail) ? (
                         <div className="embed-preview-image-error" onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setThumbnailContextMenu({ x: event.clientX, y: event.clientY, url: safePreviewUrl(thumbnail) }); }}>
                           <span>Image could not be loaded</span>
                           <a href={safePreviewUrl(thumbnail)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open image <ExternalLink size={11} /></a>
@@ -626,7 +671,7 @@ export function EmbedStudioView({
                       ) : null}
                     </div>
 
-                    {safePreviewUrl(image) && failedImageUrl !== safePreviewUrl(image) ? (
+                    {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : safePreviewUrl(image) && failedImageUrl !== safePreviewUrl(image) ? (
                       <img
                         className="embed-preview-image is-interactive"
                         src={safePreviewUrl(image)}
@@ -650,21 +695,22 @@ export function EmbedStudioView({
                       </div>
                     ) : null}
 
-                    {(footer?.text || timestampLabel) && (
+                    {(footer?.text || footerIconWire || timestampLabel) && (
                       <div
                         className="embed-preview-footer is-interactive"
                         onClick={() => focusEditorBlock('footer')}
                         title="Click to edit footer"
                       >
-                        {safePreviewUrl(footer?.icon) && (
+                        {!footerIconWire && safePreviewUrl(footer?.icon) && (
                           <img src={footer.icon} alt="" className="embed-preview-footer-icon" />
                         )}
+                        {footerIconWire && <code className="embed-preview-wire-label">{footerIconWire.token}</code>}
                         {footer?.text && <span>{renderDiscordFormattedText(footer.text)}</span>}
                         {footer?.text && timestampLabel && (
                           <span className="embed-preview-footer-dot">•</span>
                         )}
                         {timestampLabel && (
-                          <time dateTime={new Date(timestamp).toISOString()}>{timestampLabel}</time>
+                          <time dateTime={timestamp && !Number.isNaN(new Date(timestamp).getTime()) ? new Date(timestamp).toISOString() : undefined}>{timestampLabel}</time>
                         )}
                       </div>
                     )}
@@ -798,6 +844,7 @@ export function EmbedStudioView({
         </aside>
       </div>
     </section>
+    <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard studio changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph stays unchanged until you choose Apply.</p></Modal>
     {thumbnailContextMenu && createPortal(
       <div className="canvas-context-menu embed-thumbnail-context-menu" role="menu" style={{ position: 'fixed', left: thumbnailContextMenu.x, top: thumbnailContextMenu.y, zIndex: 10000 }} onPointerDown={(event) => event.stopPropagation()}>
         <button role="menuitem" onClick={() => { window.open(thumbnailContextMenu.url, '_blank', 'noopener,noreferrer'); setThumbnailContextMenu(null); }}><ExternalLink size={14} /> Open image in browser</button>
