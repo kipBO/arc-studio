@@ -1323,6 +1323,14 @@ body.is-resizing-sidebar .permission-studio { transition: none !important; }
 .plugin-permission-review > strong { color: var(--text); font-size: 10px; }
 .plugin-permission-review > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .plugin-permission-review .arc-toggle, .plugin-permission-review label { margin: 0; }
+.plugin-dependency-review { margin: 12px 0; padding: 10px; border: 1px solid var(--line-soft); border-radius: 7px; background: var(--panel); }
+.plugin-dependency-review > strong { color: var(--text); font-size: 10px; }
+.plugin-dependency-review > p { margin: 4px 0 8px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.plugin-dependency-review ul { display: flex; max-height: 104px; flex-direction: column; gap: 4px; margin: 0; padding: 0 5px 0 0; overflow: auto; list-style: none; }
+.plugin-dependency-review li { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 9px; }
+.plugin-dependency-review li code { min-width: 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; }
+.plugin-dependency-review li span { flex: 0 0 auto; color: var(--muted); font: inherit; }
+.plugin-dependency-review > small { display: block; margin-top: 7px; color: var(--faint); font-size: 8px; }
 .plugin-confirm-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 12px; }
 .plugin-confirm-actions .studio-button { min-width: 100px; }
 @media (max-width: 560px) {
