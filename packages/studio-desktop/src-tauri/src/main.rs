@@ -14,8 +14,10 @@ use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use tauri::{Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_updater::UpdaterExt;
 
-const STABLE_UPDATE_ENDPOINT: &str = "https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json";
-const NIGHTLY_UPDATE_ENDPOINT: &str = "https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json";
+const UPDATE_REPOSITORY: &str = match option_env!("ARC_UPDATE_REPOSITORY") {
+    Some(repository) => repository,
+    None => "relentiousdragon/arc-studio",
+};
 
 fn build_release_channel() -> &'static str {
     option_env!("ARC_RELEASE_CHANNEL")
@@ -34,8 +36,8 @@ fn updater_endpoint(channel: &str) -> Result<url::Url, String> {
         return Err(format!("This ARC Studio build is locked to the {} update channel.", build_release_channel()));
     }
     let endpoint = match channel {
-        "stable" => STABLE_UPDATE_ENDPOINT,
-        "nightly" => NIGHTLY_UPDATE_ENDPOINT,
+        "stable" => format!("https://github.com/{UPDATE_REPOSITORY}/releases/latest/download/latest.json"),
+        "nightly" => format!("https://github.com/{UPDATE_REPOSITORY}/releases/download/nightly/latest.json"),
         _ => return Err("Choose the stable or nightly update channel.".to_string()),
     };
     endpoint.parse().map_err(|error| format!("Invalid updater endpoint: {error}"))
