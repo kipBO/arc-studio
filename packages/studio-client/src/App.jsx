@@ -1010,6 +1010,28 @@ export function App() {
             graphsHydratedRef.current = false;
             return;
           }
+          if (msg.type === 'USER_PERMISSIONS_UPDATED') {
+            const updatedUser = msg.payload?.user;
+            if (updatedUser?.id) setCurrentUser((current) => current?.id === updatedUser.id ? { ...current, ...updatedUser } : current);
+            return;
+          }
+          if (msg.type === 'SESSION_REVOKED') {
+            arcEvents.emit('toast:notify', { id: 'arc-session-revoked', title: 'Signed out', message: 'A workspace administrator ended this session.', type: 'warning', duration: 5000 });
+            safeStorageRemove('arc_token');
+            if (desktopMode && workspaceMode === 'local') {
+              safeStorageRemove('arc_local_session_token');
+              localSessionRef.current = null;
+            }
+            setAuthToken('');
+            setCurrentUser(null);
+            setTabs([]);
+            setActiveTabId(null);
+            setActiveNodes([]);
+            setActiveConnections([]);
+            setNeedsProjectOnboarding(false);
+            graphsHydratedRef.current = false;
+            return;
+          }
           if (msg.type === 'SESSION_IDLE_EXPIRED') {
             arcEvents.emit('toast:notify', { id: 'arc-session-idle', title: 'Signed out', message: 'You were signed out after being idle.', type: 'info', duration: 5000 });
             safeStorageRemove('arc_token');
