@@ -833,7 +833,9 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         permissions,
         expectedVersion: String(req.body?.expectedVersion || ''),
         expectedSha256: String(req.body?.expectedSha256 || ''),
-        expectedRepositoryUrl: String(req.body?.expectedRepositoryUrl || '')
+        expectedRepositoryUrl: String(req.body?.expectedRepositoryUrl || ''),
+        hostCodeConfirmed: req.body?.hostCodeConfirmed === true,
+        ownerApprovedHostCode: manager.project.ownerId === req.user.id || req.user.permissions?.includes('*') === true
       });
       recordTeamActivity(req, 'plugin.installed', `Installed plugin pack “${plugin.name || plugin.id}”`, { pluginId: plugin.id, pluginName: plugin.name || '' });
       res.json({ success: true, plugin: { ...plugin, grantedPermissions: PluginStore.projectPermissions(manager.projectDir, plugin.id), installedBy: installerForResponse(plugin) }, installed: installedPluginsForResponse(manager) });
