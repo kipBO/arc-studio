@@ -31,13 +31,10 @@ const dependencies = { ...serverPackage.dependencies, ...serverPackage.optionalD
 fs.rmSync(runtimeRoot, { recursive: true, force: true });
 fs.mkdirSync(path.join(appRoot, 'packages/studio-server'), { recursive: true });
 fs.mkdirSync(path.join(appRoot, 'packages/chezcord'), { recursive: true });
-fs.mkdirSync(path.join(appRoot, 'arc-plugins/adapters/mongodb'), { recursive: true });
 fs.cpSync(path.join(repoRoot, 'packages/studio-server/src'), path.join(appRoot, 'packages/studio-server/src'), { recursive: true });
 fs.cpSync(path.join(repoRoot, 'packages/chezcord/src'), path.join(appRoot, 'packages/chezcord/src'), { recursive: true });
 fs.copyFileSync(path.join(repoRoot, 'packages/chezcord/package.json'), path.join(appRoot, 'packages/chezcord/package.json'));
 fs.copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(appRoot, 'LICENSE'));
-fs.copyFileSync(path.join(repoRoot, 'arc-plugins/LICENSE'), path.join(appRoot, 'arc-plugins/LICENSE'));
-fs.cpSync(path.join(repoRoot, 'arc-plugins/adapters/mongodb'), path.join(appRoot, 'arc-plugins/adapters/mongodb'), { recursive: true });
 fs.writeFileSync(path.join(appRoot, 'packages/studio-server/package.json'), JSON.stringify({
   name: serverPackage.name,
   version: serverPackage.version,
@@ -87,6 +84,9 @@ try {
     extractedNodes.push(path.join(extractedRoot, targetConfig.binary));
     if (archivePlatform === archivePlatforms[0]) {
       fs.copyFileSync(path.join(extractedRoot, 'LICENSE'), path.join(runtimeRoot, 'Node-LICENSE.txt'));
+      const npmSource = [path.join(extractedRoot, 'lib/node_modules/npm'), path.join(extractedRoot, 'node_modules/npm')].find((candidate) => fs.existsSync(path.join(candidate, 'bin/npm-cli.js')));
+      if (!npmSource) throw new Error(`Node.js ${nodeVersion} archive does not include its npm CLI.`);
+      fs.cpSync(npmSource, path.join(runtimeRoot, 'npm/node_modules/npm'), { recursive: true });
     }
   }
   if (targetConfig.universal) {
