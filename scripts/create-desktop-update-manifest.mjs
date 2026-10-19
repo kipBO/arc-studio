@@ -16,8 +16,8 @@ const channel = rootPackage.version.includes('-') ? 'nightly' : 'stable';
 const expectedChannel = releaseTag.includes('-') ? 'nightly' : 'stable';
 if (channel !== expectedChannel) throw new Error(`Release tag channel (${expectedChannel}) does not match root version channel (${channel}).`);
 const expectedUpdaterEndpoint = channel === 'nightly'
-  ? 'https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json'
-  : 'https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json';
+  ? `https://github.com/${repository}/releases/download/nightly/latest.json`
+  : `https://github.com/${repository}/releases/latest/download/latest.json`;
 if (tauriConfig.plugins?.updater?.requireSignedVersion !== true || !tauriConfig.plugins?.updater?.pubkey) {
   throw new Error('Tauri updater signing must remain enabled with a configured public key.');
 }
