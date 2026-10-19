@@ -525,6 +525,7 @@ function groupGraphs(graphs) {
     else if (eventTypes.some((type) => type.startsWith('event_guild_ban_') || type === 'event_automod_action')) group = 'Moderation Events';
     else if (eventTypes.some((type) => type.startsWith('event_invite_'))) group = 'Invites';
     else if (eventTypes.includes('event_cron')) group = 'Cron Jobs';
+    else if (eventTypes.includes('event_bot_ready')) group = 'Bot Events';
     else if (eventTypes.some((type) => type.startsWith('event_scheduled_event_'))) group = 'Scheduled Events';
     groups.get(group).push(graph);
   }
