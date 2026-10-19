@@ -163,7 +163,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       || !password || !userStore.verifyPassword(password, owner)) {
       return res.status(401).json({ error: 'The local owner password is incorrect.' });
     }
-    resetPasswordAttempts.delete(attemptKey);
+    resetPasswordAttempts.delete(req.ip || 'local');
     res.json({ success: true });
   });
 
@@ -261,7 +261,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.get('/projects/templates', requirePermission('graphs:read'), (_req, res) => {
-    res.json({ templates: StarterProjects.map(({ id, name, description }) => ({ id, name, description })) });
+    res.json({ templates: StarterProjects.map(({ id, name, description, icon, highlights, setup }) => ({ id, name, description, icon, highlights, setup })) });
   });
 
   router.get('/projects/:projectId/export', requirePermission('graphs:read'), (req, res) => {
@@ -274,11 +274,16 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.post('/projects/import', requirePermission('graphs:write'), (req, res) => {
     try {
-      const project = botManager.projectStore.importProject(req.body?.bundle, { trusted: req.body?.trusted === true, ownerId: req.user.id });
+      const project = botManager.projectStore.importProject(req.body?.bundle, { trusted: req.body?.trusted === true, allowOldVersion: req.body?.allowOldVersion === true, ownerId: req.user.id });
       recordTeamActivity(req, 'project.imported', `Imported project “${project.name}”`, { projectId: project.id });
       broadcastWorkspace({ type: 'PROJECTS_UPDATED', payload: botManager.projectStore.list() });
       res.json({ success: true, project, ...botManager.getProjects() });
-    } catch (error) { res.status(400).json({ error: error.message }); }
+    } catch (error) {
+      if (error.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' || error.code === 'PROJECT_REQUIRES_NEWER_ARC') {
+        return res.status(409).json({ error: error.message, code: error.code, projectVersion: error.projectVersion || null, currentVersion: error.currentVersion || null, unknownProjectVersion: error.unknownProjectVersion === true });
+      }
+      res.status(400).json({ error: error.message });
+    }
   });
 
   router.patch('/projects/settings', requirePermission('*'), (req, res) => {
