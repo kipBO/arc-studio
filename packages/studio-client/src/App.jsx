@@ -4105,7 +4105,7 @@ export function App() {
           {projectError && <p className="field-error" role="alert">{projectError}</p>}
         </div>
       </Modal>
-      {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} />}
+      {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} />}
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
