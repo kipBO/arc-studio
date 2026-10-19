@@ -5,6 +5,8 @@ import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 const NODE_SEARCH_ALIASES = {
   event_message_create: ['message', 'message received', 'message trigger', 'chat message'],
   event_slash_command: ['slash', 'command', 'interaction command', 'slash command'],
+  event_slash_autocomplete: ['slash', 'command', 'autocomplete', 'suggestions', 'choices'],
+  action_respond_autocomplete: ['autocomplete', 'suggestions', 'choices', 'respond', 'dynamic options'],
   event_button: ['button click', 'component interaction'],
   action_send_message: ['send', 'reply', 'create message', 'send reply'],
   action_edit_message: ['edit message', 'update message'],
@@ -66,7 +68,7 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
     const candidates = commandKind ? all.filter((item) => item.kind === commandKind) : all;
     if (!needle) {
       if (commandKind) return candidates.slice(0, 80);
-      const suggestedNodes = nodeItems.filter((node) => ['event_message_create', 'event_slash_command', 'action_send_message', 'branch_if', 'delay'].includes(node.icon?.type)).slice(0, 5);
+      const suggestedNodes = nodeItems.filter((node) => ['event_message_create', 'event_slash_command', 'event_slash_autocomplete', 'action_send_message', 'branch_if', 'delay'].includes(node.icon?.type)).slice(0, 5);
       const graphNodes = instanceItems.slice(0, 5);
       return [...suggestedNodes, ...graphNodes];
     }
