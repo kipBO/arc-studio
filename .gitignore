@@ -1,0 +1,47 @@
+node_modules/
+
+# Compiled frontend, desktop, and Rust outputs
+dist/
+build/
+coverage/
+**/target/
+packages/studio-desktop/src-tauri/resources/runtime/
+*.tsbuildinfo
+*.dSYM/
+
+# Desktop release bundles
+*.app/
+*.dmg
+*.msi
+*.exe
+*.AppImage
+*.deb
+*.rpm
+
+# Mobile icon sets
+packages/studio-desktop/src-tauri/icons/android/
+packages/studio-desktop/src-tauri/icons/ios/
+
+# Tauri editor schemas
+packages/studio-desktop/src-tauri/gen/schemas/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data, credentials, and logs
+logs/
+**/logs/
+packages/studio-server/data/*
+!packages/studio-server/data/.gitkeep
+*.log
+*.tmp
+
+# Tool caches and operating-system/editor files
+.vite/
+.cache/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
