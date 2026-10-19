@@ -14,6 +14,7 @@ const getLocalUsername = () => {
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
+  releaseChannel = '',
   needsSetup = false,
   needsProjectOnboarding = false,
   theme = 'dark',
@@ -36,7 +37,12 @@ export function SplashScreen({
 }) {
   const desktopMode = Boolean(desktopConfig.desktop);
   const buildInfo = (() => {
-    const channel = /(?:^|[.-])nightly(?:[.-]|$)/i.test(studioVersion) ? 'nightly' : 'stable';
+    const configuredChannel = releaseChannel === 'stable' || releaseChannel === 'nightly'
+      ? releaseChannel
+      : desktopConfig.releaseChannel === 'stable' || desktopConfig.releaseChannel === 'nightly'
+        ? desktopConfig.releaseChannel
+        : null;
+    const channel = configuredChannel || (/-[0-9A-Za-z]/i.test(studioVersion) ? 'nightly' : 'stable');
     if (!desktopMode) return `${channel}-server`;
     const target = String(desktopConfig.target || '');
     const platform = target.includes('apple-darwin') || desktopConfig.platform === 'macos'
@@ -549,11 +555,12 @@ export function SplashScreen({
               <div ref={(element) => { fieldRefs.current.password = element; }} className={`auth-input-wrap ${fieldErrors.password ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="password" type={showPassword ? 'text' : 'password'} autoComplete={needsSetup ? 'new-password' : 'current-password'} autoCapitalize="none" autoCorrect="off" spellCheck="false" value={password} onChange={updateField('password', setPassword)} placeholder="Password" aria-invalid={Boolean(fieldErrors.password)} /><button className="auth-reveal" type="button" onClick={() => setShowPassword((show) => !show)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>
               {fieldErrors.password && <p className="auth-field-error" role="alert">{fieldErrors.password}</p>}
               {desktopMode && workspaceMode === 'remote' && <label className="remember-password"><input type="checkbox" checked={rememberPassword} onChange={(event) => { const checked = event.target.checked; setRememberPassword(checked); try { if (rememberStorageKey) localStorage.setItem(rememberStorageKey, String(checked)); } catch {} if (!checked && credentialOrigin) window.__TAURI_INTERNALS__?.invoke?.('delete_workspace_password', { origin: credentialOrigin }).catch(() => {}); }} /><span>Remember password on this device</span></label>}
-              {desktopMode && workspaceMode === 'local' && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); } catch {} }} /><span>Keep me signed in</span></label>}
+              {desktopMode && workspaceMode === 'local' && !needsSetup && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
               {recoveryMessage && <p className="auth-field-hint" role="status">{recoveryMessage}</p>}
               {!needsSetup && desktopMode && workspaceMode === 'local' && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('local'); setError(''); setRecoveryMessage(''); }}>Forgot password?</button>}
               {!needsSetup && canResetPrimaryAdminWithMasterKey && <button className="auth-back" type="button" onClick={() => { setRecoveryMode('master'); setError(''); setRecoveryMessage(''); }}>Reset owner password with master key</button>}
               {needsSetup && <><label className="field-label" htmlFor="confirm-password">Confirm password</label><div ref={(element) => { fieldRefs.current.confirmPassword = element; }} className={`auth-input-wrap ${fieldErrors.confirmPassword ? 'has-error' : ''}`}><LockKeyhole size={16} /><input id="confirm-password" type={showConfirmPassword ? 'text' : 'password'} autoComplete="new-password" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={confirmPassword} onChange={updateField('confirmPassword', setConfirmPassword)} placeholder="Confirm password" aria-invalid={Boolean(fieldErrors.confirmPassword)} /><button className="auth-reveal" type="button" onClick={() => setShowConfirmPassword((show) => !show)} aria-label={showConfirmPassword ? 'Hide confirm password' : 'Show confirm password'}>{showConfirmPassword ? <EyeOff size={15} /> : <Eye size={15} />}</button></div>{fieldErrors.confirmPassword && <p className="auth-field-error" role="alert">{fieldErrors.confirmPassword}</p>}</>}
+              {needsSetup && desktopMode && workspaceMode === 'local' && <label className="remember-password"><input type="checkbox" checked={keepLocalSignedIn} onChange={(event) => { const checked = event.target.checked; setKeepLocalSignedIn(checked); try { localStorage.setItem('arc_local_keep_signed_in', String(checked)); if (!checked) localStorage.removeItem('arc_local_session_token'); } catch {} if (!checked) window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }} /><span>Keep me signed in</span></label>}
               {error && <p className="form-error" role="alert">{error}</p>}
               {workspaceError && <p className="form-error" role="alert">{workspaceError}</p>}
               {workspaceError && !startupError && <button className="auth-retry" type="button" onClick={onRetryWorkspace}>Retry connection</button>}
