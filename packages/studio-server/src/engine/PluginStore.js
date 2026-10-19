@@ -762,12 +762,19 @@ export class PluginStore {
 
   static exportAdapters(graphs = []) {
     const usedTypes = new Set((graphs || []).flatMap((graph) => (graph.nodes || []).map((node) => node?.type).filter((type) => typeof type === 'string')));
+    registerInstalledAdapters();
     const installed = readInstalled();
     const adapters = [];
     for (const plugin of Object.values(installed)) {
       const pluginTypes = new Set((plugin.nodes || []).map((node) => node.type));
       const usedPluginTypes = [...pluginTypes].filter((type) => usedTypes.has(type));
       if (!usedPluginTypes.length) continue;
+      if (plugin.kind === 'wasm-adapter') {
+        const directory = adapterDirectory(plugin.id, plugin.version);
+        const manifest = validateAdapterManifest(JSON.parse(fs.readFileSync(path.join(directory, 'arc-plugin.json'), 'utf8')));
+        adapters.push({ kind: 'wasm-adapter', manifest, directory, nodeTypes: usedPluginTypes });
+        continue;
+      }
       if (plugin.kind !== 'host-adapter') throw new Error(`The bot export does not yet include executable files for ${plugin.name || plugin.id}.`);
       const definition = LOCAL_HOST_ADAPTERS.get(plugin.id);
       if (!definition) throw new Error(`${plugin.name || plugin.id} is not available from a local adapter checkout.`);
