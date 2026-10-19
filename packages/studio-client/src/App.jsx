@@ -3949,14 +3949,15 @@ export function App() {
       const target = event.target;
       const command = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      if (command && !event.shiftKey && !event.altKey && key === 'w') {
+      const shortcuts = { ...DEFAULT_SHORTCUTS, ...(desktopMode ? settings.shortcuts || {} : {}) };
+      if (shortcutMatches(event, shortcuts.closeTab)) {
         event.preventDefault();
         event.stopPropagation();
         const dialogIsOpen = Boolean(closeGraphDialog) || (target instanceof HTMLElement && target.closest('[role="dialog"]'));
         if (!dialogIsOpen && activeTabId) handleCloseTab(activeTabId);
         return;
       }
-      if (event.key === 'F5') {
+      if (shortcutMatches(event, shortcuts.connectGateway)) {
         event.preventDefault();
         event.stopPropagation();
         if (!(target instanceof HTMLElement && target.closest('[role="dialog"]'))) {
@@ -3968,12 +3969,18 @@ export function App() {
         return;
       }
       if (target instanceof HTMLElement && target.closest('[role="dialog"]')) return;
-      if (event.ctrlKey && !event.metaKey && !event.altKey && key === 'tab' && tabs.length > 1) {
+      if (shortcutMatches(event, shortcuts.switchTabNext) && tabs.length > 1) {
         event.preventDefault();
         event.stopPropagation();
         const currentIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTabId));
-        const direction = event.shiftKey ? -1 : 1;
-        setActiveTabId(tabs[(currentIndex + direction + tabs.length) % tabs.length].id);
+        setActiveTabId(tabs[(currentIndex + 1) % tabs.length].id);
+        return;
+      }
+      if (shortcutMatches(event, shortcuts.switchTabPrevious) && tabs.length > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTabId));
+        setActiveTabId(tabs[(currentIndex - 1 + tabs.length) % tabs.length].id);
         return;
       }
       const isTextEditingTarget = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
@@ -3986,18 +3993,15 @@ export function App() {
         else window.location.reload();
         return;
       }
-      const newGraphModifier = shortcutPlatform === 'macos'
-        ? event.metaKey && !event.ctrlKey
-        : event.ctrlKey && !event.metaKey;
-      if (newGraphModifier && !event.altKey && key === 't') {
+      if (shortcutMatches(event, shortcuts.newGraph) || shortcutMatches(event, shortcuts.newBlankGraph)) {
         event.preventDefault();
         event.stopPropagation();
-        if (event.shiftKey) handleAddBlankGraph();
+        if (shortcutMatches(event, shortcuts.newBlankGraph)) handleAddBlankGraph();
         else handleAddTab();
         return;
       }
       const renameShortcut = !isTextEditingTarget && !isLocked && selectedCanvasNodeCount === 1 && selectedCanvasNodeId
-        && ((command && !event.shiftKey && !event.altKey && key === 'r') || event.key === 'F11');
+        && shortcutMatches(event, shortcuts.renameNode);
       if (renameShortcut) {
         const selectedNode = activeNodes.find((node) => node.id === selectedCanvasNodeId);
         if (selectedNode) {
@@ -4007,7 +4011,7 @@ export function App() {
           return;
         }
       }
-      if (command && event.shiftKey && !event.altKey && key === 'r') {
+      if (shortcutMatches(event, shortcuts.reloadStudio)) {
         event.preventDefault();
         event.stopPropagation();
         const hasUnsavedGraphs = tabs.some((graph) => graph.isDirty || !savedGraphs.some((saved) => saved.id === graph.id));
@@ -4016,13 +4020,12 @@ export function App() {
         else window.location.reload();
         return;
       }
-      if (command && event.shiftKey && !event.altKey && key === 'j') {
+      if (shortcutMatches(event, shortcuts.toggleConsole)) {
         event.preventDefault();
         event.stopPropagation();
         setConsoleOpenRequest((request) => request + 1);
         return;
       }
-      const shortcuts = { ...DEFAULT_SHORTCUTS, ...(desktopMode ? settings.shortcuts || {} : {}) };
       if (shortcutMatches(event, shortcuts.openSearch)) {
         event.preventDefault();
         setIsPaletteOpen(false);
@@ -4615,18 +4618,19 @@ export function App() {
       <Modal isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} title="Keyboard shortcuts" subtitle="ARC Studio editor" icon={CircleHelp}>
         <div className="keyboard-shortcut-list">
           {[
-            ['New graph', formatShortcut('mod+t', shortcutPlatform)],
-            ['New blank graph', formatShortcut('mod+shift+t', shortcutPlatform)],
-            ['Switch graph tab', 'Ctrl + Tab / Ctrl + Shift + Tab'],
+            ['New graph', formatShortcut((desktopMode ? settings.shortcuts?.newGraph : null) || DEFAULT_SHORTCUTS.newGraph, shortcutPlatform)],
+            ['New blank graph', formatShortcut((desktopMode ? settings.shortcuts?.newBlankGraph : null) || DEFAULT_SHORTCUTS.newBlankGraph, shortcutPlatform)],
+            ['Next / previous graph tab', `${formatShortcut((desktopMode ? settings.shortcuts?.switchTabNext : null) || DEFAULT_SHORTCUTS.switchTabNext, shortcutPlatform)} / ${formatShortcut((desktopMode ? settings.shortcuts?.switchTabPrevious : null) || DEFAULT_SHORTCUTS.switchTabPrevious, shortcutPlatform)}`],
+            ['Close active graph tab', formatShortcut((desktopMode ? settings.shortcuts?.closeTab : null) || DEFAULT_SHORTCUTS.closeTab, shortcutPlatform)],
             ['Add node', formatShortcut((desktopMode ? settings.shortcuts?.addNode : null) || DEFAULT_SHORTCUTS.addNode, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Arrange nodes', formatShortcut((desktopMode ? settings.shortcuts?.arrangeNodes : null) || DEFAULT_SHORTCUTS.arrangeNodes, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Toggle Library', formatShortcut((desktopMode ? settings.shortcuts?.toggleLibrary : null) || DEFAULT_SHORTCUTS.toggleLibrary, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open node search', formatShortcut((desktopMode ? settings.shortcuts?.openSearch : null) || DEFAULT_SHORTCUTS.openSearch, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open emoji picker in a text field', formatShortcut((desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Toggle server console', `${shortcutModifier} + Shift + J`],
-            ['Connect / disconnect gateway', 'F5'],
-            ['Reload ARC Studio', `${shortcutModifier} + Shift + R`],
-            ['Close active graph tab', formatShortcut('mod+w', shortcutPlatform)],
+            ['Toggle server console', formatShortcut((desktopMode ? settings.shortcuts?.toggleConsole : null) || DEFAULT_SHORTCUTS.toggleConsole, shortcutPlatform)],
+            ['Connect / disconnect gateway', formatShortcut((desktopMode ? settings.shortcuts?.connectGateway : null) || DEFAULT_SHORTCUTS.connectGateway, shortcutPlatform)],
+            ['Rename selected node', formatShortcut((desktopMode ? settings.shortcuts?.renameNode : null) || DEFAULT_SHORTCUTS.renameNode, shortcutPlatform)],
+            ['Reload ARC Studio', formatShortcut((desktopMode ? settings.shortcuts?.reloadStudio : null) || DEFAULT_SHORTCUTS.reloadStudio, shortcutPlatform)],
             ['Save graph', formatShortcut((desktopMode ? settings.shortcuts?.saveGraph : null) || DEFAULT_SHORTCUTS.saveGraph, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Undo', formatShortcut((desktopMode ? settings.shortcuts?.undo : null) || DEFAULT_SHORTCUTS.undo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Redo', formatShortcut((desktopMode ? settings.shortcuts?.redo : null) || DEFAULT_SHORTCUTS.redo, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
