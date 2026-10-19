@@ -16,7 +16,7 @@ function insertAtSelection(element, value, start, end, text) {
 
 const TEMPLATE_FILTERS = ['lower', 'upper', 'title', 'capitalize', 'trim', 'trimStart', 'trimEnd', 'replace("_", " ")', 'replaceFirst("old", "new")', 'join(", ")', 'slice(0, 3)', 'length', 'json', 'default("fallback")'];
 //
-export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], templateValuePaths = [], discordAutocomplete = false, templateAutocomplete = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
+export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'input', appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], discordAutocomplete = false, templateAutocomplete = false, onChange, value = '', className = '', onPointerDown, onKeyDown, ...props }, forwardedRef) {
   const inputRef = useRef(null);
   const pickerRef = useRef(null);
   const [match, setMatch] = useState(null);
@@ -35,8 +35,13 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         ? TEMPLATE_FILTERS.map((name) => ({ key: `filter:${name}`, label: name, insert: name }))
         : match.pathStage
           ? templateValuePaths.map((item) => typeof item === 'string' ? { path: item, label: item } : item).filter((item) => item?.path).map((item) => ({ key: `path:${item.path}`, label: item.label || item.path, insert: `${item.path}}}` }))
-          : graphVariables.map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean).map((name) => ({ key: `variable:${name}`, label: name, insert: `${name}}}` }));
-      return list.filter((item) => item.label.toLowerCase().includes(query)).slice(0, 8);
+          : [
+            ...graphVariables.map((item) => typeof item === 'string' ? item : item?.name).filter(Boolean).map((name) => ({ key: `variable:${name}`, label: name, insert: `${name}}}` })),
+            ...templateSuggestions.map((item) => typeof item === 'string' ? { name: item, label: item } : item)
+              .filter((item) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(item?.name || ''))
+              .map((item) => ({ key: `socket:${item.name}:${item.label}`, label: item.label || item.name, insert: `${item.name}}}` }))
+          ];
+      return list.filter((item) => item.label.toLowerCase().includes(query) || item.insert.slice(0, -2).toLowerCase().includes(query)).slice(0, 8);
     }
     const query = match.query.toLowerCase();
     const builtIn = emojiEntries
@@ -54,7 +59,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         image: `https://cdn.discordapp.com/emojis/${encodeURIComponent(item.id)}.${item.animated ? 'gif' : 'webp'}?size=48`
       }));
     return [...custom, ...builtIn].slice(0, 6);
-  }, [appEmojis, graphVariables, match, templateValuePaths]);
+  }, [appEmojis, graphVariables, match, templateSuggestions, templateValuePaths]);
 
 
   useEffect(() => {
