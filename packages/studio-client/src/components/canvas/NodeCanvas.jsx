@@ -508,12 +508,14 @@ export function NodeCanvas({
       });
     }
     if (node.type === 'format_text') {
+      const variableNames = new Set(graphVariables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
       const placeholders = getTextTemplateSlots(node.data?.template);
-      return withArgumentPins({ ...definition, inputs: placeholders.map((name) => {
+      return withArgumentPins({ ...definition, inputs: placeholders.flatMap((name) => {
         const argument = /^arg(\d+)$/i.exec(name);
         return argument
-          ? { id: `arg_${argument[1]}`, label: `arg${argument[1]}`, type: 'arg', defaultValue: '' }
-          : { id: `slot_${name}`, label: name, type: graphVariables.find((variable) => variable.name.toLowerCase() === name.toLowerCase())?.type || 'string', defaultValue: '' };
+          ? [{ id: `arg_${argument[1]}`, label: `arg${argument[1]}`, type: 'arg', defaultValue: '' }]
+          : variableNames.has(name.toLowerCase()) ? []
+            : [{ id: `slot_${name}`, label: name, type: 'string', defaultValue: '' }];
       }) });
     }
     if (node.type === 'function_input') {
