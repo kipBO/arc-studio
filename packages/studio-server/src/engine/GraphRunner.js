@@ -278,6 +278,29 @@ function parseTemplateLiteral(source) {
   return undefined;
 }
 
+function resolveTemplatePath(source, resolveSlot) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(.*)$/.exec(source.trim());
+  if (!match) return { found: false, value: undefined };
+  let value = resolveSlot?.(match[1], `{{${match[1]}}}`);
+  if (value === undefined) return { found: false, value };
+  const path = match[2].replace(/\.\s*\[(\d+)\]/g, '[$1]');
+  const tokens = [];
+  const tokenPattern = /\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\d+))\]/g;
+  let cursor = 0;
+  for (const part of path.matchAll(tokenPattern)) {
+    if (part.index !== cursor) return { found: false, value: undefined };
+    tokens.push(part[1] ?? part[2] ?? part[3] ?? Number(part[4]));
+    cursor += part[0].length;
+  }
+  if (cursor !== path.length) return { found: false, value: undefined };
+  for (const key of tokens) {
+    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string')) return { found: false, value: undefined };
+    if (!Object.prototype.hasOwnProperty.call(Object(value), key)) return { found: false, value: undefined };
+    value = value[key];
+  }
+  return { found: true, value };
+}
+
 function evaluateTemplateExpression(source, resolveSlot) {
   const expression = source.trim();
   const question = findTemplateOperator(expression, ['?']);
@@ -294,8 +317,7 @@ function evaluateTemplateExpression(source, resolveSlot) {
       const resolveValue = (item) => {
         const literal = parseTemplateLiteral(item);
         if (literal !== undefined || item === 'undefined') return literal;
-        if (/^[A-Za-z_][A-Za-z0-9_]*$|^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(item)) return resolveSlot?.(item, `{{${item}}}`);
-        return undefined;
+        return resolveTemplatePath(item, resolveSlot).value;
       };
       const left = resolveValue(leftSource); const right = resolveValue(rightSource);
       switch (comparison.operator) {
@@ -312,7 +334,7 @@ function evaluateTemplateExpression(source, resolveSlot) {
       const valueSource = negate ? condition.slice(1).trim() : condition;
       const literal = parseTemplateLiteral(valueSource);
       const value = literal !== undefined || valueSource === 'undefined' ? literal
-        : /^[A-Za-z_][A-Za-z0-9_]*$|^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(valueSource) ? resolveSlot?.(valueSource, `{{${valueSource}}}`) : undefined;
+        : resolveTemplatePath(valueSource, resolveSlot).value;
       truth = Boolean(value);
       if (negate) truth = !truth;
     }
@@ -321,11 +343,7 @@ function evaluateTemplateExpression(source, resolveSlot) {
   }
   const literal = parseTemplateLiteral(expression);
   if (literal !== undefined || expression === 'undefined') return { found: true, value: literal };
-  if (/^[A-Za-z_][A-Za-z0-9_]*$|^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(expression)) {
-    const value = resolveSlot?.(expression, `{{${expression}}}`);
-    return { found: value !== undefined, value };
-  }
-  return { found: false, value: undefined };
+  return resolveTemplatePath(expression, resolveSlot);
 }
 
 function parseTemplateArgument(source) {
@@ -377,7 +395,7 @@ function renderTextTemplate(template, resolveSlot, appEmojis = []) {
     if (escaped) return `\\${token}`;
     const parts = splitTemplatePipeline(expression);
     const base = parts[0];
-    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)$/.exec(base)?.[1];
+    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(base)?.[1];
     if (name?.toLowerCase().startsWith('e_')) {
       const emojiName = name.slice(2).toLowerCase();
       const emoji = appEmojis instanceof Map ? appEmojis.get(emojiName) : appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName);
@@ -1168,6 +1186,24 @@ export class GraphRunner {
       flattenOptions(eventPayload.data?.options || []);
       dataCache.set(`${startNode.id}:options`, commandOptions);
       for (const [name, value] of Object.entries(commandOptions)) dataCache.set(`${startNode.id}:option_${name}`, value);
+    } else if (eventNodeType === 'event_slash_autocomplete') {
+      const commandOptions = {};
+      let focused = null;
+      const flattenOptions = (options = []) => {
+        for (const option of options) {
+          if (option.focused) focused = option;
+          if (Array.isArray(option.options)) flattenOptions(option.options);
+          else if (option.name && !option.focused) commandOptions[option.name] = option.value ?? option.user ?? option.channel ?? option.role ?? option.attachment ?? null;
+        }
+      };
+      flattenOptions(eventPayload.data?.options || []);
+      dataCache.set(`${startNode.id}:command_name`, eventPayload.data?.name || '');
+      dataCache.set(`${startNode.id}:focused_option`, focused?.name || '');
+      dataCache.set(`${startNode.id}:query`, String(focused?.value ?? '').slice(0, 100));
+      dataCache.set(`${startNode.id}:options`, commandOptions);
+      dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || eventPayload.user?.id || '');
+      dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
+      dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
     } else if (eventNodeType === 'event_button_click') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || '');
@@ -1499,6 +1535,54 @@ export class GraphRunner {
           finally { interactionState.pending = null; }
           log('[Show Popup Modal] Modal opened.');
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_respond_autocomplete') {
+          if (Number(eventPayload?.type) !== 4) throw new Error('Respond to Autocomplete can only run for an autocomplete interaction.');
+          const interactionId = String(resolveDataInput(targetNode, 'interaction_id', eventPayload?.id || ''));
+          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', eventPayload?.token || ''));
+          const findFocusedOption = (options = []) => {
+            for (const option of options) {
+              if (option.focused) return option;
+              const nested = findFocusedOption(option.options || []);
+              if (nested) return nested;
+            }
+            return null;
+          };
+          const focused = findFocusedOption(eventPayload?.data?.options || []);
+          const slashCommandNode = nodes.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === String(eventPayload?.data?.name || '').toLowerCase());
+          const autocompleteOption = slashCommandNode?.data?.options?.find((option) => option.name === focused?.name);
+          if (!focused || !autocompleteOption?.autocomplete || !autocompleteOption.dynamicAutocomplete) throw new Error('This option is not configured for graph-generated autocomplete.');
+          const type = Number(focused?.type || 3);
+          const query = String(focused?.value ?? '').toLocaleLowerCase();
+          const rawChoices = resolveDataInput(targetNode, 'choices', targetNode.data?.choices || []);
+          const choices = (Array.isArray(rawChoices) ? rawChoices : []).slice(0, 500).flatMap((choice) => {
+            if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return [];
+            const name = String(choice.name ?? '').trim().slice(0, 100);
+            const rawValue = choice.value;
+            if (!name || rawValue === undefined || rawValue === null || !['string', 'number'].includes(typeof rawValue) || typeof rawValue === 'string' && !rawValue.trim()) return [];
+            let value;
+            if (type === 4) {
+              value = Number(rawValue);
+              if (!Number.isSafeInteger(value)) return [];
+            } else if (type === 10) {
+              value = Number(rawValue);
+              if (!Number.isFinite(value)) return [];
+            } else {
+              value = String(rawValue).slice(0, 100);
+              if (!value) return [];
+            }
+            if (query && !name.toLocaleLowerCase().includes(query) && !String(value).toLocaleLowerCase().includes(query)) return [];
+            return [{ name, value }];
+          }).slice(0, 25);
+          if (!interactionToken) throw new Error('Autocomplete response is missing the interaction token.');
+          if (interactionState.acknowledged) throw new Error('This autocomplete interaction has already been answered.');
+          interactionState.acknowledged = true;
+          interactionState.pending = context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 8, data: { choices } });
+          try { await interactionState.pending; }
+          catch (error) { interactionState.acknowledged = false; throw error; }
+          finally { interactionState.pending = null; }
+          dataCache.set(`${targetNode.id}:choice_count`, choices.length);
+          log(`[Autocomplete] Sent ${choices.length} suggestion${choices.length === 1 ? '' : 's'}.`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_reply_interaction') {
           if (interactionState.pending) await interactionState.pending;
           const applicationId = String(resolveDataInput(targetNode, 'application_id', targetNode.data?.application_id || interactionState.applicationId || ''));
@@ -1692,6 +1776,41 @@ export class GraphRunner {
           else await context.rest.addGuildMemberRole(guildId, userId, roleId, reason);
           log(`[Member Role] ${operation === 'remove' ? 'Removed' : 'Added'} role ${roleId} for ${userId}`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_moderate_member') {
+          let success = false;
+          let errorMessage = '';
+          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
+          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
+          const operation = String(resolveDataInput(targetNode, 'operation', targetNode.data?.operation || 'timeout')).trim().toLowerCase();
+          const reason = String(resolveDataInput(targetNode, 'reason', targetNode.data?.reason || '')).trim().slice(0, 512);
+          try {
+            if (!guildId || !/^\d{15,22}$/.test(userId)) throw new TypeError('Choose a server and a valid member ID.');
+            if (operation === 'timeout') {
+              const durationMinutes = Math.trunc(Number(resolveDataInput(targetNode, 'duration_minutes', targetNode.data?.duration_minutes ?? 10)));
+              if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 40320) throw new RangeError('Timeout duration must be from 1 minute to 28 days.');
+              const disabledUntil = new Date(Date.now() + durationMinutes * 60_000).toISOString();
+              await context.rest.modifyGuildMember(guildId, userId, { communication_disabled_until: disabledUntil }, reason);
+            } else if (operation === 'kick') {
+              await context.rest.removeGuildMember(guildId, userId, reason);
+            } else if (operation === 'ban') {
+              const deleteMessageSeconds = Math.trunc(Number(resolveDataInput(targetNode, 'delete_message_seconds', targetNode.data?.delete_message_seconds ?? 0)));
+              if (!Number.isInteger(deleteMessageSeconds) || deleteMessageSeconds < 0 || deleteMessageSeconds > 604800) throw new RangeError('Ban message deletion must be from 0 seconds to 7 days.');
+              await context.rest.banGuildMember(guildId, userId, { deleteMessageSeconds }, reason);
+            } else if (operation === 'unban') {
+              await context.rest.unbanGuildMember(guildId, userId, reason);
+            } else {
+              throw new TypeError('Choose timeout, kick, ban, or unban.');
+            }
+            success = true;
+          } catch (error) {
+            errorMessage = String(error?.message || 'Discord rejected the moderation request.').slice(0, 500);
+          }
+          dataCache.set(`${targetNode.id}:success`, success);
+          dataCache.set(`${targetNode.id}:error`, errorMessage);
+          log(success
+            ? `[Moderation] ${operation} succeeded for ${userId}`
+            : `[Moderation] ${operation} failed for ${userId}: ${errorMessage}`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, success ? 'exec' : 'failure_exec'));
         } else if (targetNode.type === 'action_voice_channel_status') {
           const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
           const status = String(resolveDataInput(targetNode, 'status', targetNode.data?.status || '')).slice(0, 500);
@@ -1957,6 +2076,7 @@ function defaultValueForType(type) {
 
 function coerceVariableValue(value, type = 'string', fallback) {
   if (type === 'number') {
+    if (typeof value === 'string' && /^\d{16,22}$/.test(value) && BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)) return value;
     const number = Number(value);
     return Number.isFinite(number) ? number : Number(fallback) || 0;
   }
