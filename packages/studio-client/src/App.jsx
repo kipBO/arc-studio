@@ -72,14 +72,7 @@ const SIDEBAR_WIDTH_MIN = 280;
 const SIDEBAR_WIDTH_MAX = 480;
 const DEFAULT_SIDEBAR_WIDTHS = { projects: 320, library: 320, plugins: 360, bot: 360, variables: 320 };
 const APP_EMOJI_CACHE_TTL = 14 * 24 * 60 * 60 * 1000;
-const PROJECT_STARTERS = [
-  { id: 'blank', name: 'Start Blank', description: 'An empty project, ready for your first graph.', Icon: Plus },
-  { id: 'ticket', name: 'Ticket Bot', description: 'Ticket command examples and a message trigger.', Icon: Ticket },
-  { id: 'leveling', name: 'Leveling Bot', description: 'A shared XP counter and rank command.', Icon: TrendingUp },
-  { id: 'moderation', name: 'Basic Moderation', description: 'Rules and report command examples.', Icon: ShieldCheck },
-  { id: 'basic', name: 'Basic Bot', description: 'A ping reply and help command.', Icon: Bot },
-  { id: 'utility', name: 'Utility Bot', description: 'Random rolls, server info, rules, and a message trigger.', Icon: Braces }
-];
+const PROJECT_STARTER_ICONS = { blank: Plus, ticket: Ticket, leveling: TrendingUp, moderation: ShieldCheck, basic: Bot, utility: Braces };
 const TAG_GROUP_COLORS = [
   { id: 'blue', label: 'Blue', value: '#5798ee' },
   { id: 'purple', label: 'Purple', value: '#a77af4' },
@@ -388,6 +381,7 @@ export function App() {
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
   const [projects, setProjects] = useState([]);
+  const [projectStarters, setProjectStarters] = useState([]);
   const [projectUsers, setProjectUsers] = useState({});
   const [maxProjects, setMaxProjects] = useState(() => localDesktopWorkspace ? null : 10);
   useEffect(() => { if (localDesktopWorkspace) setMaxProjects(null); }, [localDesktopWorkspace]);
@@ -1134,6 +1128,16 @@ export function App() {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [authToken, activeProjectId, workspaceRevision, workspaceMode]);
+
+  useEffect(() => {
+    if (!authToken || projectStarters.length) return undefined;
+    let cancelled = false;
+    fetch(apiUrl('/api/projects/templates'), { headers: { 'x-arc-token': authToken } })
+      .then((response) => response.json())
+      .then((data) => { if (!cancelled && Array.isArray(data.templates)) setProjectStarters(data.templates); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [authToken, projectStarters.length, workspaceMode, workspaceRevision]);
 
   useEffect(() => {
     if (!authToken) {
@@ -3220,6 +3224,11 @@ export function App() {
         shouldCreateProject = nextProjects.length === 0 || nextProjects.some((project) => project.id === data.activeProjectId && project.pendingStarterChoice);
       }
     } catch {}
+    try {
+      const response = await fetch(apiUrl('/api/projects/templates'), { headers: { 'x-arc-token': token } });
+      const data = await response.json();
+      if (response.ok && Array.isArray(data.templates)) setProjectStarters(data.templates);
+    } catch {}
     setNeedsProjectOnboarding(shouldCreateProject);
     setAuthToken(token);
     setCurrentUser(user);
@@ -4046,6 +4055,7 @@ export function App() {
           needsSetup={needsSetup}
           localAccountUsername={desktopMode && workspaceMode === 'local' ? localAccountUsername : ''}
           needsProjectOnboarding={needsProjectOnboarding}
+          projectStarters={projectStarters.map((starter) => ({ ...starter, Icon: PROJECT_STARTER_ICONS[starter.id] || PackageOpen }))}
           theme={theme}
           workspaceMode={workspaceMode}
           remoteWorkspaceUrl={remoteWorkspaceUrl}
@@ -4590,7 +4600,7 @@ export function App() {
           <TextInput label="Project name" placeholder="e.g. Community bot" value={newProjectName} maxLength={64} autoFocus onChange={(event) => { setNewProjectName(event.target.value); setProjectNameManuallyEdited(true); setProjectNameInvalid(false); setProjectError(''); }} />
           <span className="field-label">Choose a starting point</span>
           <div className="splash-project-templates project-template-cards">
-            {PROJECT_STARTERS.map(({ id, name, description, Icon }) => <button key={id} type="button" className={`splash-project-template ${newProjectTemplate === id ? 'is-selected' : ''}`} aria-pressed={newProjectTemplate === id} onClick={() => { setNewProjectTemplate(id); if (!projectNameManuallyEdited) setNewProjectName(name); }}><Icon size={16} /><span><strong>{name}</strong><small>{description}</small></span></button>)}
+            {projectStarters.map((starter) => { const Icon = PROJECT_STARTER_ICONS[starter.id] || PackageOpen; return <button key={starter.id} type="button" className={`splash-project-template ${newProjectTemplate === starter.id ? 'is-selected' : ''}`} aria-pressed={newProjectTemplate === starter.id} onClick={() => { setNewProjectTemplate(starter.id); if (!projectNameManuallyEdited) setNewProjectName(starter.name); }}><Icon size={16} /><span><strong>{starter.name}</strong><small>{starter.description}</small></span></button>; })}
           </div>
           {projectError && <p className="field-error" role="alert">{projectError}</p>}
         </div>
