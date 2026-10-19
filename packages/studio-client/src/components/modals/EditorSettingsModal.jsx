@@ -4,7 +4,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
 import { arcEvents } from '../../core/ArcEvents.js';
-import { DEFAULT_SHORTCUTS, formatShortcut, getShortcutReservation, shortcutFromEvent } from '../../core/shortcuts.js';
+import { DEFAULT_SHORTCUTS, formatShortcut, getShortcutReservation, normalizeShortcutBinding, shortcutFromEvent } from '../../core/shortcuts.js';
 import { apiUrl } from '../../core/api.js';
 import studioPackage from '../../../package.json';
 import chezcordPackage from '../../../../chezcord/package.json';
@@ -20,6 +20,15 @@ const tabs = [
   { id: 'about', label: 'About' }
 ];
 const shortcutActions = [
+  ['newGraph', 'New graph'],
+  ['newBlankGraph', 'New blank graph'],
+  ['switchTabNext', 'Next graph tab'],
+  ['switchTabPrevious', 'Previous graph tab'],
+  ['closeTab', 'Close active graph tab'],
+  ['connectGateway', 'Connect / disconnect gateway'],
+  ['renameNode', 'Rename selected node'],
+  ['reloadStudio', 'Reload ARC Studio'],
+  ['toggleConsole', 'Toggle server console'],
   ['addNode', 'Add node'],
   ['arrangeNodes', 'Arrange nodes'],
   ['toggleLibrary', 'Toggle Library'],
@@ -71,6 +80,13 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       if (!binding) return;
       const reservation = getShortcutReservation(binding, platform);
       if (reservation) { setShortcutCaptureError(reservation); return; }
+      const normalizedBinding = normalizeShortcutBinding(binding, platform);
+      const conflict = shortcutActions.find(([key]) => key !== recording && normalizeShortcutBinding(shortcuts[key], platform) === normalizedBinding);
+      if (conflict) {
+        const label = shortcutActions.find(([key]) => key === conflict[0])?.[1] || conflict[0];
+        setShortcutCaptureError(`Already assigned to “${label}”. Change that shortcut first or choose another.`);
+        return;
+      }
       update('shortcuts', { ...shortcuts, [recording]: binding });
       setRecording(null);
       setShortcutCaptureError('');
@@ -184,9 +200,6 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
       <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : formatShortcut(shortcuts[key], platform)}</button></div>)}</div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
-      <div className="settings-shortcut-row"><span>Close active graph tab</span><kbd>{formatShortcut('mod+w', platform)}</kbd></div>
-      <div className="settings-shortcut-row"><span>Connect / disconnect gateway</span><kbd>F5</kbd></div>
-      <div className="settings-shortcut-row"><span>Reload ARC Studio</span><kbd>{formatShortcut('mod+shift+r', platform)}</kbd></div>
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>
     </div>}
 
