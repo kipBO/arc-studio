@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dataDir } from '../storage.js';
 import { NodeDefinitions, registerAdapterNodeDefinitions } from './NodeRegistry.js';
@@ -14,6 +16,10 @@ const MAX_PACK_BYTES = 1024 * 1024;
 const MAX_FUNCTIONS = 64;
 const MAX_NODES = 128;
 const MAX_CONNECTIONS = 512;
+const MAX_ADAPTER_DEPENDENCIES = 16;
+const MAX_ADAPTER_LOCK_BYTES = 2 * 1024 * 1024;
+const MAX_ADAPTER_LOCK_PACKAGES = 256;
+const MAX_ADAPTER_INSTALL_BYTES = 200 * 1024 * 1024;
 const LEGACY_MIN_ARC_VERSION = '2026.1.1.0';
 const pluginRepositoryRoot = process.env.ARC_PLUGINS_PATH?.trim()
   ? path.resolve(process.env.ARC_PLUGINS_PATH.trim())
@@ -119,6 +125,136 @@ function adapterDirectory(pluginId, version) {
   return path.join(adapterRoot, pluginId, version);
 }
 
+function hostAdapterDirectory(pluginId) {
+  return path.join(adapterRoot, pluginId);
+}
+
+function validateNpmDependencies(value, pluginId = 'Adapter') {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_ADAPTER_DEPENDENCIES) throw new Error(`${pluginId} may declare at most ${MAX_ADAPTER_DEPENDENCIES} npm dependencies.`);
+  const names = new Set();
+  return value.map((item) => {
+    const name = String(item?.name || '');
+    const version = String(item?.version || '');
+    if (!/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name) || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/.test(version) || names.has(name)) {
+      throw new Error(`${pluginId} declares an invalid or duplicate npm dependency. Use an exact package version.`);
+    }
+    names.add(name);
+    return { name, version };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function inspectNpmLock(bytes, dependencies, pluginId) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > MAX_ADAPTER_LOCK_BYTES) throw new Error(`${pluginId} dependency lockfile exceeds the 2 MiB limit.`);
+  let lock;
+  try { lock = JSON.parse(bytes.toString('utf8')); }
+  catch { throw new Error(`${pluginId} dependency lockfile is not valid JSON.`); }
+  const root = lock?.packages?.[''];
+  if (!root || ![2, 3].includes(lock.lockfileVersion) || !/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][a-z0-9._-]{0,127}$/i.test(root.name || '') || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(root.version || '')) {
+    throw new Error(`${pluginId} must include a package-lock.json created with npm lockfile version 2 or 3.`);
+  }
+  const expected = Object.fromEntries(dependencies.map(({ name, version }) => [name, version]));
+  if (JSON.stringify(Object.entries(root.dependencies || {}).sort(([a], [b]) => a.localeCompare(b))) !== JSON.stringify(Object.entries(expected).sort(([a], [b]) => a.localeCompare(b))) || Object.keys(root.devDependencies || {}).length) {
+    throw new Error(`${pluginId} package-lock.json dependencies must exactly match the adapter manifest, dev dependencies are not supported.`);
+  }
+  const packages = Object.entries(lock.packages).filter(([key]) => key !== '');
+  if (!packages.length || packages.length > MAX_ADAPTER_LOCK_PACKAGES) throw new Error(`${pluginId} lockfile must contain 1–${MAX_ADAPTER_LOCK_PACKAGES} packages.`);
+  for (const [key, item] of packages) {
+    if (!/^node_modules\/(?:@[^/]+\/)?[^/]+(?:\/node_modules\/(?:@[^/]+\/)?[^/]+)*$/.test(key)
+      || !item || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(item.version || '')
+      || typeof item.resolved !== 'string' || typeof item.integrity !== 'string'
+      || item.link || item.hasInstallScript || !/^sha512-[A-Za-z0-9+/]+=*$/.test(item.integrity)) {
+      throw new Error(`${pluginId} lockfile contains an unpinned package or one requiring install scripts.`);
+    }
+    let resolved;
+    try { resolved = new URL(item.resolved); } catch { throw new Error(`${pluginId} lockfile contains an invalid package URL.`); }
+    if (resolved.protocol !== 'https:' || resolved.hostname !== 'registry.npmjs.org' || resolved.username || resolved.password) {
+      throw new Error(`${pluginId} dependencies must be pinned to the public npm registry.`);
+    }
+  }
+  return { lock, packageCount: packages.length };
+}
+
+function resolveNpmCli() {
+  const candidates = [
+    process.env.npm_execpath,
+    path.resolve(path.dirname(process.execPath), 'npm/node_modules/npm/bin/npm-cli.js'),
+    path.resolve(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'),
+    path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js'),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../node_modules/npm/bin/npm-cli.js')
+  ].filter(Boolean);
+  for (const directory of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    for (const executable of process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm']) {
+      const file = path.join(directory, executable);
+      try {
+        const resolved = fs.realpathSync(file);
+        if (resolved.endsWith('.js') && fs.existsSync(resolved)) candidates.push(resolved);
+      } catch { /* check next path  entry */ }
+    }
+  }
+  return candidates.find((candidate) => candidate.endsWith('.js') && fs.existsSync(candidate)) || '';
+}
+
+async function installNpmDependencies(stagedDirectory, stageRoot, dependencies, lockBytes, pluginId) {
+  const { lock, packageCount } = inspectNpmLock(lockBytes, dependencies, pluginId);
+  const npmCli = resolveNpmCli();
+  if (!npmCli) throw new Error('A compatible npm CLI is not available in this ARC Studio installation.');
+  fs.writeFileSync(path.join(stagedDirectory, 'package.json'), JSON.stringify({
+    name: lock.packages[''].name,
+    version: lock.packages[''].version,
+    private: true,
+    type: 'module',
+    dependencies: Object.fromEntries(dependencies.map(({ name, version }) => [name, version]))
+  }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(path.join(stagedDirectory, 'package-lock.json'), lockBytes, { mode: 0o600 });
+  const configPath = path.join(stageRoot, 'npmrc');
+  const cachePath = path.join(stageRoot, 'npm-cache');
+  fs.writeFileSync(configPath, 'ignore-scripts=true\naudit=false\nfund=false\n', { mode: 0o600 });
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [npmCli, 'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--omit=dev', '--fetch-retries=0', '--fetch-timeout=30000', '--maxsockets=4', '--registry=https://registry.npmjs.org/'], {
+      cwd: stagedDirectory,
+      env: { ...process.env, npm_config_userconfig: configPath, npm_config_cache: cachePath, npm_config_ignore_scripts: 'true', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_registry: 'https://registry.npmjs.org/' },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let killTimer;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), 5000);
+    }, 120000);
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killTimer);
+      error ? reject(error) : resolve();
+    };
+    child.stdout.on('data', () => {});
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-12000); });
+    child.on('error', (error) => finish(new Error(`Could not start npm for ${pluginId}: ${error.message}`)));
+    child.on('close', (code) => finish(timedOut
+      ? new Error(`${pluginId} dependency installation timed out after 120 seconds.`)
+      : code === 0 ? null : new Error(`${pluginId} dependencies could not be installed${stderr.trim() ? `: ${stderr.trim().slice(-1800)}` : '.'}`)));
+  });
+  fs.rmSync(cachePath, { recursive: true, force: true });
+  let totalBytes = 0;
+  const measure = (directory) => {
+    for (const item of fs.readdirSync(directory, { withFileTypes: true })) {
+      const itemPath = path.join(directory, item.name);
+      if (item.isSymbolicLink()) continue;
+      if (item.isDirectory()) measure(itemPath);
+      else if (item.isFile()) totalBytes += fs.statSync(itemPath).size;
+      if (totalBytes > MAX_ADAPTER_INSTALL_BYTES) throw new Error(`${pluginId} installed dependencies exceed the 200 MiB limit.`);
+    }
+  };
+  measure(path.join(stagedDirectory, 'node_modules'));
+  return packageCount;
+}
+
 function projectSettingAad(projectDir, pluginId, fieldId) {
   return `plugin-settings:${path.basename(projectDir)}:${pluginId}:${fieldId}`;
 }
@@ -170,7 +306,7 @@ function validatePluginSettingsSchema(schema) {
   });
 }
 
-function loadBundledHostAdapters(root) {
+function loadBundledHostAdapters(root, { builtIn = false } = {}) {
   const adapters = new Map();
   if (!root || !fs.existsSync(root)) return adapters;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -198,10 +334,14 @@ function loadBundledHostAdapters(root) {
       return { ...node, pluginAdapter: true, pluginId: manifest.id, hostAdapter: manifest.id };
     });
     const runtime = manifest.runtime;
-    if (!runtime || typeof runtime.module !== 'string' || path.basename(runtime.module) !== runtime.module || !runtime.module.endsWith('.js') || typeof runtime.execute !== 'string' || !/^[$A-Z_a-z][$\w]*$/.test(runtime.execute) || runtime.closeProject !== undefined && (typeof runtime.closeProject !== 'string' || !/^[$A-Z_a-z][$\w]*$/.test(runtime.closeProject))) {
+    if (!runtime || typeof runtime.module !== 'string' || path.basename(runtime.module) !== runtime.module || !runtime.module.endsWith('.js') || typeof runtime.execute !== 'string' || !/^[$A-Z_a-z][$\w]*$/.test(runtime.execute) || !/^[a-f0-9]{64}$/i.test(runtime.sha256 || '') || runtime.closeProject !== undefined && (typeof runtime.closeProject !== 'string' || !/^[$A-Z_a-z][$\w]*$/.test(runtime.closeProject))) {
       throw new Error(`Bundled host adapter ${manifest.id} has an invalid runtime declaration.`);
     }
-    if (!fs.existsSync(path.join(directory, runtime.module)) || !fs.statSync(path.join(directory, runtime.module)).isFile()) throw new Error(`Bundled host adapter ${manifest.id} runtime file is missing.`);
+    const runtimePath = path.join(directory, runtime.module);
+    if (!fs.existsSync(runtimePath) || !fs.statSync(runtimePath).isFile() || createHash('sha256').update(fs.readFileSync(runtimePath)).digest('hex') !== runtime.sha256.toLowerCase()) throw new Error(`Bundled host adapter ${manifest.id} runtime file is missing or has a digest mismatch.`);
+    if (!Array.isArray(manifest.runtimeDependencies) || manifest.runtimeDependencies.length > 16 || manifest.runtimeDependencies.some((dependency) => typeof dependency !== 'string' || !/^(?:@[-\w.]+\/)?[-\w.]+$/.test(dependency))) throw new Error(`Bundled host adapter ${manifest.id} has an invalid runtime dependency list.`);
+    const npmDependencies = validateNpmDependencies(manifest.npmDependencies, manifest.name);
+    if (npmDependencies.some(({ name }) => manifest.runtimeDependencies.includes(name))) throw new Error(`Bundled host adapter ${manifest.id} lists a dependency as both ARC-provided and npm-installed.`);
     const settingsSchema = validatePluginSettingsSchema(manifest.settingsSchema);
     const plugin = {
       ...manifest,
@@ -212,7 +352,7 @@ function loadBundledHostAdapters(root) {
       arcApiVersion: Number.isInteger(manifest.arcApiVersion) ? manifest.arcApiVersion : 1,
       repositoryUrl: manifest.repositoryUrl || DEFAULT_REPOSITORY_URL,
       sourceUrl: manifest.sourceUrl || `https://github.com/relentiousdragon/arc-plugins/tree/main/adapters/${entry.name}`,
-      builtIn: true,
+      builtIn,
       directory
     };
     if (adapters.has(plugin.id)) throw new Error(`Duplicate bundled host adapter ID “${plugin.id}”.`);
@@ -231,6 +371,10 @@ function loadHostAdapterRuntime(plugin) {
     hostAdapterRuntimePromises.set(plugin.id, promise);
   }
   return hostAdapterRuntimePromises.get(plugin.id);
+}
+
+function installedHostAdapter(pluginId) {
+  return LOCAL_HOST_ADAPTERS.get(pluginId) || loadBundledHostAdapters(adapterRoot, { builtIn: false }).get(pluginId) || null;
 }
 
 function parseArcVersion(version) {
@@ -373,6 +517,16 @@ function registerInstalledAdapters() {
       } catch { /* */ }
       continue;
     }
+    if (plugin.kind === 'host-adapter') {
+      try {
+        const adapter = installedHostAdapter(plugin.id);
+        if (adapter) {
+          assertArcStudioCompatible(adapter.name, adapter.minArcStudioVersion);
+          definitions.push(...adapter.nodes);
+        }
+      } catch { /* */ }
+      continue;
+    }
     if (plugin.kind !== 'wasm-adapter') continue;
     const manifestPath = path.join(adapterDirectory(plugin.id, plugin.version), 'arc-plugin.json');
     try {
@@ -394,9 +548,9 @@ function writeInstalled(state) {
   fs.renameSync(temporary, installedPath);
 }
 
-function normalizePermissionGrant(pluginId, requested = []) {
+function normalizePermissionGrant(pluginId, requested = [], permissionCatalog = null) {
   if (!Array.isArray(requested) || requested.length > 16) throw new Error('Plugin permissions must be a list of at most 16 capabilities.');
-  const declaredPermissions = LOCAL_HOST_ADAPTERS.get(pluginId)?.permissions || [];
+  const declaredPermissions = permissionCatalog || LOCAL_HOST_ADAPTERS.get(pluginId)?.permissions || readInstalled()[pluginId]?.permissions || [];
   const declared = new Set(declaredPermissions.map((permission) => permission.id));
   const granted = new Set();
   for (const permission of requested) {
@@ -468,16 +622,37 @@ function validateRegistry(registry, defaultRepository) {
   const ids = new Set();
   return registry.plugins.map((entry) => {
     if (!entry || !/^[a-z0-9][a-z0-9.-]{1,62}$/.test(entry.id || '') || ids.has(entry.id)) throw new Error('The plugin registry contains an invalid or duplicate plugin ID.');
-    if ((entry.permissions !== undefined && (!Array.isArray(entry.permissions) || entry.permissions.length)) || (entry.capabilities !== undefined && (!Array.isArray(entry.capabilities) || entry.capabilities.length)) || entry.kind) throw new Error(`Plugin ${entry.id} requests a host integration that this data-only catalogue does not support.`);
+    const kind = entry.kind || 'graph-pack';
+    if (!['graph-pack', 'host-adapter', 'wasm-adapter'].includes(kind) || (entry.capabilities !== undefined && (!Array.isArray(entry.capabilities) || entry.capabilities.length))) throw new Error(`Plugin ${entry.id} requests an unsupported host integration.`);
+    if (kind === 'graph-pack' && entry.permissions?.length) throw new Error(`Function graph pack ${entry.id} cannot request host permissions.`);
+    if (kind === 'host-adapter' && (!Array.isArray(entry.permissions) || !entry.permissions.length || entry.permissions.length > 16 || !/^[a-f0-9]{64}$/i.test(entry.runtimeSha256 || ''))) throw new Error(`Host adapter ${entry.id} must declare permissions and a runtime SHA-256 digest.`);
+    if (kind === 'wasm-adapter' && ((entry.permissions?.length || 0) > 0 || !/^[a-f0-9]{64}$/i.test(entry.wasmSha256 || '') || !Array.isArray(entry.nodeTypes) || !entry.nodeTypes.length)) throw new Error(`WebAssembly adapter ${entry.id} must declare its module digest and node types and cannot request host permissions.`);
+    const permissions = kind === 'host-adapter' ? entry.permissions.map((permission) => {
+      if (!permission || !/^[a-z][a-z0-9.-]{1,63}$/.test(permission.id || '') || !String(permission.name || '').trim() || !String(permission.description || '').trim()) throw new Error(`Host adapter ${entry.id} declares an invalid permission.`);
+      return { id: permission.id, name: String(permission.name).trim().slice(0, 100), description: String(permission.description).trim().slice(0, 400), ...(permission.required === true ? { required: true } : {}) };
+    }) : [];
+    if (new Set(permissions.map((permission) => permission.id)).size !== permissions.length) throw new Error(`Host adapter ${entry.id} declares duplicate permissions.`);
+    const runtimeDependencies = kind === 'host-adapter' ? entry.runtimeDependencies : undefined;
+    if (runtimeDependencies !== undefined && (!Array.isArray(runtimeDependencies) || runtimeDependencies.length > MAX_ADAPTER_DEPENDENCIES || runtimeDependencies.some((name) => typeof name !== 'string' || !/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name)))) throw new Error(`Host adapter ${entry.id} has an invalid ARC runtime dependency list.`);
+    const npmDependencies = kind === 'host-adapter' ? validateNpmDependencies(entry.npmDependencies, entry.id) : [];
+    const dependencyLockSha256 = kind === 'host-adapter' ? String(entry.dependencyLockSha256 || '').toLowerCase() : '';
+    const dependencyPackageCount = kind === 'host-adapter' ? Number(entry.dependencyPackageCount || 0) : 0;
+    if (npmDependencies.length && (!/^[a-f0-9]{64}$/.test(dependencyLockSha256) || !Number.isInteger(dependencyPackageCount) || dependencyPackageCount < npmDependencies.length || dependencyPackageCount > MAX_ADAPTER_LOCK_PACKAGES)) throw new Error(`Host adapter ${entry.id} must pin its npm lockfile and dependency count.`);
+    if (!npmDependencies.length && (dependencyLockSha256 || dependencyPackageCount)) throw new Error(`Host adapter ${entry.id} declares lockfile metadata without npm dependencies.`);
     ids.add(entry.id);
     if (!String(entry.name || '').trim() || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(entry.version || '')) throw new Error(`Plugin ${entry.id} needs a name and valid SemVer version.`);
+    if (entry.arcApiVersion !== 1) throw new Error(`Plugin ${entry.id} requires an unsupported ARC plugin API version.`);
     if (!/^[a-f0-9]{40}$/i.test(entry.commit || '') || !/^[a-f0-9]{64}$/i.test(entry.sha256 || '')) throw new Error(`Plugin ${entry.id} needs a full commit SHA and SHA-256 digest.`);
     const repository = normalizeRepositoryUrl(entry.repositoryUrl || entry.repository || defaultRepository.url);
-    if (typeof entry.path !== 'string' || !entry.path.startsWith(`packs/${entry.id}/`) || !/^packs\/[a-z0-9.-]+\/[A-Za-z0-9._/-]+$/.test(entry.path) || entry.path.split('/').some((part) => part === '.' || part === '..')) {
-      throw new Error(`Plugin ${entry.id} has an invalid pack path.`);
-    }
+    const hostAdapterPath = `adapters/${entry.id.startsWith('arc.') ? entry.id.slice(4) : entry.id}/arc-plugin.json`;
+    const validPath = kind === 'graph-pack'
+      ? typeof entry.path === 'string' && entry.path.startsWith(`packs/${entry.id}/`) && /^packs\/[a-z0-9.-]+\/[A-Za-z0-9._/-]+$/.test(entry.path)
+      : entry.path === hostAdapterPath;
+    if (!validPath || entry.path.split('/').some((part) => part === '.' || part === '..')) throw new Error(`Plugin ${entry.id} has an invalid artifact path.`);
+    if (kind !== 'graph-pack' && (entry.nodeTypes.some((type) => typeof type !== 'string' || !type.startsWith(`${entry.id}.`)) || new Set(entry.nodeTypes).size !== entry.nodeTypes.length)) throw new Error(`Adapter ${entry.id} must publish unique, namespaced node types in the catalogue.`);
     return {
       id: entry.id,
+      kind,
       name: String(entry.name).trim().slice(0, 80),
       version: entry.version,
       description: String(entry.description || '').slice(0, 500),
@@ -485,6 +660,8 @@ function validateRegistry(registry, defaultRepository) {
       license: String(entry.license || '').slice(0, 60),
       thirdPartyNotices: validateThirdPartyNotices(entry.thirdPartyNotices),
       settingsSchema: validatePluginSettingsSchema(entry.settingsSchema),
+      ...(kind === 'host-adapter' ? { permissions, nodeTypes: entry.nodeTypes, runtimeSha256: entry.runtimeSha256.toLowerCase(), ...(runtimeDependencies !== undefined ? { runtimeDependencies } : {}), npmDependencies, dependencyLockSha256, dependencyPackageCount } : {}),
+      ...(kind === 'wasm-adapter' ? { nodeTypes: entry.nodeTypes, wasmSha256: entry.wasmSha256.toLowerCase() } : {}),
       minArcStudioVersion: declaredMinimumVersion(entry.minArcStudioVersion, entry.name || entry.id),
       tags: Array.isArray(entry.tags) ? entry.tags.filter((tag) => typeof tag === 'string').slice(0, 12).map((tag) => tag.slice(0, 32)) : [],
       arcApiVersion: entry.arcApiVersion,
@@ -677,7 +854,7 @@ function savePack(entry, pack, botManager, sourceType = 'catalog', { autoUpdate 
   }
 }
 
-async function installRegistryEntry(entry, botManager, { autoUpdate = true } = {}) {
+async function installRegistryEntry(entry, botManager, { autoUpdate = true, projectDir = '', permissions = [], installedBy = null, hostCodeConfirmed = false } = {}) {
   assertArcStudioCompatible(entry.name, entry.minArcStudioVersion);
   const repository = normalizeRepositoryUrl(entry.repositoryUrl);
   const response = await fetch(artifactUrl(repository, entry.commit, entry.path), {
@@ -693,7 +870,241 @@ async function installRegistryEntry(entry, botManager, { autoUpdate = true } = {
   let pack;
   try { pack = JSON.parse(bytes.toString('utf8')); }
   catch { throw new Error('Plugin pack is not valid JSON.'); }
+  if (entry.kind === 'host-adapter') return installRemoteHostAdapter(entry, pack, repository, botManager, { projectDir, permissions, installedBy, hostCodeConfirmed });
+  if (entry.kind === 'wasm-adapter') return installRemoteWasmAdapter(entry, pack, repository, { installedBy });
   return savePack(entry, pack, botManager, 'catalog', { autoUpdate });
+}
+
+async function installRemoteWasmAdapter(entry, manifestInput, repository, { installedBy = null } = {}) {
+  const manifest = validateAdapterManifest(manifestInput);
+  assertArcStudioCompatible(manifest.name, manifest.minArcStudioVersion);
+  if (manifest.id !== entry.id || manifest.name !== entry.name || manifest.version !== entry.version || manifest.description !== entry.description || manifest.author !== entry.author || manifest.license !== entry.license || manifest.minArcStudioVersion !== entry.minArcStudioVersion || manifest.wasmSha256 !== entry.wasmSha256) {
+    throw new Error('The downloaded WebAssembly adapter manifest does not match the reviewed catalog entry.');
+  }
+  const nodeTypes = manifest.nodes.map((node) => node.type).sort();
+  if (JSON.stringify(nodeTypes) !== JSON.stringify(entry.nodeTypes.slice().sort())
+    || JSON.stringify(manifest.settingsSchema) !== JSON.stringify(validatePluginSettingsSchema(entry.settingsSchema))
+    || JSON.stringify(manifest.thirdPartyNotices) !== JSON.stringify(validateThirdPartyNotices(entry.thirdPartyNotices))) {
+    throw new Error('The adapter nodes, settings, or notices changed since review. Refresh the catalog.');
+  }
+
+  const modulePath = `${path.posix.dirname(entry.path)}/${manifest.wasmArtifact}`;
+  const response = await fetch(artifactUrl(repository, entry.commit, modulePath), {
+    headers: { Accept: 'application/wasm, application/octet-stream', 'User-Agent': 'ARC-Studio-Plugin-Store' },
+    signal: AbortSignal.timeout(10000),
+    redirect: 'error'
+  });
+  if (!response.ok) throw new Error(`${repository.provider === 'github' ? 'GitHub' : 'GitLab'} returned ${response.status} while downloading ${entry.name} module.`);
+  const bytes = await readLimited(response, 8 * 1024 * 1024);
+  inspectAdapterBytes(bytes);
+  const digest = createHash('sha256').update(bytes).digest();
+  const expected = Buffer.from(entry.wasmSha256, 'hex');
+  if (digest.length !== expected.length || !timingSafeEqual(digest, expected)) throw new Error('WebAssembly module digest does not match the reviewed catalog entry.');
+
+  fs.mkdirSync(adapterRoot, { recursive: true, mode: 0o700 });
+  const stageRoot = fs.mkdtempSync(path.join(adapterRoot, '.stage-'));
+  const stagedDirectory = path.join(stageRoot, entry.id, entry.version);
+  const destination = adapterDirectory(entry.id, entry.version);
+  let backup = '';
+  let originalInstalled = null;
+  let installedWritten = false;
+  try {
+    fs.mkdirSync(stagedDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(stagedDirectory, 'arc-plugin.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.join(stagedDirectory, 'adapter.wasm'), bytes, { mode: 0o600 });
+    if (fs.existsSync(destination)) {
+      backup = `${destination}.backup-${randomUUID()}`;
+      fs.renameSync(destination, backup);
+    }
+    fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+    fs.renameSync(stagedDirectory, destination);
+
+    const installed = readInstalled();
+    originalInstalled = structuredClone(installed);
+    const previous = installed[entry.id];
+    installed[entry.id] = {
+      id: manifest.id,
+      name: manifest.name,
+      description: manifest.description,
+      author: manifest.author,
+      license: manifest.license,
+      thirdPartyNotices: manifest.thirdPartyNotices,
+      settingsSchema: manifest.settingsSchema,
+      version: manifest.version,
+      minArcStudioVersion: manifest.minArcStudioVersion,
+      kind: 'wasm-adapter',
+      sourceType: 'catalog',
+      sourceTrust: isDefaultRepository(repository.url) ? 'default' : 'custom',
+      repositoryUrl: repository.url,
+      sourceUrl: entry.sourceUrl,
+      autoUpdate: false,
+      manifestSha256: entry.sha256,
+      sha256: entry.wasmSha256,
+      adapterApiVersion: manifest.adapterApiVersion,
+      nodes: manifest.nodes,
+      installedAt: previous?.installedAt || new Date().toISOString(),
+      installedBy: previous?.installedBy || installedBy || null,
+      updatedAt: new Date().toISOString()
+    };
+    writeInstalled(installed);
+    installedWritten = true;
+    registerInstalledAdapters();
+    if (backup) fs.rmSync(backup, { recursive: true, force: true });
+    return installed[entry.id];
+  } catch (error) {
+    if (installedWritten && originalInstalled) writeInstalled(originalInstalled);
+    if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
+    if (backup && fs.existsSync(backup)) fs.renameSync(backup, destination);
+    throw error;
+  } finally {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+  }
+}
+
+async function installRemoteHostAdapter(entry, manifest, repository, botManager, { projectDir = '', permissions = [], installedBy = null, hostCodeConfirmed = false } = {}) {
+  if (!hostCodeConfirmed) throw new Error('Confirm that you understand this adapter runs JavaScript with the workspace server account’s OS permissions.');
+  if (manifest?.kind !== 'host-adapter' || manifest.id !== entry.id || manifest.version !== entry.version || manifest.name !== entry.name) throw new Error('The downloaded adapter manifest does not match the reviewed catalogue entry.');
+  if (declaredMinimumVersion(manifest.minArcStudioVersion, manifest.name) !== entry.minArcStudioVersion) throw new Error('The adapter ARC Studio version requirement changed since review. Refresh the catalogue.');
+  const runtimeModule = manifest.runtime?.module;
+  if (typeof runtimeModule !== 'string' || path.basename(runtimeModule) !== runtimeModule || !runtimeModule.endsWith('.js') || !/^[a-f0-9]{64}$/i.test(manifest.runtime?.sha256 || '') || manifest.runtime.sha256.toLowerCase() !== entry.runtimeSha256) throw new Error('The adapter runtime path or digest does not match the reviewed catalogue entry.');
+  const runtimeDependencies = manifest.runtimeDependencies || [];
+  if (!Array.isArray(runtimeDependencies) || runtimeDependencies.length > MAX_ADAPTER_DEPENDENCIES || runtimeDependencies.some((name) => typeof name !== 'string' || !/^(?:@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name)) || entry.runtimeDependencies && JSON.stringify([...runtimeDependencies].sort()) !== JSON.stringify([...entry.runtimeDependencies].sort())) throw new Error('The adapter ARC runtime dependencies changed since review. Refresh the catalogue.');
+  const npmDependencies = validateNpmDependencies(manifest.npmDependencies, manifest.name);
+  if (JSON.stringify(npmDependencies) !== JSON.stringify(entry.npmDependencies)) throw new Error('The adapter npm dependencies changed since review. Refresh the catalogue.');
+  const normalizedPermissions = (manifest.permissions || []).map((permission) => ({ id: permission.id, name: String(permission.name).trim().slice(0, 100), description: String(permission.description).trim().slice(0, 400), ...(permission.required === true ? { required: true } : {}) }));
+  if (JSON.stringify(normalizedPermissions) !== JSON.stringify(entry.permissions || []) || JSON.stringify((manifest.nodes || []).map((node) => node.type).sort()) !== JSON.stringify((entry.nodeTypes || []).slice().sort())) throw new Error('The adapter permissions or node list changed since review. Refresh the catalogue.');
+  const permissionIds = new Set((manifest.permissions || []).map((permission) => permission.id));
+  for (const node of manifest.nodes || []) {
+    if (!node.type.startsWith(`${manifest.id}.`)) throw new Error(`Adapter node ${node.type} must be namespaced under ${manifest.id}.`);
+    if (node.requiredPermission && !permissionIds.has(node.requiredPermission)) throw new Error(`Adapter node ${node.type} refers to an undeclared permission.`);
+  }
+  const granted = normalizePermissionGrant(entry.id, permissions, manifest.permissions);
+  const runtimePath = `${path.posix.dirname(entry.path)}/${runtimeModule}`;
+  const runtimeResponse = await fetch(artifactUrl(repository, entry.commit, runtimePath), {
+    headers: { Accept: 'text/javascript', 'User-Agent': 'ARC-Studio-Plugin-Store' },
+    signal: AbortSignal.timeout(10000),
+    redirect: 'error'
+  });
+  if (!runtimeResponse.ok) throw new Error(`${repository.provider === 'github' ? 'GitHub' : 'GitLab'} returned ${runtimeResponse.status} while downloading ${entry.name} runtime.`);
+  const runtimeBytes = await readLimited(runtimeResponse, 2 * 1024 * 1024);
+  const runtimeDigest = createHash('sha256').update(runtimeBytes).digest('hex');
+  const expectedRuntime = Buffer.from(entry.runtimeSha256, 'hex');
+  const actualRuntime = Buffer.from(runtimeDigest, 'hex');
+  if (actualRuntime.length !== expectedRuntime.length || !timingSafeEqual(actualRuntime, expectedRuntime)) throw new Error('Adapter runtime digest does not match the reviewed catalogue entry.');
+  let dependencyLockBytes = null;
+  if (npmDependencies.length) {
+    const lockPath = `${path.posix.dirname(entry.path)}/package-lock.json`;
+    const lockResponse = await fetch(artifactUrl(repository, entry.commit, lockPath), {
+      headers: { Accept: 'application/json', 'User-Agent': 'ARC-Studio-Plugin-Store' },
+      signal: AbortSignal.timeout(15000),
+      redirect: 'error'
+    });
+    if (!lockResponse.ok) throw new Error(`${repository.provider === 'github' ? 'GitHub' : 'GitLab'} returned ${lockResponse.status} while downloading ${entry.name} dependency lockfile.`);
+    dependencyLockBytes = await readLimited(lockResponse, MAX_ADAPTER_LOCK_BYTES);
+    const digest = createHash('sha256').update(dependencyLockBytes).digest();
+    const expected = Buffer.from(entry.dependencyLockSha256, 'hex');
+    if (digest.length !== expected.length || !timingSafeEqual(digest, expected)) throw new Error('Adapter dependency lockfile digest does not match the reviewed catalogue entry.');
+    const lockInfo = inspectNpmLock(dependencyLockBytes, npmDependencies, manifest.name);
+    if (lockInfo.packageCount !== entry.dependencyPackageCount) throw new Error('The adapter dependency list changed since review. Refresh the catalogue.');
+  }
+
+  fs.mkdirSync(adapterRoot, { recursive: true });
+  const stageRoot = fs.mkdtempSync(path.join(adapterRoot, '.stage-'));
+  const stagedDirectory = path.join(stageRoot, entry.id);
+  const destination = hostAdapterDirectory(entry.id);
+  let backup = '';
+  let originalInstalled = null;
+  let originalProjectPermissions = null;
+  let installedWritten = false;
+  let projectPermissionsWritten = false;
+  try {
+    fs.mkdirSync(stagedDirectory, { recursive: true });
+    fs.writeFileSync(path.join(stagedDirectory, 'arc-plugin.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.join(stagedDirectory, 'package.json'), JSON.stringify({ private: true, type: 'module' }), { mode: 0o600 });
+    fs.writeFileSync(path.join(stagedDirectory, runtimeModule), runtimeBytes, { mode: 0o600 });
+    if (npmDependencies.length) {
+      const installedPackageCount = await installNpmDependencies(stagedDirectory, stageRoot, npmDependencies, dependencyLockBytes, manifest.name);
+      if (installedPackageCount !== entry.dependencyPackageCount) throw new Error('Installed dependency count differs from the reviewed package lock.');
+    }
+    if (runtimeDependencies.length) {
+      const hostNodeModules = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../node_modules');
+      const require = createRequire(path.join(hostNodeModules, 'arc-plugin-resolver.cjs'));
+      const localNodeModules = path.join(stagedDirectory, 'node_modules');
+      fs.mkdirSync(localNodeModules, { recursive: true });
+      const npmNames = new Set(npmDependencies.map(({ name }) => name));
+      for (const dependency of runtimeDependencies) {
+        if (npmNames.has(dependency)) continue;
+        try { require.resolve(dependency); }
+        catch { throw new Error(`This adapter needs the ARC runtime dependency “${dependency}”, which is not available in this ARC Studio build.`); }
+        const hostPackage = path.join(hostNodeModules, dependency);
+        const localPackage = path.join(localNodeModules, dependency);
+        if (!fs.statSync(hostPackage).isDirectory()) throw new Error(`ARC runtime dependency “${dependency}” is not a package directory.`);
+        fs.mkdirSync(path.dirname(localPackage), { recursive: true });
+        fs.symlinkSync(hostPackage, localPackage, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+    }
+    const definition = loadBundledHostAdapters(stageRoot, { builtIn: false }).get(entry.id);
+    if (!definition || definition.nodes.length !== manifest.nodes.length) throw new Error('The downloaded host adapter did not pass manifest validation.');
+    if (JSON.stringify(definition.settingsSchema) !== JSON.stringify(validatePluginSettingsSchema(entry.settingsSchema))) throw new Error('The adapter settings changed since review. Refresh the catalogue.');
+    if (fs.existsSync(destination)) {
+      backup = `${destination}.backup-${randomUUID()}`;
+      fs.renameSync(destination, backup);
+    }
+    fs.renameSync(stagedDirectory, destination);
+    const installed = readInstalled();
+    originalInstalled = structuredClone(installed);
+    const previous = installed[entry.id];
+    installed[entry.id] = {
+      id: definition.id,
+      name: definition.name,
+      description: definition.description,
+      author: definition.author,
+      license: definition.license,
+      version: definition.version,
+      minArcStudioVersion: definition.minArcStudioVersion,
+      kind: 'host-adapter',
+      sourceType: 'catalog',
+      sourceTrust: isDefaultRepository(repository.url) ? 'default' : 'custom',
+      sourceUrl: entry.sourceUrl,
+      repositoryUrl: repository.url,
+      sha256: entry.sha256,
+      runtimeSha256: entry.runtimeSha256,
+      runtimeDependencies,
+      npmDependencies,
+      dependencyLockSha256: entry.dependencyLockSha256 || '',
+      dependencyPackageCount: entry.dependencyPackageCount || 0,
+      thirdPartyNotices: definition.thirdPartyNotices,
+      autoUpdate: false,
+      settingsSchema: definition.settingsSchema,
+      nodes: definition.nodes.map(({ type, label, category, description, color, inputs, outputs, requiredPermission }) => ({ type, label, category, description, color, inputs, outputs, ...(requiredPermission ? { requiredPermission } : {}) })),
+      permissions: definition.permissions,
+      installationId: randomUUID(),
+      installedAt: previous?.installedAt || new Date().toISOString(),
+      installedBy: previous?.installedBy || installedBy || null,
+      updatedAt: new Date().toISOString()
+    };
+    writeInstalled(installed);
+    installedWritten = true;
+    hostAdapterRuntimePromises.delete(entry.id);
+    registerInstalledAdapters();
+    if (projectDir) {
+      const projectPermissions = readProjectPermissionFile(projectDir);
+      originalProjectPermissions = structuredClone(projectPermissions);
+      projectPermissions[entry.id] = { installationId: installed[entry.id].installationId, granted, updatedAt: new Date().toISOString() };
+      writeProjectPermissionFile(projectDir, projectPermissions);
+      projectPermissionsWritten = true;
+    }
+    if (backup) fs.rmSync(backup, { recursive: true, force: true });
+    return installed[entry.id];
+  } catch (error) {
+    if (installedWritten && originalInstalled) writeInstalled(originalInstalled);
+    if (projectPermissionsWritten && originalProjectPermissions) writeProjectPermissionFile(projectDir, originalProjectPermissions);
+    if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
+    if (backup && fs.existsSync(backup)) fs.renameSync(backup, destination);
+    throw error;
+  } finally {
+    fs.rmSync(stageRoot, { recursive: true, force: true });
+  }
 }
 
 export class PluginStore {
@@ -718,7 +1129,12 @@ export class PluginStore {
       sourceTrust: isDefaultRepository(plugin.repositoryUrl) ? 'default' : 'custom',
       sourceLabel: isDefaultRepository(plugin.repositoryUrl) ? 'Default ARC plugin source' : 'External plugin source',
       installedVersion: installed[plugin.id]?.version || null,
-      updateAvailable: Boolean(installed[plugin.id] && (installed[plugin.id].version !== plugin.version || installed[plugin.id].repositoryUrl !== plugin.repositoryUrl))
+      updateAvailable: Boolean(installed[plugin.id] && (
+        installed[plugin.id].version !== plugin.version
+        || installed[plugin.id].repositoryUrl !== plugin.repositoryUrl
+        || plugin.kind === 'host-adapter' && (installed[plugin.id].sha256 !== plugin.sha256 || installed[plugin.id].runtimeSha256 !== plugin.runtimeSha256)
+        || plugin.kind === 'wasm-adapter' && (installed[plugin.id].manifestSha256 !== plugin.sha256 || installed[plugin.id].sha256 !== plugin.wasmSha256)
+      ))
     }))];
   }
 
@@ -776,10 +1192,10 @@ export class PluginStore {
         continue;
       }
       if (plugin.kind !== 'host-adapter') throw new Error(`The bot export does not yet include executable files for ${plugin.name || plugin.id}.`);
-      const definition = LOCAL_HOST_ADAPTERS.get(plugin.id);
-      if (!definition) throw new Error(`${plugin.name || plugin.id} is not available from a local adapter checkout.`);
+      const definition = installedHostAdapter(plugin.id);
+      if (!definition) throw new Error(`${plugin.name || plugin.id} is not available in this workspace.`);
       if (!definition.export || !definition.runtime) throw new Error(`${plugin.name || plugin.id} does not declare bot export support.`);
-      adapters.push({ manifest: definition, directory: definition.directory, nodeTypes: usedPluginTypes });
+      adapters.push({ kind: 'host-adapter', manifest: definition, directory: definition.directory, nodeTypes: usedPluginTypes });
     }
     const missingTypes = [...usedTypes].filter((type) => !NodeDefinitions[type] && ![...installed.values()].some((plugin) => plugin.nodes?.some((node) => node.type === type)));
     if (missingTypes.length) throw new Error(`The bot export contains nodes from unavailable plugins: ${missingTypes.slice(0, 5).join(', ')}.`);
@@ -844,12 +1260,12 @@ export class PluginStore {
     const plugin = Object.values(readInstalled()).find((item) => item.kind === 'wasm-adapter' && item.nodes?.some((node) => node.type === nodeType));
     const hostPlugin = Object.values(readInstalled()).find((item) => item.kind === 'host-adapter' && item.nodes?.some((node) => node.type === nodeType));
     if (hostPlugin) {
-      const bundled = LOCAL_HOST_ADAPTERS.get(hostPlugin.id);
-      if (!bundled) throw new Error(`Host adapter “${hostPlugin.id}” is not bundled with ARC Studio.`);
+      const bundled = installedHostAdapter(hostPlugin.id);
+      if (!bundled) throw new Error(`Host adapter “${hostPlugin.id}” is not installed correctly.`);
       assertArcStudioCompatible(hostPlugin.name, hostPlugin.minArcStudioVersion || bundled.minArcStudioVersion);
       if (!projectDir) throw new Error('Project plugin settings are unavailable for this run.');
       const node = bundled.nodes.find((item) => item.type === nodeType);
-      const requiredPermission = node?.requiredPermission;
+      const requiredPermission = node?.requiredPermission || node?.permission;
       if (requiredPermission && !this.projectPermissions(projectDir, bundled.id).includes(requiredPermission)) {
         const permission = PROJECT_PERMISSION_DEFINITIONS.get(requiredPermission);
         throw new Error(`${bundled.name} permission required: ${permission?.name || requiredPermission}. Ask the project owner to grant it in Plugin Store.`);
@@ -879,7 +1295,12 @@ export class PluginStore {
       safeInputs[pin.id] = value;
     }
     if (Buffer.byteLength(JSON.stringify(safeInputs), 'utf8') > 1_048_576) throw new Error('Combined adapter inputs exceed the 1 MiB request limit.');
-    const result = await runWasmAdapter(path.join(adapterDirectory(plugin.id, plugin.version), 'adapter.wasm'), safeInputs, manifest.limits);
+    const modulePath = path.join(adapterDirectory(plugin.id, plugin.version), 'adapter.wasm');
+    const moduleStat = fs.statSync(modulePath);
+    if (!moduleStat.isFile() || moduleStat.size > 8 * 1024 * 1024) throw new Error(`Adapter “${plugin.name || plugin.id}” has an invalid or oversized installed module.`);
+    const moduleDigest = createHash('sha256').update(fs.readFileSync(modulePath)).digest('hex');
+    if (moduleDigest !== manifest.wasmSha256) throw new Error(`Adapter “${plugin.name || plugin.id}” failed its installed module integrity check.`);
+    const result = await runWasmAdapter(modulePath, safeInputs, manifest.limits);
     const outputs = {};
     for (const pin of node.outputs) {
       if (pin.type === 'exec') continue;
@@ -894,8 +1315,9 @@ export class PluginStore {
     return outputs;
   }
 
-  static async install(pluginId, botManager, { autoUpdate = true, installedBy = null, projectDir = '', permissions = [], expectedVersion = '', expectedSha256 = '', expectedRepositoryUrl = '' } = {}) {
+  static async install(pluginId, botManager, { autoUpdate = true, installedBy = null, projectDir = '', permissions = [], expectedVersion = '', expectedSha256 = '', expectedRepositoryUrl = '', hostCodeConfirmed = false, ownerApprovedHostCode = false } = {}) {
     if (LOCAL_HOST_ADAPTERS.has(pluginId)) {
+      if (hostCodeConfirmed !== true || ownerApprovedHostCode !== true) throw new Error('Review and accept the host runtime warning before installing this adapter.');
       const definition = LOCAL_HOST_ADAPTERS.get(pluginId);
       assertArcStudioCompatible(definition.name, definition.minArcStudioVersion);
       if (expectedVersion && expectedVersion !== definition.version) throw new Error('The plugin changed since review. Refresh the catalogue and review its permissions again.');
@@ -904,7 +1326,7 @@ export class PluginStore {
       const previous = installed[pluginId];
       installed[pluginId] = {
         id: pluginId, name: definition.name, description: definition.description, author: definition.author,
-        license: definition.license, version: definition.version, minArcStudioVersion: definition.minArcStudioVersion, kind: 'host-adapter', sourceType: 'builtin',
+        license: definition.license, version: definition.version, minArcStudioVersion: definition.minArcStudioVersion, kind: 'host-adapter', sourceType: 'local', sourceTrust: 'local', repositoryUrl: definition.repositoryUrl,
         thirdPartyNotices: definition.thirdPartyNotices || [], autoUpdate: false, settingsSchema: validatePluginSettingsSchema(definition.settingsSchema),
         nodes: definition.nodes.map(({ type, label, category, description, color, inputs, outputs, requiredPermission }) => ({ type, label, category, description, color, inputs, outputs, ...(requiredPermission ? { requiredPermission } : {}) })),
         permissions: definition.permissions,
@@ -920,11 +1342,19 @@ export class PluginStore {
     const entry = (await getRegistry()).find((plugin) => plugin.id === pluginId);
     if (!entry) throw new Error('Plugin is not listed in the ARC plugin registry.');
     assertArcStudioCompatible(entry.name, entry.minArcStudioVersion);
-    if (permissions.length) throw new Error('This plugin does not support privileged host permissions.');
+    if (entry.kind !== 'host-adapter' && permissions.length) throw new Error('This plugin does not support privileged host permissions.');
     if (expectedVersion && expectedVersion !== entry.version || expectedSha256 && expectedSha256 !== entry.sha256 || expectedRepositoryUrl && expectedRepositoryUrl !== entry.repositoryUrl) {
       throw new Error('The plugin changed since review. Refresh the catalogue and review it again.');
     }
-    const plugin = await installRegistryEntry(entry, botManager, { autoUpdate });
+    if (entry.kind === 'host-adapter' && ownerApprovedHostCode !== true) throw new Error('Only the project owner or a workspace admin can install server runtime code.');
+    if (entry.kind === 'host-adapter' && hostCodeConfirmed !== true) throw new Error('Review and accept the host runtime warning before installing this adapter.');
+    const plugin = await installRegistryEntry(entry, botManager, {
+      autoUpdate: ['host-adapter', 'wasm-adapter'].includes(entry.kind) ? false : autoUpdate,
+      projectDir,
+      permissions,
+      installedBy,
+      hostCodeConfirmed
+    });
     if (!plugin.installedBy && installedBy) {
       const installed = readInstalled();
       installed[pluginId] = { ...installed[pluginId], installedBy };
@@ -939,7 +1369,7 @@ export class PluginStore {
     const updates = [];
     const errors = [];
     for (const plugin of Object.values(installed)) {
-      if (!plugin.autoUpdate || plugin.kind === 'wasm-adapter') continue;
+      if (!plugin.autoUpdate || plugin.kind === 'wasm-adapter' || plugin.kind === 'host-adapter') continue;
       const entry = entries.find((item) => item.id === plugin.id);
       if (!entry || entry.version === plugin.version || entry.repositoryUrl !== plugin.repositoryUrl) continue;
       try { updates.push(await installRegistryEntry(entry, botManager, { autoUpdate: true })); }
@@ -982,7 +1412,7 @@ export class PluginStore {
       if (refs.length) throw new Error(`This adapter is used by ${refs.slice(0, 4).join(', ')}. Remove those nodes before uninstalling.`);
       delete installed[pluginId];
       writeInstalled(installed);
-      if (record.kind === 'wasm-adapter') fs.rmSync(path.join(adapterRoot, pluginId), { recursive: true, force: true });
+      fs.rmSync(path.join(adapterRoot, pluginId), { recursive: true, force: true });
       registerInstalledAdapters();
       return true;
     }
