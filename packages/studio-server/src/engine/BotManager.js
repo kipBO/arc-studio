@@ -1,0 +1,1398 @@
+import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord';
+import { MockGateway } from './MockGateway.js';
+import { GraphRunner } from './GraphRunner.js';
+import { startCronScheduler } from './CronSchedule.js';
+import { NodeDefinitions } from './NodeRegistry.js';
+import { CryptoEngine } from '../security/CryptoEngine.js';
+import { serverConfig } from '../config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { ProjectStore } from '../storage/ProjectStore.js';
+import { envFilePath } from '../storage.js';
+
+const botConfigAad = 'arc-studio-bot-config-v1';
+const botTokenAad = 'arc-studio-bot-token-v1';
+const VERIFIED_BOT_FLAG = 1 << 16;
+//
+function isDiscordVerifiedBot(user) {
+  const rawFlags = user?.public_flags ?? user?.flags;
+  if (rawFlags === undefined || rawFlags === null || rawFlags === '') return false;
+  const flags = Number(rawFlags);
+  return Number.isSafeInteger(flags) && flags >= 0 && (flags & VERIFIED_BOT_FLAG) !== 0;
+}
+
+function redactSecret(message, secret) {
+  const text = String(message || 'Token verification failed.');
+  return secret ? text.split(secret).join('[redacted]') : text;
+}
+
+function removePlaintextDefaultBotToken() {
+  try {
+    if (!fs.existsSync(envFilePath)) return;
+    const original = fs.readFileSync(envFilePath, 'utf8');
+    const sanitized = original.replace(/^\s*(?:export\s+)?DISCORD_BOT_TOKEN\s*=.*(?:\r?\n|$)/gm, '');
+    if (sanitized === original) return;
+    fs.writeFileSync(envFilePath, sanitized, { encoding: 'utf8', mode: 0o600 });
+    try { fs.chmodSync(envFilePath, 0o600); } catch {}
+  } catch (error) {
+    console.error('[Security] Could not remove the plaintext Discord bot token from the environment file. Remove DISCORD_BOT_TOKEN manually after confirming the token is saved.');
+  }
+}
+
+export class BotManager {
+  /**
+   * @param {object} options
+   * @param {Function} options.broadcastWS
+   */
+  constructor(options = {}) {
+    this.broadcastWS = options.broadcastWS || (() => {});
+    this.logger = options.logger || null;
+    this.projectStore = options.projectStore || new ProjectStore();
+    this.project = this.projectStore.projects.find((item) => item.id === options.projectId) || this.projectStore.active();
+    this.setProjectPaths();
+    this.encryptedBotToken = null;
+    /** @type {Client|null} */
+    this.client = null;
+    this.restRateLimitListener = null;
+    this.stopCronScheduler = null;
+    this.graphRunAbortController = null;
+    this.status = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | ONLINE | ERROR
+    this.gatewayMetrics = { latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null, rateLimitedUntil: 0, rateLimitScope: null };
+    this.gatewayLatencySamples = [];
+    this.botProfile = null;
+    this.intentPlanLastRefreshAt = 0;
+    this.intentPlanRefreshPromise = null;
+    this.applicationEmojis = [];
+    this.loadBotConfig();
+    this.commandDeploymentLastAt = 0;
+    this.commandDeploymentInFlight = false;
+    this.debugRuns = new Map();
+    if (serverConfig.defaultBotToken) {
+      this.setBotToken(serverConfig.defaultBotToken, true);
+      removePlaintextDefaultBotToken();
+      serverConfig.defaultBotToken = null;
+      process.env.DISCORD_BOT_TOKEN = '';
+    }
+    this.mockGateway = new MockGateway();
+    this.logs = [];
+    this.maxLogs = 500;
+    this.statisticsSaveTimer = null;
+    let statisticsState = {};
+    try { statisticsState = JSON.parse(fs.readFileSync(this.statisticsStorePath, 'utf8')); } catch {}
+    this.commandStatistics = new CommandStatistics({ state: statisticsState, onChange: () => this.scheduleStatisticsSave() });
+    this.projectVariables = this.loadProjectVariables();
+
+    // Active multi-tab graphs Map<tabId, GraphData>
+    this.graphs = new Map();
+    this.variableStates = new Map();
+    this.mockVariableStates = new Map();
+    this.projectVariableStates = new Map();
+    this.mockProjectVariableStates = new Map();
+    this.deletedGraphIds = new Set();
+    if (!this.project.emptyStart) this.initDefaultGraphs();
+    this.loadSavedGraphs();
+    const legacyPingGraph = this.graphs.get('tab_ping_pong');
+    const legacyPingCheck = legacyPingGraph?.nodes?.find((node) => node.type === 'compare_text' && node.label === 'Check !ping');
+    if (legacyPingCheck && !String(legacyPingCheck.data?.text_b || '').trim()) {
+      legacyPingCheck.data = { ...legacyPingCheck.data, text_b: '!ping', operator: 'equals' };
+    }
+    const slashStarter = this.graphs.get('tab_slash_help');
+    const slashEvent = slashStarter?.nodes?.find((node) => node.type === 'event_slash_command');
+    if (slashEvent) slashEvent.data = { commandName: 'help', description: 'Show help and bot information.', ...slashEvent.data };
+    this.graphTemplates = [];
+    this.graphSnapshots = [];
+    this.defaultGraphId = this.project.emptyStart ? '' : 'tab_slash_help';
+    this.loadGraphLibrary();
+    if (this.botProfile) this.botProfile.intentSummary = this.getIntentPlan();
+  }
+
+  setProjectPaths() {
+    const directory = this.projectStore.directory(this.project.id);
+    this.projectDir = directory;
+    this.graphStorePath = path.join(directory, 'graphs.json');
+    this.graphLibraryPath = path.join(directory, 'graph-library.json');
+    this.botConfigPath = path.join(directory, 'bot-config.json');
+    this.statisticsStorePath = path.join(directory, 'statistics.json');
+    this.projectVariablesPath = path.join(directory, 'project-variables.json');
+    this.logger?.setProjectScope(path.join(directory, 'logs'), this.project.logRetentionDays ?? null);
+  }
+
+  setProjectLogRetention(retentionDays) {
+    this.project.logRetentionDays = retentionDays;
+    const storedProject = this.projectStore.projects.find((item) => item.id === this.project.id);
+    if (storedProject) storedProject.logRetentionDays = retentionDays;
+    this.projectStore.persist();
+    this.logger?.setProjectScope(path.join(this.projectDir, 'logs'), retentionDays);
+    return retentionDays ?? (process.env.LOG_RETENTION_DAYS || 7);
+  }
+
+  getProjects() { return { ...this.projectStore.list(), activeProjectId: this.project.id }; }
+
+  switchProject(id) {
+    if (this.status === 'ONLINE' || this.status === 'CONNECTING') throw new Error('Stop the gateway before switching projects.');
+    if (id !== this.project.id) {
+      this.flushStatistics();
+      this.persistGraphs();
+      this.persistGraphLibrary();
+      this.persistBotConfig();
+    }
+    const project = this.projectStore.projects.find((item) => item.id === id);
+    if (!project) throw new Error('That project no longer exists.');
+    this.project = { ...project };
+    fs.mkdirSync(this.projectStore.directory(id), { recursive: true, mode: 0o700 });
+    this.setProjectPaths();
+    this.projectVariables = this.loadProjectVariables();
+    this.encryptedBotToken = null;
+    this.botProfile = null;
+    this.applicationEmojis = [];
+    this.graphs = new Map();
+    this.deletedGraphIds = new Set();
+    this.variableStates = new Map();
+    this.mockVariableStates = new Map();
+    this.projectVariableStates = new Map();
+    this.mockProjectVariableStates = new Map();
+    if (!this.project.emptyStart) this.initDefaultGraphs();
+    this.loadSavedGraphs();
+    this.graphTemplates = [];
+    this.graphSnapshots = [];
+    this.defaultGraphId = this.project.emptyStart ? '' : 'tab_slash_help';
+    this.loadGraphLibrary();
+    this.loadBotConfig();
+    if (serverConfig.defaultBotToken && !this.getBotToken()) {
+      this.setBotToken(serverConfig.defaultBotToken, true);
+      removePlaintextDefaultBotToken();
+      serverConfig.defaultBotToken = null;
+      process.env.DISCORD_BOT_TOKEN = '';
+    }
+    let statisticsState = {};
+    try { statisticsState = JSON.parse(fs.readFileSync(this.statisticsStorePath, 'utf8')); } catch {}
+    this.commandStatistics = new CommandStatistics({ state: statisticsState, onChange: () => this.scheduleStatisticsSave() });
+    if (this.botProfile) this.botProfile.intentSummary = this.getIntentPlan();
+    this.broadcastWS({ type: 'PROJECT_CHANGED', payload: { ...this.getProjects(), graphs: this.getGraphs(), graphLibrary: this.getGraphLibrary(), projectVariables: this.getProjectVariables(), botProfile: this.botProfile } });
+    return this.project;
+  }
+
+  getBotToken() {
+    if (!this.encryptedBotToken) return null;
+    try {
+      return CryptoEngine.decrypt(this.encryptedBotToken, serverConfig.botTokenEncryptionKey, botTokenAad);
+    } catch {
+      return null;
+    }
+  }
+
+  publishGatewayMetrics() {
+    this.broadcastWS({ type: 'BOT_METRICS', payload: { ...this.gatewayMetrics } });
+  }
+
+  recordGatewayLatency(latencyMs) {
+    this.gatewayLatencySamples = [...this.gatewayLatencySamples.slice(-9), latencyMs];
+    const samples = this.gatewayLatencySamples;
+    const averageLatencyMs = Math.round(samples.reduce((sum, value) => sum + value, 0) / samples.length);
+    const jitterMs = samples.length > 1
+      ? Math.round(samples.slice(1).reduce((sum, value, index) => sum + Math.abs(value - samples[index]), 0) / (samples.length - 1))
+      : 0;
+    this.gatewayMetrics = { ...this.gatewayMetrics, latencyMs, averageLatencyMs, jitterMs, lastHeartbeatAt: Date.now() };
+    this.publishGatewayMetrics();
+  }
+
+  loadBotConfig() {
+    try {
+      fs.mkdirSync(path.dirname(this.botConfigPath), { recursive: true, mode: 0o700 });
+      try { fs.chmodSync(path.dirname(this.botConfigPath), 0o700); } catch {}
+      if (!fs.existsSync(this.botConfigPath)) return;
+      try { fs.chmodSync(this.botConfigPath, 0o600); } catch {}
+      const serialized = fs.readFileSync(this.botConfigPath, 'utf8');
+      let stored;
+      let needsReEncryption = false;
+      try {
+        stored = CryptoEngine.decryptObject(serialized, serverConfig.botTokenEncryptionKey, botConfigAad);
+      } catch {
+        stored = CryptoEngine.decryptObject(serialized, null, botConfigAad);
+        needsReEncryption = true;
+      }
+      this.encryptedBotToken = typeof stored.token === 'string'
+        ? CryptoEngine.encrypt(stored.token, serverConfig.botTokenEncryptionKey, botTokenAad)
+        : null;
+      if (stored.profile && typeof stored.profile === 'object') {
+        const { verified: _legacyVerified, tokenMasked: _legacyTokenMasked, token: _legacyToken, access_token: _legacyAccessToken, refresh_token: _legacyRefreshToken, ...profile } = stored.profile;
+        this.botProfile = {
+          ...profile,
+          verifiedBot: isDiscordVerifiedBot(profile)
+        };
+      } else {
+        this.botProfile = null;
+      }
+      if (needsReEncryption && this.encryptedBotToken) this.persistBotConfig();
+    } catch {
+      this.encryptedBotToken = null;
+      this.botProfile = null;
+    }
+  }
+
+  persistBotConfig() {
+    const token = this.getBotToken();
+    if (!token) {
+      try { fs.unlinkSync(this.botConfigPath); } catch {}
+      return;
+    }
+    fs.mkdirSync(path.dirname(this.botConfigPath), { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(path.dirname(this.botConfigPath), 0o700); } catch {}
+    const temporaryPath = `${this.botConfigPath}.tmp`;
+    const envelope = CryptoEngine.encryptObject({ token, profile: this.botProfile }, serverConfig.botTokenEncryptionKey, botConfigAad);
+    fs.writeFileSync(temporaryPath, envelope, { mode: 0o600 });
+    try { fs.chmodSync(temporaryPath, 0o600); } catch {}
+    fs.renameSync(temporaryPath, this.botConfigPath);
+    try { fs.chmodSync(this.botConfigPath, 0o600); } catch {}
+  }
+
+  setBotToken(token, persist = true) {
+    if (!token) {
+      this.encryptedBotToken = null;
+    } else {
+      this.encryptedBotToken = CryptoEngine.encrypt(token.trim(), serverConfig.botTokenEncryptionKey, botTokenAad);
+    }
+    if (persist) this.persistBotConfig();
+  }
+
+  setBroadcast(fn) {
+    this.broadcastWS = fn;
+  }
+
+  scheduleStatisticsSave() {
+    if (this.statisticsSaveTimer) clearTimeout(this.statisticsSaveTimer);
+    this.statisticsSaveTimer = setTimeout(() => {
+      this.statisticsSaveTimer = null;
+      this.flushStatistics();
+    }, 500);
+    this.statisticsSaveTimer.unref?.();
+  }
+
+  flushStatistics() {
+    if (this.statisticsSaveTimer) clearTimeout(this.statisticsSaveTimer);
+    this.statisticsSaveTimer = null;
+    try {
+      fs.mkdirSync(path.dirname(this.statisticsStorePath), { recursive: true, mode: 0o700 });
+      const temporaryPath = `${this.statisticsStorePath}.tmp`;
+      fs.writeFileSync(temporaryPath, JSON.stringify(this.commandStatistics.exportState()), { mode: 0o600 });
+      fs.renameSync(temporaryPath, this.statisticsStorePath);
+      try { fs.chmodSync(this.statisticsStorePath, 0o600); } catch {}
+    } catch (error) {
+      this.log?.('ERROR', `Could not save command statistics: ${error.message}`);
+    }
+  }
+
+  getCommandStatistics(options) {
+    return this.commandStatistics.getSummary(options);
+  }
+
+  getCommandStatistic(name, options) {
+    return this.commandStatistics.getCommand(name, options);
+  }
+
+  updateCommandStatisticsSettings(settings) {
+    return this.commandStatistics.updateSettings(settings);
+  }
+
+  log(level, message, meta = null) {
+    const entry = {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: new Date().toISOString(),
+      level: level.toUpperCase(), // INFO, DEBUG, WARN, ERROR, GATEWAY, MOCK, EXECUTION
+      message,
+      meta
+    };
+
+    this.logs.push(entry);
+    if (this.logs.length > this.maxLogs) {
+      this.logs.shift();
+    }
+
+    this.broadcastWS({
+      type: 'LOG_ENTRY',
+      payload: entry
+    });
+  }
+
+  getLogs() {
+    return [...this.logs];
+  }
+
+  clearLogs() {
+    this.logs = [];
+    this.broadcastWS({ type: 'LOGS_CLEARED' });
+  }
+
+  initDefaultGraphs() {
+    this.graphs.set('tab_ping_pong', {
+      id: 'tab_ping_pong',
+      name: 'Message: Ping Pong',
+      description: 'Replies Pong whenever user types !ping',
+      nodes: [
+        {
+          id: 'node_event_1',
+          type: 'event_message_create',
+          label: 'On Message Create',
+          x: 80,
+          y: 120,
+          data: {}
+        },
+        {
+          id: 'node_comp_1',
+          type: 'compare_text',
+          label: 'Check !ping',
+          x: 400,
+          y: 200,
+          data: { text_b: '!ping', operator: 'equals' }
+        },
+        {
+          id: 'node_branch_1',
+          type: 'branch_if',
+          label: 'If Matches',
+          x: 680,
+          y: 120,
+          data: {}
+        },
+        {
+          id: 'node_send_1',
+          type: 'action_send_message',
+          label: 'Send Pong!',
+          x: 950,
+          y: 120,
+          data: { content: '🏓 Pong!!' }
+        }
+      ],
+      connections: [
+        // Event exec -> Branch exec
+        { id: 'c1', sourceNodeId: 'node_event_1', sourcePinId: 'exec', targetNodeId: 'node_branch_1', targetPinId: 'exec' },
+        // Event content -> Compare text_a
+        { id: 'c2', sourceNodeId: 'node_event_1', sourcePinId: 'content', targetNodeId: 'node_comp_1', targetPinId: 'text_a' },
+        // Compare result -> Branch condition
+        { id: 'c3', sourceNodeId: 'node_comp_1', sourcePinId: 'result', targetNodeId: 'node_branch_1', targetPinId: 'condition' },
+        // Branch true -> Send message exec
+        { id: 'c4', sourceNodeId: 'node_branch_1', sourcePinId: 'true_exec', targetNodeId: 'node_send_1', targetPinId: 'exec' },
+        // Event channel_id -> Send message channel_id
+        { id: 'c5', sourceNodeId: 'node_event_1', sourcePinId: 'channel_id', targetNodeId: 'node_send_1', targetPinId: 'channel_id' }
+      ]
+    });
+
+    this.graphs.set('tab_slash_help', {
+      id: 'tab_slash_help',
+      name: 'Slash: /help',
+      description: 'Handles /help slash command with rich embed',
+      nodes: [
+        {
+          id: 'node_event_slash',
+          type: 'event_slash_command',
+          label: 'On Slash Command',
+          x: 80,
+          y: 120,
+          data: { commandName: 'help', description: 'Show help and bot information.' }
+        },
+        {
+          id: 'node_embed_help',
+          type: 'build_embed',
+          label: 'Help Embed',
+          x: 420,
+          y: 260,
+          data: {
+            title: 'ARC Studio Info',
+            description: 'put stuff here.',
+            color: '#5865F2',
+            footer_text: 'Built with ARC Studio'
+          }
+        },
+        {
+          id: 'node_reply_slash',
+          type: 'action_reply_interaction',
+          label: 'Reply Embed',
+          x: 780,
+          y: 120,
+          data: { content: 'Here is your help info:' }
+        }
+      ],
+      connections: [
+        { id: 'cs1', sourceNodeId: 'node_event_slash', sourcePinId: 'exec', targetNodeId: 'node_reply_slash', targetPinId: 'exec' },
+        { id: 'cs2', sourceNodeId: 'node_event_slash', sourcePinId: 'interaction_id', targetNodeId: 'node_reply_slash', targetPinId: 'interaction_id' },
+        { id: 'cs3', sourceNodeId: 'node_event_slash', sourcePinId: 'interaction_token', targetNodeId: 'node_reply_slash', targetPinId: 'interaction_token' }
+      ]
+    });
+  }
+
+  loadSavedGraphs() {
+    try {
+      if (!fs.existsSync(this.graphStorePath)) return;
+      const stored = JSON.parse(fs.readFileSync(this.graphStorePath, 'utf8'));
+      const savedGraphs = Array.isArray(stored) ? stored : stored.graphs;
+      if (Array.isArray(savedGraphs)) {
+        for (const graph of savedGraphs) {
+          if (graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections)) {
+            this.graphs.set(graph.id, graph);
+          }
+        }
+      }
+      if (Array.isArray(stored.deletedIds)) {
+        this.deletedGraphIds = new Set(stored.deletedIds.filter((id) => typeof id === 'string'));
+        for (const id of this.deletedGraphIds) this.graphs.delete(id);
+      }
+    } catch (error) {
+      this.log('ERROR', `Could not load saved graphs: ${error.message}`);
+    }
+  }
+
+  persistGraphs() {
+    fs.mkdirSync(path.dirname(this.graphStorePath), { recursive: true, mode: 0o700 });
+    const temporaryPath = `${this.graphStorePath}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify({
+      graphs: this.getGraphs(),
+      deletedIds: [...this.deletedGraphIds]
+    }, null, 2), { mode: 0o600 });
+    fs.renameSync(temporaryPath, this.graphStorePath);
+  }
+
+  getGraphs() {
+    const graphs = Array.from(this.graphs.values());
+    const slashDefaultIndex = graphs.findIndex((graph) => graph.id === 'tab_slash_help');
+    if (slashDefaultIndex > 0) graphs.unshift(...graphs.splice(slashDefaultIndex, 1));
+    return graphs;
+  }
+
+  getDesiredSlashCommands(graphs = this.getGraphs()) {
+    const definitions = graphs.flatMap((graph) => (graph.nodes || [])
+      .filter((node) => node.type === 'event_slash_command')
+      .map((node) => ({ graph, node })));
+    const desired = [];
+    const errors = [];
+    const seen = new Set();
+    if (!definitions.length) errors.push('Add a slash command event node to a graph before deploying.');
+    if (definitions.length > 100) errors.push('Discord allows up to 100 global slash commands per application.');
+    for (const { graph, node } of definitions) {
+      const rawName = String(node.data?.commandName || '').trim();
+      const name = rawName.toLowerCase();
+      const description = String(node.data?.description || '').trim();
+      const graphName = graph.name || 'Untitled graph';
+      if (!/^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u.test(name) || name !== rawName) {
+        errors.push(`Graph "${graphName}" has an invalid slash command name. Use 1–32 lowercase letters, numbers, hyphens, underscores, or apostrophes, without a leading slash.`);
+        continue;
+      }
+      if (!description || Array.from(description).length > 100) {
+        errors.push(`/${name} needs a description between 1 and 100 characters.`);
+        continue;
+      }
+      if (seen.has(name)) {
+        errors.push(`More than one graph defines /${name}. Slash command names must be unique.`);
+        continue;
+      }
+      seen.add(name);
+      const defaultMemberPermissions = node.data?.defaultMemberPermissions === undefined || node.data?.defaultMemberPermissions === ''
+        ? undefined : String(node.data.defaultMemberPermissions);
+      if (defaultMemberPermissions !== undefined && !/^\d{1,20}$/.test(defaultMemberPermissions)) {
+        errors.push(`/${name} has an invalid default member permission bitfield.`);
+        continue;
+      }
+      const integrationTypes = Array.isArray(node.data?.integrationTypes) ? [...new Set(node.data.integrationTypes.map(Number))] : undefined;
+      const contexts = Array.isArray(node.data?.contexts) ? [...new Set(node.data.contexts.map(Number))] : undefined;
+      if (integrationTypes && (!integrationTypes.length || integrationTypes.some((value) => ![0, 1].includes(value)))) {
+        errors.push(`/${name} has an invalid integration type. Choose server install, user install, or both.`);
+        continue;
+      }
+      if (contexts && (!contexts.length || contexts.some((value) => ![0, 1, 2].includes(value)))) {
+        errors.push(`/${name} has an invalid interaction context.`);
+        continue;
+      }
+      if (contexts?.includes(2) && integrationTypes && !integrationTypes.includes(1)) {
+        errors.push(`/${name} uses private-channel context, which requires user installation.`);
+        continue;
+      }
+      const rawOptions = Array.isArray(node.data?.options) ? node.data.options : [];
+      if (rawOptions.length > 25) {
+        errors.push(`/${name} can have at most 25 arguments.`);
+        continue;
+      }
+      const commandOptions = [];
+      let invalidOption = false;
+      for (const option of rawOptions) {
+        const optionName = String(option?.name || '').trim();
+        const optionDescription = String(option?.description || '').trim();
+        const optionType = Number(option?.type || 3);
+        const required = Boolean(option?.required);
+        if (!/^[a-z0-9_-]{1,32}$/.test(optionName) || !optionDescription || Array.from(optionDescription).length > 100 || ![3, 4, 5, 6, 7, 8, 9, 10, 11].includes(optionType)) {
+          errors.push(`/${name} has an invalid argument. Names must use 1–32 lowercase letters, numbers, underscores, or hyphens; descriptions need 1–100 characters.`);
+          invalidOption = true;
+          break;
+        }
+        if (commandOptions.some((item) => item.name === optionName)) {
+          errors.push(`/${name} uses the argument name “${optionName}” more than once.`);
+          invalidOption = true;
+          break;
+        }
+        const autocomplete = Boolean(option?.autocomplete);
+        if (autocomplete && ![3, 4, 10].includes(optionType)) {
+          errors.push(`/${name} argument “${optionName}” supports autocomplete only for text, integer, or number types.`);
+          invalidOption = true;
+          break;
+        }
+        const choices = Array.isArray(option?.choices) ? option.choices.filter((choice) => String(choice?.name || '').trim() && choice.value !== undefined).slice(0, 25) : [];
+        if (choices.length && ![3, 4, 10].includes(optionType)) {
+          errors.push(`/${name} argument “${optionName}” cannot have choices for this type.`);
+          invalidOption = true;
+          break;
+        }
+        if (choices.some((choice) => String(choice.name).length > 100 || ([4, 10].includes(optionType) && !Number.isFinite(Number(choice.value))) || (optionType === 4 && !Number.isInteger(Number(choice.value))))) {
+          errors.push(`/${name} argument “${optionName}” has a choice with an invalid label or value.`);
+          invalidOption = true;
+          break;
+        }
+        const apiOption = { type: optionType, name: optionName, description: optionDescription, required };
+        if (autocomplete) apiOption.autocomplete = true;
+        else if (choices.length) apiOption.choices = choices.map((choice) => ({
+          name: String(choice.name).trim().slice(0, 100),
+          value: optionType === 4 ? Number.parseInt(choice.value, 10) : optionType === 10 ? Number(choice.value) : String(choice.value).slice(0, 100)
+        }));
+        commandOptions.push(apiOption);
+      }
+      if (invalidOption) continue;
+      commandOptions.sort((left, right) => Number(right.required) - Number(left.required));
+      desired.push({
+        name,
+        description,
+        type: 1,
+        ...(commandOptions.length ? { options: commandOptions } : {}),
+        ...(defaultMemberPermissions !== undefined ? { default_member_permissions: defaultMemberPermissions } : {}),
+        ...(integrationTypes ? { integration_types: integrationTypes } : {}),
+        ...(contexts ? { contexts } : {})
+      });
+    }
+    return { desired, errors };
+  }
+
+  getCommandPlanHash(commands, graphs = []) {
+    const reviewedWorkspace = graphs.map((graph) => ({ id: graph.id, name: graph.name, graphType: graph.graphType, variables: graph.variables || [], nodes: graph.nodes || [], connections: graph.connections || [] }));
+    return createHash('sha256').update(JSON.stringify({ commands, graphs: reviewedWorkspace })).digest('hex');
+  }
+
+  getCommandPermissionRequirements(graphs) {
+    const types = new Set(graphs.flatMap((graph) => (graph.nodes || []).map((node) => node.type)));
+    const permissions = new Set();
+    if (types.has('action_send_message') || types.has('action_edit_message')) for (const permission of ['View Channels', 'Send Messages']) permissions.add(permission);
+    if (graphs.some((graph) => (graph.nodes || []).some((node) => ['action_send_message', 'action_edit_message'].includes(node.type) && graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')))) permissions.add('Embed Links');
+    return [...permissions];
+  }
+
+  async previewSlashCommands(graphsOverride = null) {
+    const token = this.getBotToken();
+    if (!token) throw new Error('Configure a bot token before reviewing commands.');
+    const graphs = Array.isArray(graphsOverride) ? graphsOverride : this.getGraphs();
+    if (graphs.length > 300 || graphs.some((graph) => !graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections) || graph.nodes.length > 2000)) {
+      throw new Error('The workspace is too large or contains an invalid graph. Save the graphs and try again.');
+    }
+    const { desired, errors } = this.getDesiredSlashCommands(graphs);
+    const rest = new RESTClient({ token });
+    let application = this.botProfile?.application || null;
+    try {
+      const freshApplication = await rest.getCurrentApplication();
+      if (freshApplication?.id) {
+        application = { ...application, id: freshApplication.id };
+        if (freshApplication.flags !== undefined) application.flags = freshApplication.flags;
+        if (freshApplication.flags_new !== undefined) application.flags_new = freshApplication.flags_new;
+        if (this.botProfile) {
+          this.botProfile = { ...this.botProfile, application };
+          this.botProfile.intentSummary = this.getIntentPlan(graphs);
+          this.persistBotConfig();
+          this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
+        }
+      }
+    } catch (error) {
+      if (!application?.id) throw error;
+    }
+    if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
+    const current = await rest.getGlobalApplicationCommands(application.id);
+    const currentCommands = (Array.isArray(current) ? current : []).filter((command) => Number(command.type || 1) === 1);
+    const currentByName = new Map(currentCommands.map((command) => [String(command.name || '').toLowerCase(), command]));
+    const desiredByName = new Map(desired.map((command) => [command.name, command]));
+    const managed = new Set(this.botProfile?.managedSlashCommandNames || []);
+    const created = desired.filter((command) => !currentByName.has(command.name));
+    const updated = desired.filter((command) => {
+      const existing = currentByName.get(command.name);
+      return existing && (existing.description !== command.description
+        || (existing.default_member_permissions || undefined) !== (command.default_member_permissions || undefined)
+        || JSON.stringify(existing.integration_types || undefined) !== JSON.stringify(command.integration_types || undefined)
+        || JSON.stringify(existing.contexts || undefined) !== JSON.stringify(command.contexts || undefined));
+    });
+    const unchanged = desired.filter((command) => {
+      const existing = currentByName.get(command.name);
+      return existing && existing.description === command.description
+        && (existing.default_member_permissions || undefined) === (command.default_member_permissions || undefined)
+        && JSON.stringify(existing.integration_types || undefined) === JSON.stringify(command.integration_types || undefined)
+        && JSON.stringify(existing.contexts || undefined) === JSON.stringify(command.contexts || undefined);
+    });
+    const removed = currentCommands.filter((command) => managed.has(String(command.name || '').toLowerCase()) && !desiredByName.has(String(command.name || '').toLowerCase()));
+    const intentPlan = this.getIntentPlan(graphs);
+    return {
+      valid: errors.length === 0,
+      errors,
+      applicationId: application.id,
+      commands: desired,
+      changes: { created, updated, unchanged, removed: removed.map(({ name }) => ({ name })), preserved: currentCommands.filter((command) => !managed.has(String(command.name || '').toLowerCase()) && !desiredByName.has(String(command.name || '').toLowerCase())).map(({ name }) => ({ name })) },
+      planHash: this.getCommandPlanHash(desired, graphs),
+      intents: intentPlan.filter((intent) => intent.required),
+      permissions: this.getCommandPermissionRequirements(graphs),
+      noChanges: !created.length && !updated.length && !removed.length
+    };
+  }
+
+  async deploySlashCommands(graphsOverride = null, expectedPlanHash = null) {
+    const token = this.getBotToken();
+    if (!token) throw new Error('Configure a bot token before deploying commands.');
+    if (this.commandDeploymentInFlight) {
+      const error = new Error('A command deployment is already in progress.');
+      error.status = 429;
+      error.retryAfterMs = 30_000;
+      throw error;
+    }
+    const retryAfterMs = this.commandDeploymentLastAt + 30_000 - Date.now();
+    if (retryAfterMs > 0) {
+      const error = new Error('Command deployment is cooling down. Try again in ' + Math.ceil(retryAfterMs / 1000) + ' seconds.');
+      error.status = 429;
+      error.retryAfterMs = retryAfterMs;
+      throw error;
+    }
+
+    const graphs = Array.isArray(graphsOverride) ? graphsOverride : this.getGraphs();
+    const { desired, errors } = this.getDesiredSlashCommands(graphs);
+    if (errors.length) throw new Error(errors.join(' '));
+    if (expectedPlanHash && expectedPlanHash !== this.getCommandPlanHash(desired, graphs)) {
+      const error = new Error('The workspace changed after review. Review the deployment again before applying it.');
+      error.status = 409;
+      throw error;
+    }
+
+    this.commandDeploymentInFlight = true;
+    this.commandDeploymentLastAt = Date.now();
+    try {
+      const rest = new RESTClient({ token });
+      const application = this.botProfile?.application?.id
+        ? this.botProfile.application
+        : await rest.getCurrentApplication();
+      if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
+      const current = await rest.getGlobalApplicationCommands(application.id);
+      const desiredByName = new Map(desired.map((command) => [command.name, command]));
+      const previouslyManaged = new Set(this.botProfile?.managedSlashCommandNames || []);
+      const preserved = (Array.isArray(current) ? current : []).flatMap((command) => {
+        const commandName = String(command.name || '').toLowerCase();
+        const isGraphManaged = Number(command.type || 1) === 1 && previouslyManaged.has(commandName);
+        if (isGraphManaged && !desiredByName.has(commandName)) return [];
+        const payload = {};
+        for (const field of ['name', 'name_localizations', 'description', 'description_localizations', 'options', 'default_member_permissions', 'dm_permission', 'default_permission', 'integration_types', 'contexts', 'nsfw', 'type']) {
+          if (command[field] !== undefined) payload[field] = command[field];
+        }
+        if (Number(command.type || 1) === 1 && desiredByName.has(commandName)) return [{ ...payload, ...desiredByName.get(commandName) }];
+        return [payload];
+      });
+      const existingNames = new Set((Array.isArray(current) ? current : [])
+        .filter((command) => Number(command.type || 1) === 1)
+        .map((command) => String(command.name).toLowerCase()));
+      for (const command of desired) if (!existingNames.has(command.name)) preserved.push(command);
+
+      const deployed = await rest.bulkOverwriteGlobalApplicationCommands(application.id, preserved);
+      if (this.botProfile) {
+        this.botProfile = { ...this.botProfile, application, managedSlashCommandNames: desired.map((command) => command.name) };
+        this.persistBotConfig();
+      }
+      return {
+        applicationId: application.id,
+        deployed: desired.length,
+        created: desired.filter((command) => !existingNames.has(command.name)).length,
+        commands: (Array.isArray(deployed) ? deployed : []).filter((command) => Number(command.type || 1) === 1).length
+      };
+    } finally {
+      this.commandDeploymentInFlight = false;
+    }
+  }
+
+  loadGraphLibrary() {
+    try {
+      if (!fs.existsSync(this.graphLibraryPath)) return;
+      const stored = JSON.parse(fs.readFileSync(this.graphLibraryPath, 'utf8'));
+      if (Array.isArray(stored.templates)) this.graphTemplates = stored.templates.filter((graph) => graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections));
+      if (Array.isArray(stored.snapshots)) this.graphSnapshots = stored.snapshots.filter((snapshot) => snapshot && typeof snapshot.id === 'string' && typeof snapshot.graphId === 'string' && snapshot.graph && Array.isArray(snapshot.graph.nodes) && Array.isArray(snapshot.graph.connections));
+      if (typeof stored.defaultGraphId === 'string') this.defaultGraphId = stored.defaultGraphId;
+    } catch (error) {
+      this.log('ERROR', `Could not load graph library settings: ${error.message}`);
+    }
+  }
+
+  persistGraphLibrary() {
+    fs.mkdirSync(path.dirname(this.graphLibraryPath), { recursive: true, mode: 0o700 });
+    const temporaryPath = `${this.graphLibraryPath}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify({ defaultGraphId: this.defaultGraphId, templates: this.graphTemplates, snapshots: this.graphSnapshots }, null, 2), { mode: 0o600 });
+    fs.renameSync(temporaryPath, this.graphLibraryPath);
+  }
+
+  getGraphLibrary() {
+    return { templates: this.graphTemplates, defaultGraphId: this.defaultGraphId, snapshots: this.graphSnapshots };
+  }
+
+  createGraphSnapshot(graphId, graphData, name, options = {}) {
+    if (!graphData || graphData.id !== graphId || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
+      throw new TypeError('A snapshot must include the selected graph and its nodes and connections.');
+    }
+    const graph = structuredClone(graphData);
+    delete graph.isDirty;
+    const automatic = options.automatic === true;
+    const retentionHours = automatic ? Number(options.retentionHours ?? 12) : null;
+    if (automatic && retentionHours !== 0 && (!Number.isFinite(retentionHours) || retentionHours < 12 || retentionHours > 8760)) {
+      throw new TypeError('Automatic snapshot history must be between 12 hours and 365 days, or 0 for forever.');
+    }
+    const fingerprint = automatic ? createHash('sha256').update(JSON.stringify(graph)).digest('hex') : null;
+    const now = Date.now();
+    if (automatic) {
+      if (retentionHours > 0) {
+        const cutoff = now - retentionHours * 60 * 60 * 1000;
+        this.graphSnapshots = this.graphSnapshots.filter((item) => !item.automatic || Date.parse(item.createdAt) >= cutoff);
+      }
+      const previous = this.graphSnapshots.find((item) => item.graphId === graphId && item.automatic);
+      const previousFingerprint = previous?.fingerprint || (previous?.graph ? createHash('sha256').update(JSON.stringify(previous.graph)).digest('hex') : null);
+      if (previousFingerprint === fingerprint) {
+        this.persistGraphLibrary();
+        return null;
+      }
+    }
+    const snapshot = {
+      id: `snapshot_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      graphId,
+      graphName: String(graph.name || 'Untitled graph').slice(0, 80),
+      name: automatic ? 'Automatic checkpoint' : String(name || '').trim().slice(0, 80) || `Checkpoint ${new Date().toLocaleString()}`,
+      createdAt: new Date().toISOString(),
+      graph,
+      ...(automatic ? { automatic: true, retentionHours, fingerprint } : {})
+    };
+    this.graphSnapshots = [snapshot, ...this.graphSnapshots];
+    const keptForGraph = this.graphSnapshots.filter((item) => item.graphId === graphId && !item.automatic);
+    for (const excess of keptForGraph.slice(50)) this.graphSnapshots = this.graphSnapshots.filter((item) => item.id !== excess.id);
+    if (automatic && retentionHours > 0) {
+      const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
+      this.graphSnapshots = this.graphSnapshots.filter((item) => !item.automatic || Date.parse(item.createdAt) >= cutoff);
+    }
+    this.persistGraphLibrary();
+    return snapshot;
+  }
+
+  deleteGraphSnapshot(snapshotId) {
+    this.graphSnapshots = this.graphSnapshots.filter((snapshot) => snapshot.id !== snapshotId);
+    this.persistGraphLibrary();
+  }
+
+  saveGraphTemplate(graphData, name) {
+    if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) throw new TypeError('A graph template must include nodes and connections arrays.');
+    const template = { ...graphData, id: `template_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, name: String(name || graphData.name || 'Untitled template').trim().slice(0, 80), isTemplate: true, updatedAt: new Date().toISOString() };
+    delete template.isDirty;
+    this.graphTemplates = [template, ...this.graphTemplates];
+    this.persistGraphLibrary();
+    return template;
+  }
+
+  deleteGraphTemplate(templateId) {
+    this.graphTemplates = this.graphTemplates.filter((template) => template.id !== templateId);
+    if (this.defaultGraphId === templateId) this.defaultGraphId = 'tab_slash_help';
+    this.persistGraphLibrary();
+  }
+
+  setDefaultGraph(graphId) {
+    const exists = this.graphs.has(graphId) || this.graphTemplates.some((template) => template.id === graphId);
+    if (!exists) throw new Error('Choose a saved graph or template as the default.');
+    this.defaultGraphId = graphId;
+    this.persistGraphLibrary();
+    return graphId;
+  }
+
+  getVariableState(graph, mode = 'live') {
+    const states = mode === 'mock' ? this.mockVariableStates : this.variableStates;
+    if (!states.has(graph.id)) states.set(graph.id, new Map());
+    return states.get(graph.id);
+  }
+
+  loadProjectVariables() {
+    try {
+      const stored = JSON.parse(fs.readFileSync(this.projectVariablesPath, 'utf8'));
+      return Array.isArray(stored) ? stored.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string') : [];
+    } catch { return []; }
+  }
+
+  getProjectVariables() { return this.projectVariables.map((variable) => ({ ...variable })); }
+
+  setProjectVariables(variables) {
+    if (!Array.isArray(variables) || variables.length > 100) throw new TypeError('A project can have at most 100 shared variables.');
+    const names = new Set();
+    const existingVariables = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
+    const next = variables.map((item) => {
+      const name = String(item?.name || '').trim().slice(0, 64);
+      const type = ['string', 'number', 'boolean', 'array', 'object'].includes(item?.type) ? item.type : '';
+      if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError('A project variable has an invalid ID.');
+      if (!name) throw new TypeError('Every project variable needs a name.');
+      const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
+      const unchangedLegacyName = existingVariables.get(item.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
+      if (!validName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
+      if (!type) throw new TypeError(`Project variable “${name}” has an unsupported type.`);
+      if (names.has(name.toLowerCase())) throw new TypeError(`Project variable name “${name}” is used more than once.`);
+      names.add(name.toLowerCase());
+      let initialValue;
+      if (type === 'number') initialValue = Number.isFinite(Number(item.initialValue)) ? Number(item.initialValue) : 0;
+      else if (type === 'boolean') initialValue = Boolean(item.initialValue);
+      else if (type === 'array' || type === 'object') {
+        const valid = type === 'array' ? Array.isArray(item.initialValue) : item.initialValue && typeof item.initialValue === 'object' && !Array.isArray(item.initialValue);
+        if (!valid) throw new TypeError(`Project variable “${name}” needs a JSON ${type}.`);
+        const serialized = JSON.stringify(item.initialValue);
+        if (serialized.length > 10000) throw new TypeError(`Project variable “${name}” exceeds the 10,000 character JSON limit.`);
+        initialValue = JSON.parse(serialized);
+      } else initialValue = String(item.initialValue ?? '').slice(0, 10000);
+      return { id: item.id, name, type, initialValue, updatedAt: new Date().toISOString() };
+    });
+    const previousById = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
+    for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) {
+      for (const variable of next) {
+        const previous = previousById.get(variable.id);
+        if (!previous || previous.type !== variable.type || JSON.stringify(previous.initialValue) !== JSON.stringify(variable.initialValue)) {
+          state.set(variable.id, structuredClone(variable.initialValue));
+        }
+      }
+    }
+    this.projectVariables = next;
+    const temporaryPath = `${this.projectVariablesPath}.tmp`;
+    fs.writeFileSync(temporaryPath, JSON.stringify(next, null, 2), { mode: 0o600 });
+    fs.renameSync(temporaryPath, this.projectVariablesPath);
+    const activeIds = new Set(next.map((item) => item.id));
+    for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) {
+      for (const variableId of state.keys()) if (!activeIds.has(variableId)) state.delete(variableId);
+    }
+    this.broadcastWS({ type: 'PROJECT_VARIABLES_UPDATED', payload: { projectId: this.project.id, variables: this.getProjectVariables() } });
+    return this.getProjectVariables();
+  }
+
+  getProjectVariableState(mode = 'live') {
+    return mode === 'mock' ? this.mockProjectVariableStates : this.projectVariableStates;
+  }
+
+  saveGraph(tabId, graphData) {
+    if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.connections)) {
+      throw new TypeError('A graph must include nodes and connections arrays.');
+    }
+    if (Array.isArray(graphData.variables)) {
+      if (graphData.variables.length > 100) throw new TypeError('A graph can have at most 100 variables.');
+      const names = new Set();
+      const existingVariables = new Map((this.graphs.get(tabId)?.variables || []).map((variable) => [variable.id, variable]));
+      for (const variable of graphData.variables) {
+        const name = String(variable?.name || '').trim();
+        const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
+        const unchangedLegacyName = existingVariables.get(variable?.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
+        if (!validName && !unchangedLegacyName) throw new TypeError('Variable names must use 1–64 letters or numbers, with single hyphens between them.');
+        if (names.has(name.toLowerCase())) throw new TypeError(`Variable name “${name}” is used more than once.`);
+        names.add(name.toLowerCase());
+        const type = variable?.type;
+        if (!['string', 'number', 'boolean', 'array', 'object'].includes(type)) throw new TypeError(`Variable “${name}” has an unsupported type.`);
+        if (type === 'array' || type === 'object') {
+          const value = variable.initialValue;
+          const valid = type === 'array' ? Array.isArray(value) : value && typeof value === 'object' && !Array.isArray(value);
+          if (!valid || JSON.stringify(value).length > 10000) throw new TypeError(`Variable “${name}” needs a JSON ${type} under 10,000 characters.`);
+        } else if (type === 'string' && String(variable.initialValue ?? '').length > 10000) throw new TypeError(`Variable “${name}” exceeds the 10,000 character value limit.`);
+      }
+    }
+    const previousGraph = this.graphs.get(tabId);
+    if (Array.isArray(graphData.variables)) {
+      const previousVariables = new Map((previousGraph?.variables || []).map((variable) => [variable.id, variable]));
+      for (const states of [this.variableStates, this.mockVariableStates]) {
+        let state = states.get(tabId);
+        if (!state) continue;
+        const nextIds = new Set();
+        for (const variable of graphData.variables) {
+          nextIds.add(variable.id);
+          const previous = previousVariables.get(variable.id);
+          if (!previous || previous.type !== variable.type || previous.persist !== variable.persist || JSON.stringify(previous.initialValue) !== JSON.stringify(variable.initialValue)) {
+            state.set(variable.id, structuredClone(variable.initialValue));
+          }
+        }
+        for (const variableId of state.keys()) if (!nextIds.has(variableId)) state.delete(variableId);
+      }
+    }
+    this.deletedGraphIds.delete(tabId);
+    this.graphs.set(tabId, { ...graphData, id: tabId, updatedAt: new Date().toISOString() });
+    this.persistGraphs();
+    if (this.botProfile) {
+      this.botProfile.intentSummary = this.getIntentPlan();
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
+    }
+    this.log('INFO', `Saved visual graph tab: "${graphData.name || tabId}"`);
+    return this.graphs.get(tabId);
+  }
+
+  deleteGraph(tabId) {
+    this.graphs.delete(tabId);
+    this.deletedGraphIds.add(tabId);
+    this.variableStates.delete(tabId);
+    this.mockVariableStates.delete(tabId);
+    this.persistGraphs();
+    if (this.botProfile) {
+      this.botProfile.intentSummary = this.getIntentPlan();
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
+    }
+    if (this.defaultGraphId === tabId) {
+      this.defaultGraphId = 'tab_slash_help';
+      this.persistGraphLibrary();
+    }
+    this.log('INFO', `Removed graph tab "${tabId}"`);
+  }
+
+  /**
+   * @param {string} token
+   */
+  async verifyAndFetchProfile(token) {
+    const cleanToken = String(token || '').trim();
+    if (!cleanToken) throw new Error('Token is required.');
+    this.log('INFO', 'Verifying Discord Bot Token via Chezcord REST client...');
+    const rest = new RESTClient({ token: cleanToken });
+
+    try {
+      const user = await rest.getCurrentUser();
+      let app = null;
+      try {
+        app = await rest.getCurrentApplication();
+      } catch (e) {
+        // perm
+      }
+
+      this.botProfile = {
+        id: user.id,
+        username: user.username,
+        global_name: user.global_name,
+        discriminator: user.discriminator,
+        avatar: user.avatar,
+        banner: user.banner || app?.banner || app?.cover_image || null,
+        bot: user.bot,
+        flags: user.flags,
+        public_flags: user.public_flags,
+        verifiedBot: isDiscordVerifiedBot(user),
+        application: app
+          ? {
+              id: app.id,
+              name: app.name,
+              description: app.description,
+              icon: app.icon,
+              banner: app.banner,
+              cover_image: app.cover_image,
+              bot_public: app.bot_public,
+              bot_require_code_grant: app.bot_require_code_grant,
+              install_params: app.install_params,
+              flags: app.flags,
+              flags_new: app.flags_new
+            }
+          : null
+      };
+      this.botProfile.intentSummary = this.getIntentPlan();
+
+      this.setBotToken(cleanToken);
+      this.log('INFO', `Verified Discord bot: ${user.username}#${user.discriminator || '0'} (ID: ${user.id})`);
+      return this.botProfile;
+    } catch (err) {
+      const safeMessage = redactSecret(err?.message, cleanToken);
+      this.log('ERROR', `Bot token verification failed: ${safeMessage}`);
+      const safeError = new Error(safeMessage);
+      if (Number.isInteger(err?.status)) safeError.status = err.status;
+      throw safeError;
+    }
+  }
+
+  async startBot(token = null) {
+    this.stopCronScheduler?.();
+    this.stopCronScheduler = null;
+    if (token) this.setBotToken(token);
+    const activeToken = this.getBotToken();
+    if (!activeToken) {
+      throw new Error('No Discord Bot Token configured. Provide one in setup.');
+    }
+
+    await this.refreshIntentPlan(true);
+
+    this.graphRunAbortController?.abort();
+    this.graphRunAbortController = new AbortController();
+    const runSignal = this.graphRunAbortController.signal;
+
+    if (this.restRateLimitListener) {
+      this.client?.rest.rateLimiter.off('rateLimit', this.restRateLimitListener);
+      this.restRateLimitListener = null;
+    }
+    if (this.client) {
+      this.client.destroy();
+    }
+
+    this.status = 'CONNECTING';
+    this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status } });
+    this.log('GATEWAY', 'Initiating Chezcord Gateway connection...');
+
+    const intentPlan = this.getIntentPlan();
+    const missingPrivileged = intentPlan.filter((intent) => intent.privileged && intent.required && intent.portalEnabled === false);
+    if (missingPrivileged.length) {
+      this.log('WARN', `Connecting without ${missingPrivileged.map((intent) => intent.label).join(' and ')} privileged intent${missingPrivileged.length === 1 ? '' : 's'}; related graph events and data may be unavailable.`);
+    }
+    const intents = intentPlan.filter((intent) => intent.required && !(intent.privileged && intent.portalEnabled === false)).reduce((value, intent) => value | intent.bit, 0);
+    if (this.botProfile) this.botProfile.intentSummary = intentPlan;
+    this.client = new Client({ token: activeToken, intents });
+    if (!this.applicationEmojis.length && this.botProfile?.application?.id) {
+      try {
+        const emojiResult = await this.client.rest.getApplicationEmojis(this.botProfile.application.id);
+        this.applicationEmojis = Array.isArray(emojiResult?.items) ? emojiResult.items : [];
+      } catch (error) {
+        this.log('WARN', `App emojis could not be loaded for text templates: ${error.message}`);
+      }
+    }
+    this.gatewayLatencySamples = [];
+    this.gatewayMetrics = { ...this.gatewayMetrics, latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null };
+    this.client.on('heartbeatLatency', (latencyMs) => this.recordGatewayLatency(latencyMs));
+    this.restRateLimitListener = ({ rateLimitedUntil, scope }) => {
+      this.gatewayMetrics = { ...this.gatewayMetrics, rateLimitedUntil, rateLimitScope: scope };
+      this.publishGatewayMetrics();
+      this.log('WARN', `Discord API rate limit active (${scope}); pausing API requests until ${new Date(rateLimitedUntil).toISOString()}.`);
+    };
+    this.client.rest.rateLimiter.on('rateLimit', this.restRateLimitListener);
+    this.publishGatewayMetrics();
+
+    const dispatchGraphEvent = async (eventName, payload, onlyGraphId = null) => {
+      const normalizedEventName = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
+      const interactionState = normalizedEventName === 'INTERACTION_CREATE'
+        ? { applicationId: payload?.application_id || '', acknowledged: false, deferred: false, pending: null }
+        : null;
+      const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.graphType !== 'function'
+        && (!onlyGraphId || graph.id === onlyGraphId)
+        && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName));
+      await Promise.all(listeningGraphs.map(async (graph) => {
+        try {
+          const result = await GraphRunner.execute(graph, eventName, payload, {
+            projectDir: this.projectDir,
+            rest: this.client.rest,
+            client: this.client,
+            resolveFunctionGraph: (graphId) => this.graphs.get(graphId),
+            variablesState: this.getVariableState(graph),
+            projectVariables: this.projectVariables,
+            projectVariablesState: this.getProjectVariableState(),
+            getGraphVariableState: (targetGraph) => this.getVariableState(targetGraph),
+            appEmojis: this.applicationEmojis,
+            interactionState,
+            canDeploySlashCommands: () => {
+              let permissions = 0n;
+              try { permissions = BigInt(String(payload?.member?.permissions || 0)); } catch {}
+              return (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
+            },
+            deploySlashCommands: () => this.deploySlashCommands(),
+            signal: runSignal,
+            onNodeExecution: ({ graphId, nodeId }) => this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graphId, nodeIds: [nodeId] } }),
+            onNodeError: (failure) => {
+              this.log('ERROR', `Graph “${failure.graphName}” failed at node “${failure.nodeLabel}” (${failure.nodeId}): ${failure.error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
+              this.broadcastWS({ type: 'GRAPH_NODE_ERROR', payload: failure });
+            },
+            log: (message) => this.log('EXECUTION', message)
+          });
+          if (result.executedNodeIds.length > 0) {
+            this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graph.id, nodeIds: result.executedNodeIds } });
+          }
+        } catch (error) {
+          this.log('ERROR', `Graph “${graph.name || graph.id}” failed while handling ${normalizedEventName}: ${error.message}`);
+        }
+      }));
+    };
+
+    this.client.on('status', (s) => {
+      this.log('GATEWAY', `Gateway status change: ${s}`);
+    });
+
+    this.client.on('debug', (msg) => {
+      this.log('DEBUG', msg);
+    });
+
+    this.client.on('ready', () => {
+      this.status = 'ONLINE';
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.client.user } });
+      this.log('INFO', `Bot is ONLINE as ${this.client.user.username}`);
+      this.stopCronScheduler?.();
+      this.stopCronScheduler = startCronScheduler({
+        getGraphs: () => [...this.graphs.values()],
+        dispatch: (graph, _node, payload) => dispatchGraphEvent('CRON_TICK', payload, graph.id),
+        onError: ({ graph, node, error }) => {
+          const failure = { graphId: graph.id, graphName: graph.name || graph.id, nodeId: node.id, nodeLabel: node.label || 'On Schedule', error };
+          this.log('ERROR', `Graph “${failure.graphName}” has an invalid cron schedule at node “${failure.nodeLabel}”: ${error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
+          this.broadcastWS({ type: 'GRAPH_NODE_ERROR', payload: failure });
+        }
+      });
+    });
+
+    this.client.on('messageCreate', async (msg) => {
+      if (msg.author?.id === this.client.user?.id) return;
+      this.log('INFO', `Message received from ${msg.author?.username}: "${msg.content}"`);
+      await dispatchGraphEvent('MESSAGE_CREATE', msg);
+    });
+
+    this.client.on('interactionCreate', async (interaction) => {
+      this.log('INFO', `Interaction received: Type ${interaction.type}`);
+      if (Number(interaction.type) === 4) {
+        const commandName = String(interaction.data?.name || '').toLowerCase();
+        const graph = [...this.graphs.values()].find((item) => (item.nodes || []).some((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName));
+        const commandNode = graph?.nodes?.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === commandName);
+        const findFocused = (options = []) => {
+          for (const option of options) {
+            if (option.focused) return option;
+            const nested = findFocused(option.options || []);
+            if (nested) return nested;
+          }
+          return null;
+        };
+        const focused = findFocused(interaction.data?.options || []);
+        const option = commandNode?.data?.options?.find((item) => item.name === focused?.name);
+        const typed = String(focused?.value ?? '').toLocaleLowerCase();
+        const choices = option?.autocomplete && Array.isArray(option.choices)
+          ? option.choices.filter((choice) => String(choice.name || '').toLocaleLowerCase().includes(typed)).slice(0, 25).map((choice) => ({
+            name: String(choice.name || '').slice(0, 100),
+            value: Number(option.type) === 4 ? Number.parseInt(choice.value, 10) : Number(option.type) === 10 ? Number(choice.value) : String(choice.value ?? '').slice(0, 100)
+          }))
+          : [];
+        try {
+          await this.client.rest.createInteractionResponse(interaction.id, interaction.token, { type: 8, data: { choices } });
+        } catch (error) {
+          this.log('WARN', `Autocomplete response failed for /${commandName}: ${error.message}`);
+        }
+        return;
+      }
+      if (interaction.type === 2 && Number(interaction.data?.type || 1) === 1) {
+        this.commandStatistics.recordCommand({
+          name: interaction.data?.name,
+          userId: interaction.member?.user?.id || interaction.user?.id,
+          timestamp: Date.now()
+        });
+      }
+
+      await dispatchGraphEvent('INTERACTION_CREATE', interaction);
+    });
+
+    this.client.on('guildMemberAdd', async (member) => {
+      await dispatchGraphEvent('GUILD_MEMBER_ADD', member);
+    });
+
+    const graphGatewayEvents = new Set([...this.graphs.values()].flatMap((graph) => (graph.nodes || [])
+      .map((node) => NodeDefinitions[node.type]?.gatewayEvent).filter(Boolean)));
+    this.client.on('gatewayDispatch', (eventName, payload) => {
+      if (!graphGatewayEvents.has(eventName) || ['MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
+      dispatchGraphEvent(eventName, payload).catch((error) => this.log('ERROR', `Graph event ${eventName} failed: ${error.message}`));
+    });
+
+    this.client.on('fatalError', (err) => {
+      this.stopCronScheduler?.();
+      this.stopCronScheduler = null;
+      this.graphRunAbortController?.abort();
+      this.status = 'ERROR';
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, error: err.message } });
+      this.log('ERROR', `Fatal Gateway Error: ${err.message}`);
+    });
+
+    try {
+      await this.client.login();
+    } catch (err) {
+      this.graphRunAbortController?.abort();
+      this.status = 'ERROR';
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, error: err.message } });
+      this.log('ERROR', `Login failed: ${err.message}`);
+      throw err;
+    }
+  }
+
+  getIntentPlan(graphs = [...this.graphs.values()]) {
+    const requiredIntents = new Set(graphs.flatMap((graph) => (graph.nodes || [])
+      .flatMap((node) => NodeDefinitions[node.type]?.gatewayIntents || [])));
+    const appFlags = this.botProfile?.application?.flags_new ?? this.botProfile?.application?.flags;
+    let flags = null;
+    try { if (appFlags !== undefined && appFlags !== null) flags = BigInt(appFlags); } catch {}
+    const hasFlag = (bit) => flags === null ? null : Boolean(flags & (1n << BigInt(bit)));
+    const configured = (...bits) => {
+      const states = bits.map(hasFlag);
+      if (states.includes(true)) return true;
+      return states.includes(null) ? null : false;
+    };
+    const intentInfo = {
+      GUILDS: ['Guilds', false, true], GUILD_MEMBERS: ['Guild members', true, configured(14, 15)],
+      GUILD_MODERATION: ['Server moderation', false, true], GUILD_EMOJIS_AND_STICKERS: ['Server emojis and stickers', false, true],
+      GUILD_INTEGRATIONS: ['Integrations', false, true], GUILD_WEBHOOKS: ['Webhooks', false, true], GUILD_INVITES: ['Invites', false, true],
+      GUILD_VOICE_STATES: ['Voice states', false, true], GUILD_PRESENCES: ['Presence updates', true, configured(12, 13)],
+      GUILD_MESSAGES: ['Guild messages', false, true], GUILD_MESSAGE_REACTIONS: ['Guild reactions', false, true],
+      GUILD_MESSAGE_TYPING: ['Guild typing', false, true], DIRECT_MESSAGES: ['Direct messages', false, true],
+      DIRECT_MESSAGE_REACTIONS: ['Direct message reactions', false, true], DIRECT_MESSAGE_TYPING: ['Direct message typing', false, true],
+      MESSAGE_CONTENT: ['Message content', true, configured(18, 19)], GUILD_SCHEDULED_EVENTS: ['Scheduled events', false, true],
+      AUTO_MODERATION_CONFIGURATION: ['AutoMod configuration', false, true], AUTO_MODERATION_EXECUTION: ['AutoMod actions', false, true]
+    };
+    return Object.entries(GatewayIntents).map(([key, bit]) => ({
+      key, label: intentInfo[key]?.[0] || key.replaceAll('_', ' ').toLowerCase(),
+      required: key === 'GUILDS' || requiredIntents.has(key),
+      privileged: intentInfo[key]?.[1] || false,
+      portalEnabled: intentInfo[key]?.[2] === undefined ? true : intentInfo[key][2],
+      bit
+    }));
+  }
+
+  async refreshIntentPlan(force = false) {
+    const token = this.getBotToken();
+    if (!token) return this.getIntentPlan();
+    if (this.intentPlanRefreshPromise) return this.intentPlanRefreshPromise;
+    if (!force && Date.now() - this.intentPlanLastRefreshAt < 60_000) return this.getIntentPlan();
+    this.intentPlanLastRefreshAt = Date.now();
+    this.intentPlanRefreshPromise = (async () => {
+      try {
+        const application = await new RESTClient({ token }).getCurrentApplication();
+        if (application && this.botProfile) {
+          const previous = this.botProfile.application || {};
+          this.botProfile = {
+            ...this.botProfile,
+            application: {
+              ...previous,
+              id: application.id || previous.id,
+              ...(application.flags !== undefined ? { flags: application.flags } : {}),
+              ...(application.flags_new !== undefined ? { flags_new: application.flags_new } : {})
+            }
+          };
+          this.botProfile.intentSummary = this.getIntentPlan();
+          this.persistBotConfig();
+          this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, user: this.botProfile } });
+        }
+      } catch (error) {
+        this.log('WARN', `Could not refresh Discord privileged intent status: ${error.message}`);
+      } finally {
+        this.intentPlanRefreshPromise = null;
+      }
+      return this.getIntentPlan();
+    })();
+    return this.intentPlanRefreshPromise;
+  }
+
+  stopBot() {
+    this.stopCronScheduler?.();
+    this.stopCronScheduler = null;
+    this.graphRunAbortController?.abort();
+    this.graphRunAbortController = null;
+    if (this.client) {
+      if (this.restRateLimitListener) this.client.rest.rateLimiter.off('rateLimit', this.restRateLimitListener);
+      this.restRateLimitListener = null;
+      this.client.destroy();
+      this.client = null;
+    }
+    this.status = 'DISCONNECTED';
+    this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status } });
+    this.log('INFO', 'Bot disconnected from Gateway.');
+  }
+
+  /**
+   * Offline Testing Environment
+   * @param {string} tabId
+   * @param {string} eventName
+   * @param {object} customPayload
+   */
+  startMockDebug(tabId, eventName, customPayload, graphOverride = null, requestedRunId = null, graphOverrides = null) {
+    if (this.debugRuns.size >= 3) throw new Error('Three debug sessions are already active. Finish one before starting another.');
+    const runId = typeof requestedRunId === 'string' && /^debug_[\w-]{8,80}$/.test(requestedRunId)
+      ? requestedRunId
+      : `debug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (this.debugRuns.has(runId)) throw new Error('This debug session is already running.');
+    const session = { runId, paused: false, continue: false, resume: null, timer: null };
+    this.debugRuns.set(runId, session);
+    this.injectMockEvent(tabId, eventName, customPayload, graphOverride, session, graphOverrides).then((result) => {
+      this.broadcastWS({ type: 'MOCK_DEBUG_FINISHED', payload: { runId, result } });
+    }).catch((error) => {
+      this.broadcastWS({ type: 'MOCK_DEBUG_FINISHED', payload: { runId, error: error.message } });
+    }).finally(() => {
+      clearTimeout(session.timer);
+      this.debugRuns.delete(runId);
+    });
+    return { runId };
+  }
+
+  advanceMockDebug(runId, action = 'step') {
+    const session = this.debugRuns.get(runId);
+    if (!session) throw new Error('Debug session has ended.');
+    if (action === 'continue') session.continue = true;
+    if (session.resume) {
+      clearTimeout(session.timer);
+      session.paused = false;
+      const resume = session.resume;
+      session.resume = null;
+      resume();
+    }
+    return { success: true };
+  }
+
+  async injectMockEvent(tabId, eventName, customPayload, graphOverride = null, debugSession = null, graphOverrides = null) {
+    const startTime = Date.now();
+    this.log('MOCK', `[Offline Simulator] Injecting mock ${eventName} event into tab: "${tabId}"`);
+
+    const graph = graphOverride?.id === tabId && Array.isArray(graphOverride.nodes)
+      ? graphOverride
+      : this.graphs.get(tabId) || Array.from(this.graphs.values())[0];
+    if (!graph) {
+      throw new Error(`Graph tab "${tabId}" not found for simulation.`);
+    }
+
+    const interceptedOutputs = [];
+    const mockREST = this.mockGateway.createMockREST(interceptedOutputs);
+    const functionGraphLookup = new Map(this.graphs);
+    if (Array.isArray(graphOverrides)) for (const candidate of graphOverrides) if (candidate && typeof candidate.id === 'string') functionGraphLookup.set(candidate.id, candidate);
+
+    const result = await GraphRunner.execute(graph, eventName, customPayload, {
+      projectDir: this.projectDir,
+      rest: mockREST,
+      client: {
+        setPresence: (p) => {
+          interceptedOutputs.push({ type: 'PRESENCE_UPDATE', payload: p, timestamp: new Date().toISOString() });
+        },
+        setVoiceChannel: (guildId, channelId, options) => {
+          interceptedOutputs.push({ type: 'VOICE_STATE_UPDATE', guildId, channelId, options, timestamp: new Date().toISOString() });
+        }
+      },
+      resolveFunctionGraph: (graphId) => functionGraphLookup.get(graphId),
+      variablesState: this.getVariableState(graph, 'mock'),
+      projectVariables: this.projectVariables,
+      projectVariablesState: this.getProjectVariableState('mock'),
+      getGraphVariableState: (targetGraph) => this.getVariableState(targetGraph, 'mock'),
+      appEmojis: this.applicationEmojis,
+      mock: true,
+      debug: Boolean(debugSession),
+      onDebugStep: debugSession ? async (step) => {
+        this.broadcastWS({ type: 'MOCK_DEBUG_STEP', payload: { runId: debugSession.runId, tabId: graph.id, step } });
+        if (debugSession.continue) return;
+        debugSession.paused = true;
+        await new Promise((resolve) => {
+          debugSession.resume = resolve;
+          debugSession.timer = setTimeout(() => {
+            debugSession.continue = true;
+            debugSession.resume = null;
+            resolve();
+          }, 120_000);
+          debugSession.timer.unref?.();
+        });
+      } : undefined,
+      log: (msg) => this.log('MOCK', msg)
+    });
+
+    const elapsed = Date.now() - startTime;
+    this.log('MOCK', `[Offline Simulator] Simulation completed in ${elapsed}ms. Output actions generated: ${interceptedOutputs.length}`);
+
+    this.broadcastWS({
+      type: 'GRAPH_EXECUTION_PULSE',
+      payload: { tabId: graph.id, nodeIds: result.executedNodeIds }
+    });
+
+    return {
+      success: !result.error,
+      tabId: graph.id,
+      eventName,
+      executedNodeIds: result.executedNodeIds,
+      traces: result.traces,
+      debugSteps: result.debugSteps || [],
+      interceptedOutputs,
+      elapsedMs: elapsed,
+      error: result.error
+    };
+  }
+}
