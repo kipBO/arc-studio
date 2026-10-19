@@ -81,15 +81,14 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       const reservation = getShortcutReservation(binding, platform);
       if (reservation) { setShortcutCaptureError(reservation); return; }
       const normalizedBinding = normalizeShortcutBinding(binding, platform);
-      const conflict = shortcutActions.find(([key]) => key !== recording && normalizeShortcutBinding(shortcuts[key], platform) === normalizedBinding);
-      if (conflict) {
-        const label = shortcutActions.find(([key]) => key === conflict[0])?.[1] || conflict[0];
-        setShortcutCaptureError(`Already assigned to “${label}”. Change that shortcut first or choose another.`);
-        return;
-      }
-      update('shortcuts', { ...shortcuts, [recording]: binding });
+      const conflicts = shortcutActions.filter(([key]) => key !== recording && shortcuts[key] && normalizeShortcutBinding(shortcuts[key], platform) === normalizedBinding);
+      const nextShortcuts = { ...shortcuts, [recording]: binding };
+      conflicts.forEach(([key]) => { nextShortcuts[key] = ''; });
+      update('shortcuts', nextShortcuts);
       setRecording(null);
-      setShortcutCaptureError('');
+      setShortcutCaptureError(conflicts.length
+        ? `Shortcut moved from ${conflicts.map(([key, label]) => `“${label}”`).join(', ')}.`
+        : '');
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
@@ -198,7 +197,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
     {activeTab === 'shortcuts' && desktopMode && <div className="settings-section settings-tab-content settings-shortcuts-content">
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
-      <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : formatShortcut(shortcuts[key], platform)}</button></div>)}</div>
+      <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : shortcuts[key] ? formatShortcut(shortcuts[key], platform) : 'Unassigned'}</button></div>)}</div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>
     </div>}
