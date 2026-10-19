@@ -15,7 +15,11 @@ const MAX_FUNCTIONS = 64;
 const MAX_NODES = 128;
 const MAX_CONNECTIONS = 512;
 const LEGACY_MIN_ARC_VERSION = '2026.1.1.0';
-const bundledAdapterRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../arc-plugins/adapters');
+const defaultPluginRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../arc-plugins');
+const pluginRepositoryRoot = process.env.ARC_PLUGINS_PATH?.trim()
+  ? path.resolve(process.env.ARC_PLUGINS_PATH.trim())
+  : defaultPluginRepositoryRoot;
+const bundledAdapterRoot = path.join(pluginRepositoryRoot, 'adapters');
 const bundledHostAdapters = loadBundledHostAdapters(bundledAdapterRoot);
 const hostAdapterRuntimePromises = new Map();
 const installedPath = path.join(dataDir, 'installed-plugins.json');
