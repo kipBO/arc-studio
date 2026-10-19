@@ -201,10 +201,9 @@ export function getTextTemplateSlots(template) {
   for (const match of String(template ?? '').matchAll(pattern)) {
     if (match[1]) continue;
     const base = match[3].split('|')[0].trim();
-    const withoutStrings = base.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ');
-    for (const name of withoutStrings.match(/[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/g) || []) {
-      if (!['true', 'false', 'null', 'undefined'].includes(name.toLowerCase()) && !name.toLowerCase().startsWith('e_')) slots.add(name);
-    }
+    const withoutStrings = base.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').trim();
+    const root = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(withoutStrings)?.[1];
+    if (root && !['true', 'false', 'null', 'undefined'].includes(root.toLowerCase()) && !root.toLowerCase().startsWith('e_')) slots.add(root);
   }
   return [...slots];
 }
@@ -252,6 +251,29 @@ function templateLiteral(source) {
   return undefined;
 }
 
+function resolveTemplatePath(source, resolveSlot) {
+  const match = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(.*)$/.exec(source.trim());
+  if (!match) return { found: false, value: undefined };
+  let value = resolveSlot?.(match[1], `{{${match[1]}}}`);
+  if (value === undefined) return { found: false, value };
+  const path = match[2].replace(/\.\s*\[(\d+)\]/g, '[$1]');
+  const tokens = [];
+  const tokenPattern = /\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\d+))\]/g;
+  let cursor = 0;
+  for (const part of path.matchAll(tokenPattern)) {
+    if (part.index !== cursor) return { found: false, value: undefined };
+    tokens.push(part[1] ?? part[2] ?? part[3] ?? Number(part[4]));
+    cursor += part[0].length;
+  }
+  if (cursor !== path.length) return { found: false, value: undefined };
+  for (const key of tokens) {
+    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string')) return { found: false, value: undefined };
+    if (!Object.prototype.hasOwnProperty.call(Object(value), key)) return { found: false, value: undefined };
+    value = value[key];
+  }
+  return { found: true, value };
+}
+
 function evaluateTemplateExpression(source, resolveSlot) {
   const expression = source.trim();
   const question = splitTemplateExpression(expression, '?');
@@ -269,8 +291,7 @@ function evaluateTemplateExpression(source, resolveSlot) {
     const read = (part) => {
       const literal = templateLiteral(part);
       if (literal !== undefined || part.trim() === 'undefined') return literal;
-      if (/^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)$/.test(part.trim())) return resolveSlot?.(part.trim(), `{{${part.trim()}}}`);
-      return undefined;
+      return resolveTemplatePath(part, resolveSlot).value;
     };
     if (operator) {
       const left = read(condition.slice(0, operatorIndex)); const right = read(condition.slice(operatorIndex + operator.length));
@@ -289,11 +310,7 @@ function evaluateTemplateExpression(source, resolveSlot) {
   }
   const literal = templateLiteral(expression);
   if (literal !== undefined || expression === 'undefined') return { found: true, value: literal };
-  if (/^(?:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)$/.test(expression)) {
-    const value = resolveSlot?.(expression, `{{${expression}}}`);
-    return { found: value !== undefined, value };
-  }
-  return { found: false, value: undefined };
+  return resolveTemplatePath(expression, resolveSlot);
 }
 
 export function renderTextTemplate(template, resolveSlot, appEmojis = []) {
@@ -301,7 +318,7 @@ export function renderTextTemplate(template, resolveSlot, appEmojis = []) {
   return String(template ?? '').replace(pattern, (_match, escaped, token, expression) => {
     if (escaped) return `\\${token}`;
     const parts = splitTemplatePipeline(expression);
-    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)$/.exec(parts[0])?.[1];
+    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(parts[0])?.[1];
     if (name?.toLowerCase().startsWith('e_')) {
       const emojiName = name.slice(2).toLowerCase();
       const emoji = appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName);
@@ -411,6 +428,20 @@ export const BuiltInNodeDefinitions = [
       { id: 'interaction_id', label: 'Interaction ID', type: 'string' },
       { id: 'interaction_token', label: 'Interaction Token', type: 'string' },
       { id: 'options', label: 'Command Arguments', type: 'object' }
+    ]
+  },
+  {
+    type: 'event_slash_autocomplete', category: NodeCategories.EVENTS, label: 'On Command Autocomplete', color: '#5865F2',
+    description: 'Runs while a user types an autocomplete-enabled slash command option.', gatewayIntents: [], inputs: [],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'command_name', label: 'Command Name', type: 'string' },
+      { id: 'focused_option', label: 'Focused Option', type: 'string' },
+      { id: 'query', label: 'Typed Text', type: 'string' },
+      { id: 'options', label: 'Other Arguments', type: 'object' },
+      { id: 'user_id', label: 'User ID', type: 'string' },
+      { id: 'interaction_id', label: 'Interaction ID', type: 'string' },
+      { id: 'interaction_token', label: 'Interaction Token', type: 'string' }
     ]
   },
   {
@@ -699,6 +730,12 @@ export const BuiltInNodeDefinitions = [
     outputs: [
       { id: 'exec', label: 'Exec', type: 'exec' }
     ]
+  },
+  {
+    type: 'action_respond_autocomplete', category: NodeCategories.ACTIONS, label: 'Respond to Autocomplete', color: '#10b981',
+    description: 'Returns up to 25 suggestions from a wired array of name and value objects.',
+    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'interaction_id', label: 'Interaction ID', type: 'string', defaultValue: '' }, { id: 'interaction_token', label: 'Interaction Token', type: 'string', defaultValue: '' }, { id: 'choices', label: 'Suggestions', type: 'object', defaultValue: [] }],
+    outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'choice_count', label: 'Suggestions Sent', type: 'number' }]
   },
   {
     type: 'action_show_modal', category: NodeCategories.ACTIONS, label: 'Show Popup Modal', color: '#10b981',
