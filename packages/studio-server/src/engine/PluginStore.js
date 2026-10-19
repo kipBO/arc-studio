@@ -412,6 +412,14 @@ function compareArcVersions(leftVersion, rightVersion) {
   return 0;
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function normalizedMinimumVersion(version, pluginId = 'Plugin') {
   const minimum = version ?? LEGACY_MIN_ARC_VERSION;
   if (!parseArcVersion(minimum)) throw new Error(`${pluginId} needs a valid minArcStudioVersion (SemVer).`);
@@ -879,11 +887,9 @@ async function installRemoteWasmAdapter(entry, manifestInput, repository, { inst
     throw new Error('The downloaded WebAssembly adapter manifest does not match the reviewed catalog entry.');
   }
   const nodeTypes = manifest.nodes.map((node) => node.type).sort();
-  if (JSON.stringify(nodeTypes) !== JSON.stringify(entry.nodeTypes.slice().sort())
-    || JSON.stringify(manifest.settingsSchema) !== JSON.stringify(validatePluginSettingsSchema(entry.settingsSchema))
-    || JSON.stringify(manifest.thirdPartyNotices) !== JSON.stringify(validateThirdPartyNotices(entry.thirdPartyNotices))) {
-    throw new Error('The adapter nodes, settings, or notices changed since review. Refresh the catalog.');
-  }
+  if (JSON.stringify(nodeTypes) !== JSON.stringify(entry.nodeTypes.slice().sort())) throw new Error('The published catalogue node list does not match the pinned adapter manifest. Contact the plugin publisher.');
+  if (stableJson(manifest.settingsSchema) !== stableJson(validatePluginSettingsSchema(entry.settingsSchema))) throw new Error('The published catalogue settings do not match the pinned adapter manifest. Contact the plugin publisher.');
+  if (stableJson(manifest.thirdPartyNotices) !== stableJson(validateThirdPartyNotices(entry.thirdPartyNotices))) throw new Error('The published catalogue third-party notices do not match the pinned adapter manifest. Contact the plugin publisher.');
 
   const modulePath = `${path.posix.dirname(entry.path)}/${manifest.wasmArtifact}`;
   const response = await fetch(artifactUrl(repository, entry.commit, modulePath), {
@@ -1051,6 +1057,11 @@ async function installRemoteHostAdapter(entry, manifest, repository, botManager,
     const installed = readInstalled();
     originalInstalled = structuredClone(installed);
     const previous = installed[entry.id];
+    const preserveInstallationId = previous?.kind === 'host-adapter'
+      && previous.version === definition.version
+      && previous.repositoryUrl === repository.url
+      && previous.sha256 === entry.sha256
+      && previous.runtimeSha256 === entry.runtimeSha256;
     installed[entry.id] = {
       id: definition.id,
       name: definition.name,
@@ -1075,7 +1086,7 @@ async function installRemoteHostAdapter(entry, manifest, repository, botManager,
       settingsSchema: definition.settingsSchema,
       nodes: definition.nodes.map(({ type, label, category, description, color, inputs, outputs, requiredPermission }) => ({ type, label, category, description, color, inputs, outputs, ...(requiredPermission ? { requiredPermission } : {}) })),
       permissions: definition.permissions,
-      installationId: randomUUID(),
+      installationId: preserveInstallationId ? previous.installationId : randomUUID(),
       installedAt: previous?.installedAt || new Date().toISOString(),
       installedBy: previous?.installedBy || installedBy || null,
       updatedAt: new Date().toISOString()
@@ -1126,12 +1137,7 @@ export class PluginStore {
       sourceTrust: isDefaultRepository(plugin.repositoryUrl) ? 'default' : 'custom',
       sourceLabel: isDefaultRepository(plugin.repositoryUrl) ? 'Default ARC plugin source' : 'External plugin source',
       installedVersion: installed[plugin.id]?.version || null,
-      updateAvailable: Boolean(installed[plugin.id] && (
-        installed[plugin.id].version !== plugin.version
-        || installed[plugin.id].repositoryUrl !== plugin.repositoryUrl
-        || plugin.kind === 'host-adapter' && (installed[plugin.id].sha256 !== plugin.sha256 || installed[plugin.id].runtimeSha256 !== plugin.runtimeSha256)
-        || plugin.kind === 'wasm-adapter' && (installed[plugin.id].manifestSha256 !== plugin.sha256 || installed[plugin.id].sha256 !== plugin.wasmSha256)
-      ))
+      updateAvailable: Boolean(installed[plugin.id] && compareArcVersions(plugin.version, installed[plugin.id].version) === 1)
     }))];
   }
 
@@ -1368,7 +1374,7 @@ export class PluginStore {
     for (const plugin of Object.values(installed)) {
       if (!plugin.autoUpdate || plugin.kind === 'wasm-adapter' || plugin.kind === 'host-adapter') continue;
       const entry = entries.find((item) => item.id === plugin.id);
-      if (!entry || entry.version === plugin.version || entry.repositoryUrl !== plugin.repositoryUrl) continue;
+      if (!entry || compareArcVersions(entry.version, plugin.version) !== 1 || entry.repositoryUrl !== plugin.repositoryUrl) continue;
       try { updates.push(await installRegistryEntry(entry, botManager, { autoUpdate: true })); }
       catch (error) { errors.push({ id: plugin.id, message: error.message || 'Could not auto-update plugin.' }); }
     }
