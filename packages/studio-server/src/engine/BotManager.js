@@ -50,6 +50,7 @@ export class BotManager {
     this.logger = options.logger || null;
     this.projectStore = options.projectStore || new ProjectStore();
     this.project = this.projectStore.projects.find((item) => item.id === options.projectId) || this.projectStore.active();
+    this.disabledBuiltInProjectVariables = new Set(Array.isArray(this.project.disabledBuiltInVariables) ? this.project.disabledBuiltInVariables : []);
     this.setProjectPaths();
     this.encryptedBotToken = null;
     /** @type {Client|null} */
@@ -140,6 +141,7 @@ export class BotManager {
     const project = this.projectStore.projects.find((item) => item.id === id);
     if (!project) throw new Error('That project no longer exists.');
     this.project = { ...project };
+    this.disabledBuiltInProjectVariables = new Set(Array.isArray(project.disabledBuiltInVariables) ? project.disabledBuiltInVariables : []);
     fs.mkdirSync(this.projectStore.directory(id), { recursive: true, mode: 0o700 });
     this.setProjectPaths();
     this.projectVariables = this.loadProjectVariables();
@@ -533,6 +535,11 @@ export class BotManager {
           invalidOption = true;
           break;
         }
+        if (autocomplete && option?.dynamicAutocomplete && (!(graph.nodes || []).some((item) => item.type === 'event_slash_autocomplete') || !(graph.nodes || []).some((item) => item.type === 'action_respond_autocomplete'))) {
+          errors.push(`/${name} argument “${optionName}” uses graph-generated suggestions but its graph needs On Command Autocomplete and Respond to Autocomplete nodes.`);
+          invalidOption = true;
+          break;
+        }
         const choices = Array.isArray(option?.choices) ? option.choices.filter((choice) => String(choice?.name || '').trim() && choice.value !== undefined).slice(0, 25) : [];
         if (choices.length && ![3, 4, 10].includes(optionType)) {
           errors.push(`/${name} argument “${optionName}” cannot have choices for this type.`);
@@ -822,7 +829,7 @@ export class BotManager {
 
   getProjectVariables() { return this.projectVariables.map((variable) => ({ ...variable })); }
 
-  setProjectVariables(variables) {
+  setProjectVariables(variables, { allowDiscordAppIdUpdate = false } = {}) {
     if (!Array.isArray(variables) || variables.length > 100) throw new TypeError('A project can have at most 100 shared variables.');
     const names = new Set();
     const existingVariables = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
@@ -832,13 +839,26 @@ export class BotManager {
       if (!item || typeof item.id !== 'string' || !/^project_var_[A-Za-z0-9_-]{1,100}$/.test(item.id)) throw new TypeError('A project variable has an invalid ID.');
       if (!name) throw new TypeError('Every project variable needs a name.');
       const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
+      const discordAppIdVariable = item.id === 'project_var_discord_app_id';
+      if (discordAppIdVariable && this.disabledBuiltInProjectVariables.has('DISCORD_APP_ID')) {
+        throw new TypeError('ARC no longer owns DISCORD_APP_ID in this project. Recreate it as a regular project variable.');
+      }
+      const reservedDiscordAppName = name === 'DISCORD_APP_ID';
       const unchangedLegacyName = existingVariables.get(item.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
-      if (!validName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
+      if (!validName && !reservedDiscordAppName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
       if (!type) throw new TypeError(`Project variable “${name}” has an unsupported type.`);
+      if ((discordAppIdVariable || reservedDiscordAppName) && type !== 'number') throw new TypeError('DISCORD_APP_ID must be a number variable.');
+      if (discordAppIdVariable && !reservedDiscordAppName) throw new TypeError('The Discord application ID variable name cannot be changed.');
+      const previousReserved = existingVariables.get(item.id);
+      if (discordAppIdVariable && previousReserved && !allowDiscordAppIdUpdate
+        && String(item.initialValue) !== String(previousReserved.initialValue)) throw new TypeError('DISCORD_APP_ID is managed by the connected Discord application and cannot be edited.');
       if (names.has(name.toLowerCase())) throw new TypeError(`Project variable name “${name}” is used more than once.`);
       names.add(name.toLowerCase());
       let initialValue;
-      if (type === 'number') initialValue = Number.isFinite(Number(item.initialValue)) ? Number(item.initialValue) : 0;
+      if (discordAppIdVariable) {
+        initialValue = String(item.initialValue ?? '');
+        if (!/^\d{15,22}$/.test(initialValue)) throw new TypeError('DISCORD_APP_ID must be a valid Discord application ID.');
+      } else if (type === 'number') initialValue = Number.isFinite(Number(item.initialValue)) ? Number(item.initialValue) : 0;
       else if (type === 'boolean') initialValue = Boolean(item.initialValue);
       else if (type === 'array' || type === 'object') {
         const valid = type === 'array' ? Array.isArray(item.initialValue) : item.initialValue && typeof item.initialValue === 'object' && !Array.isArray(item.initialValue);
@@ -847,9 +867,16 @@ export class BotManager {
         if (serialized.length > 10000) throw new TypeError(`Project variable “${name}” exceeds the 10,000 character JSON limit.`);
         initialValue = JSON.parse(serialized);
       } else initialValue = String(item.initialValue ?? '').slice(0, 10000);
-      return { id: item.id, name, type, initialValue, updatedAt: new Date().toISOString() };
+      return { id: item.id, name, type, initialValue, ...(discordAppIdVariable ? { systemManaged: true } : {}), updatedAt: new Date().toISOString() };
     });
     const previousById = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
+    if (previousById.has('project_var_discord_app_id') && !next.some((variable) => variable.id === 'project_var_discord_app_id')) {
+      this.disabledBuiltInProjectVariables.add('DISCORD_APP_ID');
+      const projectRecord = this.projectStore.projects.find((item) => item.id === this.project.id);
+      if (projectRecord) projectRecord.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+      this.project.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+      this.projectStore.persist();
+    }
     for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) {
       for (const variable of next) {
         const previous = previousById.get(variable.id);
@@ -868,6 +895,20 @@ export class BotManager {
     }
     this.broadcastWS({ type: 'PROJECT_VARIABLES_UPDATED', payload: { projectId: this.project.id, variables: this.getProjectVariables() } });
     return this.getProjectVariables();
+  }
+
+  ensureDiscordAppIdVariable(applicationId) {
+    const id = String(applicationId || '').trim();
+    if (!/^\d{15,22}$/.test(id) || this.disabledBuiltInProjectVariables.has('DISCORD_APP_ID')) return false;
+    if (this.projectVariables.some((variable) => variable.name?.toLowerCase() === 'discord_app_id' && variable.id !== 'project_var_discord_app_id')) return false;
+    const existing = this.projectVariables.find((variable) => variable.id === 'project_var_discord_app_id');
+    const value = { id: 'project_var_discord_app_id', name: 'DISCORD_APP_ID', type: 'number', initialValue: id };
+    if (existing && String(existing.initialValue) === id) return false;
+    const next = existing
+      ? this.projectVariables.map((variable) => variable.id === value.id ? { ...variable, ...value } : variable)
+      : [...this.projectVariables, value];
+    this.setProjectVariables(next, { allowDiscordAppIdUpdate: true });
+    return true;
   }
 
   getProjectVariableState(mode = 'live') {
@@ -991,6 +1032,11 @@ export class BotManager {
       this.botProfile.intentSummary = this.getIntentPlan();
 
       this.setBotToken(cleanToken);
+      try {
+        this.ensureDiscordAppIdVariable(app?.id || user.id);
+      } catch (error) {
+        this.log('WARN', `Could not add the Discord application ID project variable: ${error.message}`);
+      }
       this.log('INFO', `Verified Discord bot: ${user.username}#${user.discriminator || '0'} (ID: ${user.id})`);
       return this.botProfile;
     } catch (err) {
@@ -1009,6 +1055,12 @@ export class BotManager {
     const activeToken = this.getBotToken();
     if (!activeToken) {
       throw new Error('No Discord Bot Token configured. Provide one in setup.');
+    }
+
+    if (!this.botProfile) await this.verifyAndFetchProfile(activeToken);
+    else {
+      try { this.ensureDiscordAppIdVariable(this.botProfile.application?.id || this.botProfile.id); }
+      catch (error) { this.log('WARN', `Could not add the Discord application ID project variable: ${error.message}`); }
     }
 
     await this.refreshIntentPlan(true);
@@ -1056,10 +1108,10 @@ export class BotManager {
     this.client.rest.rateLimiter.on('rateLimit', this.restRateLimitListener);
     this.publishGatewayMetrics();
 
-    const dispatchGraphEvent = async (eventName, payload, onlyGraphId = null) => {
+    const dispatchGraphEvent = async (eventName, payload, onlyGraphId = null, sharedInteractionState = null) => {
       const normalizedEventName = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
       const interactionState = normalizedEventName === 'INTERACTION_CREATE'
-        ? { applicationId: payload?.application_id || '', acknowledged: false, deferred: false, pending: null }
+        ? sharedInteractionState || { applicationId: payload?.application_id || '', acknowledged: false, deferred: false, pending: null }
         : null;
       const listeningGraphs = [...this.graphs.values()].filter((graph) => graph.graphType !== 'function'
         && (!onlyGraphId || graph.id === onlyGraphId)
@@ -1146,6 +1198,15 @@ export class BotManager {
         };
         const focused = findFocused(interaction.data?.options || []);
         const option = commandNode?.data?.options?.find((item) => item.name === focused?.name);
+        if (option?.autocomplete && option.dynamicAutocomplete && graph?.nodes?.some((node) => node.type === 'event_slash_autocomplete')) {
+          const interactionState = { applicationId: interaction.application_id || '', acknowledged: false, deferred: false, pending: null };
+          await dispatchGraphEvent('INTERACTION_CREATE', interaction, graph.id, interactionState);
+          if (!interactionState.acknowledged) {
+            try { await this.client.rest.createInteractionResponse(interaction.id, interaction.token, { type: 8, data: { choices: [] } }); }
+            catch (error) { this.log('WARN', `Autocomplete response failed for /${commandName}: ${error.message}`); }
+          }
+          return;
+        }
         const typed = String(focused?.value ?? '').toLocaleLowerCase();
         const choices = option?.autocomplete && Array.isArray(option.choices)
           ? option.choices.filter((choice) => String(choice.name || '').toLocaleLowerCase().includes(typed)).slice(0, 25).map((choice) => ({
