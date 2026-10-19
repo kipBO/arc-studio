@@ -9,7 +9,9 @@ export function TooltipLayer() {
   const [tooltip, setTooltip] = useState(null);
   const timerRef = useRef(null);
   const targetRef = useRef(null);
+  const targetModeRef = useRef(null);
   const tooltipRef = useRef(null);
+  const pointerPositionRef = useRef(null);
   const uiScale = getArcUiScale();
 
   useEffect(() => {
@@ -25,36 +27,78 @@ export function TooltipLayer() {
     migrateTitle(document.documentElement);
     const observer = new MutationObserver((records) => {
       for (const record of records) {
-        if (record.type === 'attributes') migrateTitle(record.target);
+        if (record.type === 'attributes') {
+          migrateTitle(record.target);
+          if (record.attributeName === 'data-pin-descriptions' && record.target.matches?.('.node-canvas[data-pin-descriptions="true"]')) {
+            const anchor = targetRef.current;
+            if (anchor?.hasAttribute('data-pin-description') && record.target.contains(anchor)) showFor(anchor, pointerPositionRef.current);
+          } else if (record.attributeName === 'data-pin-descriptions') {
+            const anchor = targetRef.current;
+            if (anchor?.hasAttribute('data-pin-description') && record.target.contains(anchor)) showFor(anchor, pointerPositionRef.current);
+          }
+        }
         else record.addedNodes.forEach(migrateTitle);
       }
     });
-    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['title'] });
+    observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['title', 'data-pin-descriptions'] });
 
     const clear = () => {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
       targetRef.current = null;
+      targetModeRef.current = null;
       setTooltip(null);
     };
     let pointerPressed = false;
 
-    const showFor = (target) => {
+    const showFor = (target, pointer = null) => {
       if (!(target instanceof Element)) return;
-      const anchor = target.closest('[data-tooltip]');
-      const message = anchor?.getAttribute('data-tooltip')?.trim();
-      if (!anchor || !message || anchor === targetRef.current) return;
+      const anchor = target.closest('[data-tooltip], [data-pin-description]');
+      const isPin = anchor?.hasAttribute('data-pin-description');
+      const showPinDescription = isPin && anchor.closest('.node-canvas[data-pin-descriptions="true"]');
+      const mode = showPinDescription ? 'description' : 'normal';
+      const message = (isPin && showPinDescription ? anchor.getAttribute('data-pin-description') : anchor?.getAttribute('data-tooltip') || anchor?.getAttribute('data-pin-description'))?.trim();
+      if (!anchor || !message) return;
+      if (anchor === targetRef.current) {
+        if (targetModeRef.current === mode) {
+          if (pointer && isPin) setTooltip((current) => current?.anchor === anchor ? { ...current, pointer } : current);
+          return;
+        }
+        targetModeRef.current = mode;
+        window.clearTimeout(timerRef.current);
+        if (tooltipRef.current) {
+          setTooltip((current) => current?.anchor === anchor ? { ...current, message, ...(pointer && isPin ? { pointer } : {}) } : current);
+          return;
+        }
+        timerRef.current = window.setTimeout(() => {
+          const bounds = anchor.getBoundingClientRect();
+          if (bounds.width && bounds.height) setTooltip({ message, anchor, placement: 'top', ...(pointer ? { pointer } : {}) });
+        }, showPinDescription ? 0 : 900);
+        return;
+      }
       window.clearTimeout(timerRef.current);
       targetRef.current = anchor;
+      targetModeRef.current = mode;
       setTooltip(null);
       timerRef.current = window.setTimeout(() => {
         const bounds = anchor.getBoundingClientRect();
         if (!bounds.width && !bounds.height) return;
-        setTooltip({ message, anchor, placement: 'top' });
-      }, 900);
+        setTooltip({ message, anchor, placement: 'top', ...(isPin && pointer ? { pointer } : {}) });
+      }, showPinDescription ? 0 : 900);
     };
 
-    const onPointerOver = (event) => showFor(event.target);
+    const onPointerOver = (event) => {
+      pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      showFor(event.target, pointerPositionRef.current);
+    };
+    const onPointerMove = (event) => {
+      pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+      const anchor = targetRef.current;
+      if (anchor && event.target instanceof Node && anchor.contains(event.target) && anchor.hasAttribute('data-pin-description')) {
+        const message = anchor.closest('.node-canvas[data-pin-descriptions="true"]') ? anchor.getAttribute('data-pin-description') : anchor.getAttribute('data-tooltip');
+        setTooltip((current) => current?.anchor === anchor ? { ...current, message: message?.trim() || current.message, pointer: pointerPositionRef.current } : current);
+      }
+    };
     const onPointerOut = (event) => {
       const anchor = targetRef.current;
       if (anchor && event.target instanceof Node && anchor.contains(event.target) && (!event.relatedTarget || !anchor.contains(event.relatedTarget))) clear();
@@ -68,6 +112,7 @@ export function TooltipLayer() {
     const onPointerUp = () => { pointerPressed = false; };
 
     document.addEventListener('pointerover', onPointerOver, true);
+    document.addEventListener('pointermove', onPointerMove, true);
     document.addEventListener('pointerout', onPointerOut, true);
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('pointerup', onPointerUp, true);
@@ -80,6 +125,7 @@ export function TooltipLayer() {
       clear();
       removePageBlurListener();
       document.removeEventListener('pointerover', onPointerOver, true);
+      document.removeEventListener('pointermove', onPointerMove, true);
       document.removeEventListener('pointerout', onPointerOut, true);
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('pointerup', onPointerUp, true);
@@ -100,14 +146,21 @@ export function TooltipLayer() {
       const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
       const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
       const isSidebar = Boolean(tooltip.anchor.closest('.workspace-rail'));
+      const pointer = tooltip.pointer;
       const rightFits = target.right + gap + bounds.width <= viewportWidth - margin;
-      const topFits = target.top - gap - bounds.height >= margin;
-      const bottomFits = target.bottom + gap + bounds.height <= viewportHeight - margin;
+      const topFits = pointer ? pointer.y - gap - bounds.height >= margin : target.top - gap - bounds.height >= margin;
+      const bottomFits = pointer ? pointer.y + gap + bounds.height <= viewportHeight - margin : target.bottom + gap + bounds.height <= viewportHeight - margin;
       let placement = 'top';
-      let x = target.left + (target.width - bounds.width) / 2;
-      let y = target.top - gap - bounds.height;
+      let x = pointer ? pointer.x - bounds.width / 2 : target.left + (target.width - bounds.width) / 2;
+      let y = pointer ? pointer.y - gap - bounds.height : target.top - gap - bounds.height;
 
-      if (isSidebar && rightFits) {
+      if (pointer && !topFits && bottomFits) {
+        y = pointer.y + gap;
+        placement = 'bottom';
+      } else if (pointer && !topFits && !bottomFits) {
+        y = viewportHeight - bounds.height - margin;
+        placement = 'bottom';
+      } else if (isSidebar && rightFits) {
         placement = 'right';
         x = target.right + gap;
         y = target.top + (target.height - bounds.height) / 2;
@@ -141,13 +194,13 @@ export function TooltipLayer() {
       window.visualViewport?.removeEventListener('resize', position);
       observer?.disconnect();
     };
-  }, [tooltip?.anchor, tooltip?.message, uiScale]);
+  }, [tooltip?.anchor, tooltip?.message, tooltip?.pointer?.x, tooltip?.pointer?.y, uiScale]);
 
   if (!tooltip) return null;
   const theme = document.querySelector('.app-root')?.getAttribute('data-theme') || 'dark';
   const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
   const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
-  const maxWidth = Math.max(80, Math.min(280, (viewportWidth - 20) / uiScale));
-  const maxHeight = Math.max(40, (viewportHeight - 20) / uiScale);
-  return createPortal(<div ref={tooltipRef} data-theme={theme} id={TOOLTIP_ID} role="tooltip" className={`arc-tooltip is-${tooltip.placement || 'top'}`} style={{ left: (tooltip.x ?? -10000), top: (tooltip.y ?? -10000), maxWidth, maxHeight, transform: `scale(${uiScale})`, transformOrigin: 'top left' }}>{tooltip.message}</div>, document.body);
+  const maxWidth = Math.max(80, Math.min(280, viewportWidth - 20));
+  const maxHeight = Math.max(40, viewportHeight - 20);
+  return createPortal(<div ref={tooltipRef} data-theme={theme} id={TOOLTIP_ID} role="tooltip" className={`arc-tooltip is-${tooltip.placement || 'top'}`} style={{ left: (tooltip.x ?? -10000), top: (tooltip.y ?? -10000), maxWidth, maxHeight, '--arc-tooltip-scale': uiScale }}>{tooltip.message}</div>, document.body);
 }
