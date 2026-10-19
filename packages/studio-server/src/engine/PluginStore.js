@@ -557,9 +557,6 @@ function normalizePermissionGrant(pluginId, requested = [], permissionCatalog = 
     if (typeof permission !== 'string' || !declared.has(permission) || granted.has(permission)) throw new Error(`Plugin “${pluginId}” requested an unsupported permission.`);
     granted.add(permission);
   }
-  for (const permission of declaredPermissions) {
-    if (permission.required && !granted.has(permission.id)) throw new Error(`Required plugin permission “${permission.name}” was not granted.`);
-  }
   return [...granted];
 }
 
