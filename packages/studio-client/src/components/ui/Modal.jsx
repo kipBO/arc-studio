@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 //
-export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, children, footer, maxWidth, shake = false }) {
+export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, shake = false }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const onConfirmRef = useRef(onConfirm);
@@ -50,9 +50,10 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
   return <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
     <section ref={dialogRef} className={`modal-panel ${widthClass} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <header className="modal-header">
-        {Icon && <div className="modal-title-icon"><Icon size={17} /></div>}
+        {Icon && <div className={`modal-title-icon ${iconClassName}`}><Icon size={17} /></div>}
         <div className="modal-title-copy"><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
-        <button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={17} /></button>
+        {headerMeta && <div className="modal-header-meta">{headerMeta}</div>}
+        <button type="button" className="icon-button" onClick={(event) => { event.stopPropagation(); onClose?.(); }} aria-label="Close dialog"><X size={17} /></button>
       </header>
       <div className="modal-body">{children}</div>
       {footer && <footer className="modal-footer">{footer}</footer>}
