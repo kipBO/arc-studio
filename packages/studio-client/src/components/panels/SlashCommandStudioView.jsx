@@ -15,7 +15,7 @@ const OPTION_TYPES = [
 const CHOICE_MODES = [{ value: 'choices', label: 'Fixed choices' }, { value: 'autocomplete', label: 'Autocomplete' }];
 const createLocalId = (kind) => `${kind}:${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 const newOption = (index) => ({ id: createLocalId('option'), name: `argument_${index + 1}`, description: '', type: 3, required: false, choices: [] });
-
+//
 function validateOptions(options) {
   if (options.length > MAX_OPTIONS) return 'A command can have at most 25 options.';
   const names = new Set();
