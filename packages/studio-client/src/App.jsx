@@ -269,7 +269,6 @@ export function App() {
   const [localAccountUsername, setLocalAccountUsername] = useState('');
   const [needsSetup, setNeedsSetup] = useState(false);
   const [studioVersion, setStudioVersion] = useState(studioPackage.version);
-  const [serverReleaseChannel, setServerReleaseChannel] = useState('stable');
   const [isReady, setIsReady] = useState(false);
   const [theme, setTheme] = useState(getInitialTheme);
   const [hasThemeChoice, setHasThemeChoice] = useState(hasSavedThemeChoice);
@@ -789,7 +788,6 @@ export function App() {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
         if (!desktopMode && typeof system.version === 'string' && system.version.trim()) setStudioVersion(system.version.trim());
-        if (!desktopMode && ['stable', 'nightly'].includes(system.releaseChannel)) setServerReleaseChannel(system.releaseChannel);
         if (desktopMode && workspaceMode === 'local') {
           const ownerUsername = typeof system.localUsername === 'string' ? system.localUsername : '';
           setLocalAccountUsername(ownerUsername);
@@ -3512,7 +3510,6 @@ export function App() {
       <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable'} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
         <SplashScreen
           studioVersion={studioVersion}
-          serverReleaseChannel={serverReleaseChannel}
           needsSetup={needsSetup}
           localAccountUsername={desktopMode && workspaceMode === 'local' ? localAccountUsername : ''}
           needsProjectOnboarding={needsProjectOnboarding}
