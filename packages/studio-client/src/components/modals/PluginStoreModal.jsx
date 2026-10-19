@@ -165,7 +165,11 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
     setConfirmTrust(permissionReviewOnly);
     setConfirmAutoUpdate(!['host-adapter', 'wasm-adapter'].includes(plugin.kind) && !plugin.builtIn && installedById.get(plugin.id)?.autoUpdate !== false);
     setHostRuntimeAcknowledged(false);
-    setPermissionSelection(Array.isArray(plugin.grantedPermissions) ? plugin.grantedPermissions : installedById.get(plugin.id)?.grantedPermissions || []);
+    const installedPlugin = installedById.get(plugin.id);
+    const permissions = installedPlugin
+      ? (Array.isArray(plugin.grantedPermissions) ? plugin.grantedPermissions : installedPlugin.grantedPermissions || [])
+      : (plugin.permissions || []).map((permission) => permission.id);
+    setPermissionSelection(permissions);
     setConfirmAction({ kind: 'store', plugin, permissionReviewOnly });
   };
 
@@ -346,7 +350,6 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const confirmationRuntimeDependencies = confirmationPlugin?.runtimeDependencies || [];
   const isBundledPlugin = confirmationPlugin?.builtIn || confirmationPlugin?.sourceTrust === 'bundled';
   const isUntrustedSource = Boolean(localImport || confirmationPlugin?.sourceTrust === 'custom');
-  const requiredPermissionsGranted = confirmationPermissions.filter((permission) => permission.required).every((permission) => permissionSelection.includes(permission.id));
   const hostRuntimeConfirmationRequired = confirmationPlugin?.kind === 'host-adapter' && !isBundledPlugin;
 
   return <>
@@ -433,7 +436,6 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
                 {plugin.minArcStudioVersion !== '0.0.0' && <small className={`plugin-store-origin ${plugin.studioCompatible === false ? 'is-untrusted' : ''}`}>{plugin.studioCompatible === false ? `Requires ARC Studio ${plugin.minArcStudioVersion} or newer · this workspace is ${plugin.studioVersion || studioVersion}` : `Requires ARC Studio ${plugin.minArcStudioVersion} or newer`}</small>}
                 <small className={`plugin-store-origin ${plugin.sourceTrust === 'custom' ? 'is-untrusted' : ''}`}>{plugin.sourceTrust === 'default' ? 'Default source' : plugin.sourceTrust === 'bundled' ? 'Bundled with ARC Studio' : 'Outside default source'} · {plugin.repositoryUrl || repository.url}</small>
                 {plugin.permissions?.length > 0 && <small className="plugin-store-origin">Permissions: {plugin.permissions.map((permission) => permission.name).join(' · ')}</small>}
-                {plugin.kind === 'host-adapter' && <div className="plugin-trust-warning"><AlertTriangle size={13} /><span>This adapter runs JavaScript on the workspace server. Its declared permissions do not restrict filesystem or network access.</span></div>}
                 {plugin.sourceTrust === 'custom' && <div className="plugin-trust-warning"><AlertTriangle size={13} /><span>This plugin comes from a non-default catalogue. ARC does not verify its publisher or review its contents.</span></div>}
                 {noticesFor(plugin).length > 0 && <button type="button" className="plugin-store-license-link" onClick={() => setSelectedNotices({ name: plugin.name, notices: noticesFor(plugin) })}>Third-party licenses</button>}
                 {current && <small className="plugin-store-installed">{['host-adapter', 'wasm-adapter'].includes(current.kind) ? `${current.kind === 'host-adapter' ? 'Server' : 'WebAssembly'} adapter · installed v${current.version} · manual updates` : current.sourceType === 'builtin' ? 'Built-in integration' : current.sourceType === 'local' ? 'Local import' : `Installed v${current.version}`}{updateAvailable ? ` · ${current.version !== plugin.version ? `v${plugin.version} available` : 'source changed'}` : ''}{!['local', 'builtin'].includes(current.sourceType) && !['host-adapter', 'wasm-adapter'].includes(current.kind) ? (current.autoUpdate ? ' · auto-update on' : ' · auto-update off') : ''}</small>}
@@ -524,12 +526,12 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       {confirmationPermissions.length > 0 && <section className="plugin-permission-review" aria-label="Plugin permissions">
         <strong>Permissions for this project</strong>
         <p>Only the selected capabilities are enabled. The project owner or a workspace admin must grant access.</p>
-        {confirmationPermissions.map((permission) => <Toggle key={permission.id} label={permission.name} description={permission.description} checked={permission.required || permissionSelection.includes(permission.id)} disabled={permission.required} onChange={(checked) => setPermissionSelection((current) => checked ? [...new Set([...current, permission.id])] : current.filter((id) => id !== permission.id))} />)}
+        {confirmationPermissions.map((permission) => <Toggle key={permission.id} label={permission.name} description={permission.description} checked={permissionSelection.includes(permission.id)} onChange={(checked) => setPermissionSelection((current) => checked ? [...new Set([...current, permission.id])] : current.filter((id) => id !== permission.id))} />)}
       </section>}
       {!confirmationPlugin?.builtIn && !['host-adapter', 'wasm-adapter'].includes(confirmationPlugin?.kind) && <Toggle label="Automatically install future catalog updates" description="Eligible data-pack updates are checked every 5 minutes. Adapter code updates always require manual review." checked={confirmAutoUpdate} onChange={setConfirmAutoUpdate} />}
       {hostRuntimeConfirmationRequired && !confirmAction?.permissionReviewOnly && <Toggle label="I understand and trust this server runtime" description="This permission cannot be limited to the plugin’s declared capabilities. Code updates always require another manual install review." checked={hostRuntimeAcknowledged} onChange={setHostRuntimeAcknowledged} />}
       {!confirmAction?.permissionReviewOnly && <Toggle label="I trust this plugin and its source" checked={confirmTrust} onChange={setConfirmTrust} />}
-      <div className="plugin-confirm-actions"><Button variant="secondary" onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall || !requiredPermissionsGranted} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></div>
+      <div className="plugin-confirm-actions"><Button variant="secondary" onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></div>
     </Modal>
   </>;
 }
