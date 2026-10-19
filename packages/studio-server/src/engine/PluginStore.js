@@ -15,19 +15,18 @@ const MAX_FUNCTIONS = 64;
 const MAX_NODES = 128;
 const MAX_CONNECTIONS = 512;
 const LEGACY_MIN_ARC_VERSION = '2026.1.1.0';
-const defaultPluginRepositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../arc-plugins');
 const pluginRepositoryRoot = process.env.ARC_PLUGINS_PATH?.trim()
   ? path.resolve(process.env.ARC_PLUGINS_PATH.trim())
-  : defaultPluginRepositoryRoot;
-const bundledAdapterRoot = path.join(pluginRepositoryRoot, 'adapters');
-const bundledHostAdapters = loadBundledHostAdapters(bundledAdapterRoot);
+  : null;
+const bundledAdapterRoot = pluginRepositoryRoot ? path.join(pluginRepositoryRoot, 'adapters') : null;
+const localHostAdapters = loadBundledHostAdapters(bundledAdapterRoot);
 const hostAdapterRuntimePromises = new Map();
 const installedPath = path.join(dataDir, 'installed-plugins.json');
 const settingsPath = path.join(dataDir, 'plugin-store-settings.json');
 const adapterRoot = path.join(dataDir, 'plugin-adapters');
-const PROJECT_PERMISSION_DEFINITIONS = new Map([...bundledHostAdapters.values()].flatMap((plugin) => plugin.permissions.map((permission) => [permission.id, permission])));
-if (PROJECT_PERMISSION_DEFINITIONS.size !== [...bundledHostAdapters.values()].reduce((total, plugin) => total + plugin.permissions.length, 0)) throw new Error('Bundled host adapters declare duplicate project permission IDs.');
-const BUILTIN_PLUGINS = new Map([...bundledHostAdapters].map(([id, plugin]) => [id, plugin]));
+const PROJECT_PERMISSION_DEFINITIONS = new Map([...localHostAdapters.values()].flatMap((plugin) => plugin.permissions.map((permission) => [permission.id, permission])));
+if (PROJECT_PERMISSION_DEFINITIONS.size !== [...localHostAdapters.values()].reduce((total, plugin) => total + plugin.permissions.length, 0)) throw new Error('Local host adapters declare duplicate project permission IDs.');
+const LOCAL_HOST_ADAPTERS = new Map([...localHostAdapters].map(([id, plugin]) => [id, plugin]));
 const allowedNode = (type) => type === 'function_input'
   || type === 'function_return'
   || type === 'function_call'
@@ -105,7 +104,7 @@ function readInstalled() {
       if (plugin.minArcStudioVersion === undefined) { plugin.minArcStudioVersion = LEGACY_MIN_ARC_VERSION; changed = true; }
       if (plugin.sourceType === 'catalog' && !plugin.repositoryUrl) plugin.repositoryUrl = DEFAULT_REPOSITORY_URL;
       if (!plugin.installationId) { plugin.installationId = randomUUID(); changed = true; }
-      if (BUILTIN_PLUGINS.has(plugin.id) && !Array.isArray(plugin.permissions)) { plugin.permissions = BUILTIN_PLUGINS.get(plugin.id).permissions; changed = true; }
+      if (LOCAL_HOST_ADAPTERS.has(plugin.id) && !Array.isArray(plugin.permissions)) { plugin.permissions = LOCAL_HOST_ADAPTERS.get(plugin.id).permissions; changed = true; }
       if (!plugin.sourceTrust) {
         plugin.sourceTrust = plugin.sourceType === 'builtin' ? 'bundled' : plugin.sourceType === 'local' ? 'local' : isDefaultRepository(plugin.repositoryUrl) ? 'default' : 'custom';
         changed = true;
@@ -173,7 +172,7 @@ function validatePluginSettingsSchema(schema) {
 
 function loadBundledHostAdapters(root) {
   const adapters = new Map();
-  if (!fs.existsSync(root)) return adapters;
+  if (!root || !fs.existsSync(root)) return adapters;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const directory = path.join(root, entry.name);
@@ -366,8 +365,8 @@ function validateAdapterManifest(manifest) {
 function registerInstalledAdapters() {
   const definitions = [];
   for (const plugin of Object.values(readInstalled())) {
-    if (plugin.kind === 'host-adapter' && BUILTIN_PLUGINS.has(plugin.id)) {
-      const bundled = BUILTIN_PLUGINS.get(plugin.id);
+    if (plugin.kind === 'host-adapter' && LOCAL_HOST_ADAPTERS.has(plugin.id)) {
+      const bundled = LOCAL_HOST_ADAPTERS.get(plugin.id);
       try {
         assertArcStudioCompatible(plugin.name || plugin.id, plugin.minArcStudioVersion || bundled.minArcStudioVersion);
         definitions.push(...bundled.nodes);
@@ -397,7 +396,7 @@ function writeInstalled(state) {
 
 function normalizePermissionGrant(pluginId, requested = []) {
   if (!Array.isArray(requested) || requested.length > 16) throw new Error('Plugin permissions must be a list of at most 16 capabilities.');
-  const declaredPermissions = BUILTIN_PLUGINS.get(pluginId)?.permissions || [];
+  const declaredPermissions = LOCAL_HOST_ADAPTERS.get(pluginId)?.permissions || [];
   const declared = new Set(declaredPermissions.map((permission) => permission.id));
   const granted = new Set();
   for (const permission of requested) {
@@ -713,7 +712,7 @@ export class PluginStore {
     const installed = readInstalled();
     let entries = [];
     try { entries = await getRegistry(); } catch { /* */ }
-    return [...[...BUILTIN_PLUGINS.values()].map(({ directory: _directory, runtime: _runtime, ...plugin }) => ({ ...plugin, ...studioCompatibility(plugin.minArcStudioVersion, plugin.name), sourceTrust: 'bundled', sourceLabel: 'Bundled with ARC Studio', installedVersion: installed[plugin.id]?.version || null, updateAvailable: false })), ...entries.filter((entry) => !BUILTIN_PLUGINS.has(entry.id)).map(({ path: _path, ...plugin }) => ({
+    return [...[...LOCAL_HOST_ADAPTERS.values()].map(({ directory: _directory, runtime: _runtime, ...plugin }) => ({ ...plugin, ...studioCompatibility(plugin.minArcStudioVersion, plugin.name), sourceTrust: 'local', sourceLabel: 'Local development checkout', installedVersion: installed[plugin.id]?.version || null, updateAvailable: false })), ...entries.filter((entry) => !LOCAL_HOST_ADAPTERS.has(entry.id)).map(({ path: _path, ...plugin }) => ({
       ...plugin,
       ...studioCompatibility(plugin.minArcStudioVersion, plugin.name),
       sourceTrust: isDefaultRepository(plugin.repositoryUrl) ? 'default' : 'custom',
@@ -761,10 +760,29 @@ export class PluginStore {
     return Object.values(installed).map((plugin) => ({ ...plugin, ...studioCompatibility(plugin.minArcStudioVersion, plugin.name || plugin.id) }));
   }
 
+  static exportAdapters(graphs = []) {
+    const usedTypes = new Set((graphs || []).flatMap((graph) => (graph.nodes || []).map((node) => node?.type).filter((type) => typeof type === 'string')));
+    const installed = readInstalled();
+    const adapters = [];
+    for (const plugin of Object.values(installed)) {
+      const pluginTypes = new Set((plugin.nodes || []).map((node) => node.type));
+      const usedPluginTypes = [...pluginTypes].filter((type) => usedTypes.has(type));
+      if (!usedPluginTypes.length) continue;
+      if (plugin.kind !== 'host-adapter') throw new Error(`The bot export does not yet include executable files for ${plugin.name || plugin.id}.`);
+      const definition = LOCAL_HOST_ADAPTERS.get(plugin.id);
+      if (!definition) throw new Error(`${plugin.name || plugin.id} is not available from a local adapter checkout.`);
+      if (!definition.export || !definition.runtime) throw new Error(`${plugin.name || plugin.id} does not declare bot export support.`);
+      adapters.push({ manifest: definition, directory: definition.directory, nodeTypes: usedPluginTypes });
+    }
+    const missingTypes = [...usedTypes].filter((type) => !NodeDefinitions[type] && ![...installed.values()].some((plugin) => plugin.nodes?.some((node) => node.type === type)));
+    if (missingTypes.length) throw new Error(`The bot export contains nodes from unavailable plugins: ${missingTypes.slice(0, 5).join(', ')}.`);
+    return adapters;
+  }
+
   static importLocalAdapter(manifestInput, wasmInput, { autoUpdate = true, installedBy = null } = {}) {
     const manifest = validateAdapterManifest(manifestInput);
     assertArcStudioCompatible(manifest.name, manifest.minArcStudioVersion);
-    if (BUILTIN_PLUGINS.has(manifest.id)) throw new Error(`Plugin ID “${manifest.id}” is reserved for an ARC built-in integration.`);
+    if (LOCAL_HOST_ADAPTERS.has(manifest.id)) throw new Error(`Plugin ID “${manifest.id}” is reserved by a local host adapter checkout.`);
     let bytes;
     try { bytes = Buffer.isBuffer(wasmInput) ? wasmInput : Buffer.from(String(wasmInput || ''), 'base64'); }
     catch { throw new Error('Adapter WebAssembly file is not valid base64.'); }
@@ -819,7 +837,7 @@ export class PluginStore {
     const plugin = Object.values(readInstalled()).find((item) => item.kind === 'wasm-adapter' && item.nodes?.some((node) => node.type === nodeType));
     const hostPlugin = Object.values(readInstalled()).find((item) => item.kind === 'host-adapter' && item.nodes?.some((node) => node.type === nodeType));
     if (hostPlugin) {
-      const bundled = BUILTIN_PLUGINS.get(hostPlugin.id);
+      const bundled = LOCAL_HOST_ADAPTERS.get(hostPlugin.id);
       if (!bundled) throw new Error(`Host adapter “${hostPlugin.id}” is not bundled with ARC Studio.`);
       assertArcStudioCompatible(hostPlugin.name, hostPlugin.minArcStudioVersion || bundled.minArcStudioVersion);
       if (!projectDir) throw new Error('Project plugin settings are unavailable for this run.');
@@ -870,8 +888,8 @@ export class PluginStore {
   }
 
   static async install(pluginId, botManager, { autoUpdate = true, installedBy = null, projectDir = '', permissions = [], expectedVersion = '', expectedSha256 = '', expectedRepositoryUrl = '' } = {}) {
-    if (BUILTIN_PLUGINS.has(pluginId)) {
-      const definition = BUILTIN_PLUGINS.get(pluginId);
+    if (LOCAL_HOST_ADAPTERS.has(pluginId)) {
+      const definition = LOCAL_HOST_ADAPTERS.get(pluginId);
       assertArcStudioCompatible(definition.name, definition.minArcStudioVersion);
       if (expectedVersion && expectedVersion !== definition.version) throw new Error('The plugin changed since review. Refresh the catalogue and review its permissions again.');
       const granted = normalizePermissionGrant(pluginId, permissions);
@@ -940,7 +958,7 @@ export class PluginStore {
       sourceUrl: null,
       repositoryUrl: normalizeRepositoryUrl(pack.repositoryUrl || readPluginSettings().url).url
     };
-    if (BUILTIN_PLUGINS.has(entry.id)) throw new Error(`Plugin ID “${entry.id}” is reserved for an ARC built-in integration.`);
+    if (LOCAL_HOST_ADAPTERS.has(entry.id)) throw new Error(`Plugin ID “${entry.id}” is reserved by a local host adapter checkout.`);
     if (!/^[a-z0-9][a-z0-9.-]{1,62}$/.test(entry.id || '') || !String(entry.name || '').trim() || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(entry.version || '')) {
       throw new Error('Local pack needs a valid ID, name, and SemVer version.');
     }
@@ -975,7 +993,7 @@ export class PluginStore {
   }
 
   static settingsSchema(pluginId) {
-    return BUILTIN_PLUGINS.get(pluginId)?.settingsSchema || readInstalled()[pluginId]?.settingsSchema || [];
+    return LOCAL_HOST_ADAPTERS.get(pluginId)?.settingsSchema || readInstalled()[pluginId]?.settingsSchema || [];
   }
 
   static readProjectSettings(projectDir, pluginId, schema = this.settingsSchema(pluginId), revealSecrets = false) {
@@ -1037,7 +1055,7 @@ export class PluginStore {
     const temporary = `${filePath}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(saved, null, 2), { mode: 0o600 });
     fs.renameSync(temporary, filePath);
-    const bundled = BUILTIN_PLUGINS.get(pluginId);
+    const bundled = LOCAL_HOST_ADAPTERS.get(pluginId);
     if (bundled?.runtime.closeProject) void loadHostAdapterRuntime(bundled).then((runtime) => runtime[bundled.runtime.closeProject]?.(projectDir)).catch(() => {});
     return this.publicProjectSettings(projectDir, pluginId);
   }
