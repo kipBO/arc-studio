@@ -32,6 +32,7 @@ fs.rmSync(runtimeRoot, { recursive: true, force: true });
 fs.mkdirSync(path.join(appRoot, 'packages/studio-server'), { recursive: true });
 fs.mkdirSync(path.join(appRoot, 'packages/chezcord'), { recursive: true });
 fs.cpSync(path.join(repoRoot, 'packages/studio-server/src'), path.join(appRoot, 'packages/studio-server/src'), { recursive: true });
+fs.cpSync(path.join(repoRoot, 'packages/studio-server/starter-projects'), path.join(appRoot, 'packages/studio-server/starter-projects'), { recursive: true });
 fs.cpSync(path.join(repoRoot, 'packages/chezcord/src'), path.join(appRoot, 'packages/chezcord/src'), { recursive: true });
 fs.copyFileSync(path.join(repoRoot, 'packages/chezcord/package.json'), path.join(appRoot, 'packages/chezcord/package.json'));
 fs.copyFileSync(path.join(repoRoot, 'LICENSE'), path.join(appRoot, 'LICENSE'));
