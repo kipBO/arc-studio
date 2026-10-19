@@ -106,6 +106,7 @@ export function EmbedNodeBuilder({
   mode = 'node',
   onOpenStudio,
   onOpenTextStudio,
+  templateSuggestions = [],
   validation = {},
   connectedInputIds = new Set(),
   wiredFields = {},
@@ -261,6 +262,7 @@ export function EmbedNodeBuilder({
             discordAutocomplete
             templateAutocomplete
             graphVariables={graphVariables}
+            templateSuggestions={templateSuggestions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
             inputMode={url ? 'url' : undefined}
@@ -279,6 +281,7 @@ export function EmbedNodeBuilder({
             discordAutocomplete
             templateAutocomplete
             graphVariables={graphVariables}
+            templateSuggestions={templateSuggestions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
             inputMode={url ? 'url' : undefined}
