@@ -330,6 +330,10 @@ async function deploySlashCommands() {
     if (!name || !description) throw new Error('Every slash command needs a name and description before deployment.');
     if (names.has(name)) throw new Error('Duplicate slash command /' + name + ' is configured in more than one graph.');
     names.add(name);
+    if ((node.data?.options || []).some((option) => option?.autocomplete && option?.dynamicAutocomplete)
+      && (!(graph.nodes || []).some((item) => item.type === 'event_slash_autocomplete') || !(graph.nodes || []).some((item) => item.type === 'action_respond_autocomplete'))) {
+      throw new Error('Slash command /' + name + ' uses graph-generated suggestions but needs On Command Autocomplete and Respond to Autocomplete nodes.');
+    }
     const options = (Array.isArray(node.data?.options) ? node.data.options : []).map((option) => {
       const type = Number(option.type) || 3;
       const result = { type, name: String(option.name || '').trim().toLowerCase(), description: String(option.description || '').trim(), required: Boolean(option.required) };
@@ -389,6 +393,15 @@ client.on('interactionCreate', async (interaction) => {
     };
     const focused = findFocused(interaction.data?.options);
     const configured = commandNode?.data?.options?.find((option) => option.name === focused?.name);
+    if (configured?.autocomplete && configured.dynamicAutocomplete && graph?.nodes?.some((node) => node.type === 'event_slash_autocomplete')) {
+      const interactionState = { applicationId: interaction.application_id || '', acknowledged: false, deferred: false, pending: null };
+      await dispatchGraphs('INTERACTION_CREATE', interaction, graph.id, interactionState);
+      if (!interactionState.acknowledged) {
+        try { await client.rest.createInteractionResponse(interaction.id, interaction.token, { type: 8, data: { choices: [] } }); }
+        catch (error) { writeLog('WARN', 'Autocomplete response failed for /' + commandName + ': ' + error.message); }
+      }
+      return;
+    }
     const query = String(focused?.value ?? '').toLocaleLowerCase();
     const choices = configured?.autocomplete && Array.isArray(configured.choices)
       ? configured.choices.filter((choice) => String(choice.name || '').toLocaleLowerCase().includes(query)).slice(0, 25).map((choice) => ({
@@ -408,11 +421,11 @@ client.on('guildMemberAdd', async (member) => {
 });
 client.on('error', (error) => writeLog('ERROR', 'Chezcord: ' + formatError(error)));
 client.on('fatalError', (error) => { writeLog('ERROR', 'Fatal gateway error: ' + formatError(error)); process.exitCode = 1; void shutdown('fatal gateway error'); });
-async function dispatchGraphs(eventName, payload) {
+async function dispatchGraphs(eventName, payload, onlyGraphId = null, interactionState = null) {
   if (stopping || graphRunAbortController.signal.aborted) return;
-  const run = Promise.all(graphs.map(async (graph) => {
+  const run = Promise.all(graphs.filter((graph) => !onlyGraphId || graph.id === onlyGraphId).map(async (graph) => {
     try {
-      const result = await GraphRunner.execute(graph, eventName, payload, graphContext(graph, payload));
+      const result = await GraphRunner.execute(graph, eventName, payload, graphContext(graph, payload, interactionState));
       if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + (graph.name || graph.id) + '] Event ' + eventName + ' failed: ' + result.error);
     } catch (error) {
       writeLog('ERROR', '[Graph ' + (graph.name || graph.id) + '] Event ' + eventName + ' failed: ' + formatError(error));
@@ -425,9 +438,10 @@ async function trackGraphRun(run) {
   try { await run; }
   finally { activeGraphRuns.delete(run); }
 }
-function graphContext(graph, eventPayload = null) {
+function graphContext(graph, eventPayload = null, interactionState = null) {
   return {
     rest: client.rest, client, resolveFunctionGraph, variablesState: variableState(graph), projectVariables, deploySlashCommands,
+    ...(interactionState ? { interactionState } : {}),
     canDeploySlashCommands: () => {
       let permissions = 0n;
       try { permissions = BigInt(String(eventPayload?.member?.permissions || 0)); } catch {}
