@@ -12,7 +12,7 @@ export const NodeCategories = {
 //
 const binaryMathNodes = [
   ['math_add', 'Add', 'Adds two numbers', '+'], ['math_subtract', 'Subtract', 'Subtracts B from A', '−'],
-  ['math_multiply', 'Multiply', 'Multiplies two numbers', '×'], ['math_divide', 'Divide', 'Divides A by B; division by zero returns 0', '÷'],
+  ['math_multiply', 'Multiply', 'Multiplies two numbers', '×'], ['math_divide', 'Divide', 'Divides A by B, division by zero returns 0', '÷'],
   ['math_modulo', 'Remainder', 'Returns the remainder after division', 'mod'], ['math_power', 'Power', 'Raises A to the power of B', '^'],
   ['math_min', 'Minimum', 'Returns the smaller number', 'min'], ['math_max', 'Maximum', 'Returns the larger number', 'max']
 ].map(([type, label, description, symbol]) => ({
@@ -21,13 +21,13 @@ const binaryMathNodes = [
   outputs: [{ id: 'result', label: 'Result', type: 'number' }]
 }));
 const unaryMathNodes = [
-  ['math_abs', 'Absolute', 'Returns the distance from zero', 'abs'], ['math_sqrt', 'Square Root', 'Returns the non-negative square root; negative input returns 0', '√'],
+  ['math_abs', 'Absolute', 'Returns the distance from zero', 'abs'], ['math_sqrt', 'Square Root', 'Returns the non-negative square root, negative input returns 0', '√'],
   ['math_round', 'Round', 'Rounds to the selected decimal places', 'round'], ['math_floor', 'Floor', 'Rounds down to an integer', 'floor'],
   ['math_ceil', 'Ceiling', 'Rounds up to an integer', 'ceil'], ['math_sin', 'Sine', 'Sine of an angle in radians', 'sin'],
   ['math_cos', 'Cosine', 'Cosine of an angle in radians', 'cos'], ['math_tan', 'Tangent', 'Tangent of an angle in radians', 'tan'],
   ['math_asin', 'Arcsine', 'Inverse sine, returned in radians', 'asin'], ['math_acos', 'Arccosine', 'Inverse cosine, returned in radians', 'acos'],
-  ['math_atan', 'Arctangent', 'Inverse tangent, returned in radians', 'atan'], ['math_log', 'Natural Log', 'Natural logarithm; non-positive input returns 0', 'ln'],
-  ['math_log10', 'Log Base 10', 'Base 10 logarithm; non-positive input returns 0', 'log₁₀'], ['math_exp', 'Exponential', 'Raises Euler’s number to the input power', 'exp'],
+  ['math_atan', 'Arctangent', 'Inverse tangent, returned in radians', 'atan'], ['math_log', 'Natural Log', 'Natural logarithm, non-positive input returns 0', 'ln'],
+  ['math_log10', 'Log Base 10', 'Base 10 logarithm, non-positive input returns 0', 'log₁₀'], ['math_exp', 'Exponential', 'Raises Euler’s number to the input power', 'exp'],
   ['math_sign', 'Sign', 'Returns -1, 0, or 1 for the input sign', 'sign']
 ].map(([type, label, description, symbol]) => ({
   type, category: NodeCategories.MATH, label: `${label} (${symbol})`, color: '#38bdf8', description,
@@ -84,10 +84,12 @@ const gatewayEventNodes = [
   ['event_automod_action', 'On AutoMod Action', 'AutoMod takes action on content', [['rule_id', 'Rule ID', 'string'], ['user_id', 'User ID', 'string'], ['guild_id', 'Server ID', 'string'], ['channel_id', 'Channel ID', 'string'], ['action_type', 'Action Type', 'number'], ['keyword', 'Matched Keyword', 'string']]],
   ['event_invite_create', 'On Invite Created', 'An invite is created', [['code', 'Invite Code', 'string'], ['channel_id', 'Channel ID', 'string'], ['guild_id', 'Server ID', 'string'], ['inviter_id', 'Inviter ID', 'string']]],
   ['event_invite_delete', 'On Invite Deleted', 'An invite is deleted', [['code', 'Invite Code', 'string'], ['channel_id', 'Channel ID', 'string'], ['guild_id', 'Server ID', 'string']]],
-  ['event_cron', 'On Schedule', 'Runs on a cron schedule', [['scheduled_at', 'Scheduled At', 'string'], ['time_zone', 'Time Zone', 'string']]]
+  ['event_cron', 'On Schedule', 'Runs on a cron schedule', [['scheduled_at', 'Scheduled At', 'string'], ['time_zone', 'Time Zone', 'string']]],
+  ['event_bot_ready', 'On Bot Ready', 'Runs when the bot connects', []]
 ].map(([type, label, description, fields]) => ({
   type, category: NodeCategories.EVENTS, label, color: '#5865F2', description, inputs: [],
   ...(type === 'event_cron' ? { gatewayEvent: 'CRON_TICK' } : {}),
+  ...(type === 'event_bot_ready' ? { gatewayEvent: 'READY' } : {}),
   gatewayIntents: ({
     event_message_update: ['GUILD_MESSAGES', 'DIRECT_MESSAGES', 'MESSAGE_CONTENT'], event_message_delete: ['GUILD_MESSAGES', 'DIRECT_MESSAGES'],
     event_message_reaction_remove_all: ['GUILD_MESSAGE_REACTIONS', 'DIRECT_MESSAGE_REACTIONS'],
@@ -106,11 +108,13 @@ const gatewayEventNodes = [
 
 export const PinColors = {
   exec: 'var(--wire-exec)',
+  variable: '#22c55e',
   arg: '#9299a6',
   string: '#c084fc',
   number: '#38bdf8',
   boolean: '#f87171',
   object: '#fbbf24',
+  array: '#fb923c',
   embed: '#f472b6'
 };
 
@@ -354,6 +358,7 @@ export function renderTextTemplate(template, resolveSlot, appEmojis = []) {
 }
 
 export function createDefaultNodeData(type) {
+  if (type === 'variable_create') return { name: '', valueType: 'string', value: '' };
   if (type === 'repeat_while') return { condition: true, interval_ms: 500 };
   if (type === 'event_cron') return { cronExpression: '*/5 * * * *', timeZone: 'UTC' };
   if (type === 'function_input') return { paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, name: 'Input', valueType: 'number', optional: false, defaultValue: 0 };
@@ -456,6 +461,8 @@ export const BuiltInNodeDefinitions = [
       { id: 'exec', label: 'Exec', type: 'exec' },
       { id: 'custom_id', label: 'Custom ID', type: 'string' },
       { id: 'user_id', label: 'User ID', type: 'string' },
+      { id: 'guild_id', label: 'Server ID', type: 'string' },
+      { id: 'channel_id', label: 'Channel ID', type: 'string' },
       { id: 'application_id', label: 'Application ID', type: 'string' },
       { id: 'interaction_id', label: 'Interaction ID', type: 'string' },
       { id: 'interaction_token', label: 'Interaction Token', type: 'string' }
@@ -485,8 +492,24 @@ export const BuiltInNodeDefinitions = [
     label: 'Get Variable',
     color: '#38bdf8',
     description: 'Reads a graph variable as typed data',
-    inputs: [],
-    outputs: [{ id: 'value', label: 'Value', type: 'string' }]
+    inputs: [{ id: 'variable', label: 'Variable', type: 'variable' }],
+    outputs: [{ id: 'variable', label: 'Variable', type: 'variable' }, { id: 'value', label: 'Value', type: 'string' }]
+  },
+  {
+    type: 'variable_create',
+    category: NodeCategories.VARIABLES,
+    label: 'Create Variable',
+    color: '#38bdf8',
+    description: 'Creates or updates a graph variable. Its value type follows the connected value, otherwise choose a type and fallback value.',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'value', label: 'Value', type: 'arg', defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'variable', label: 'Variable', type: 'variable' },
+      { id: 'value', label: 'Value', type: 'arg' }
+    ]
   },
   {
     type: 'variable_set',
@@ -496,9 +519,10 @@ export const BuiltInNodeDefinitions = [
     description: 'Updates a graph variable during execution',
     inputs: [
       { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'variable', label: 'Variable', type: 'variable' },
       { id: 'value', label: 'Value', type: 'string', defaultValue: '' }
     ],
-    outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }]
+    outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'variable', label: 'Variable', type: 'variable' }]
   },
   {
     type: 'function_input',
@@ -532,7 +556,7 @@ export const BuiltInNodeDefinitions = [
     category: NodeCategories.LOGIC,
     label: 'Run Event Graph',
     color: '#8b5cf6',
-    description: 'Runs another event graph for the same Discord event. The target must have a matching event node; graph cycles are rejected.',
+    description: 'Runs another event graph for the same Discord event. The target must have a matching event node, graph cycles are rejected.',
     inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }],
     outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }]
   },
@@ -621,7 +645,7 @@ export const BuiltInNodeDefinitions = [
     category: NodeCategories.LOGIC,
     label: 'Wait Until Condition',
     color: '#8b5cf6',
-    description: 'Checks a boolean condition until it becomes true. Times out through the Timed Out branch; polling is bounded.',
+    description: 'Checks a boolean condition until it becomes true. Times out through the Timed Out branch, polling is bounded.',
     inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'condition', label: 'Condition', type: 'boolean', defaultValue: false }, { id: 'timeout_ms', label: 'Timeout (ms)', type: 'number', defaultValue: 30000 }, { id: 'interval_ms', label: 'Check Every (ms)', type: 'number', defaultValue: 250 }],
     outputs: [{ id: 'ready_exec', label: 'Ready', type: 'exec' }, { id: 'timeout_exec', label: 'Timed Out', type: 'exec' }]
   },
@@ -807,7 +831,8 @@ export const BuiltInNodeDefinitions = [
     inputs: [
       { id: 'exec', label: 'Exec', type: 'exec' },
       { id: 'status', label: 'Status', type: 'string', defaultValue: 'online' },
-      { id: 'activity_text', label: 'Activity Text', type: 'string', defaultValue: 'Arc App' }
+      { id: 'activity_text', label: 'Activity Text', type: 'string', defaultValue: 'ARC Studio' },
+      { id: 'activity_type', label: 'Activity Type', type: 'number', defaultValue: 0 }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: 'exec' }
@@ -843,8 +868,8 @@ export const BuiltInNodeDefinitions = [
       { id: 'bitrate', label: 'Voice bitrate', type: 'number', defaultValue: 64000 },
       { id: 'user_limit', label: 'Voice user limit', type: 'number', defaultValue: 0 },
       { id: 'rtc_region', label: 'Voice region', type: 'string', defaultValue: '' },
-      { id: 'video_quality_mode', label: 'Voice video quality mode', type: 'number', defaultValue: 1 },
-      { id: 'default_auto_archive_duration', label: 'Thread auto archive (minutes)', type: 'number', defaultValue: 1440 },
+      { id: 'video_quality_mode', label: 'Voice video quality mode', type: 'number', defaultValue: '' },
+      { id: 'default_auto_archive_duration', label: 'Thread auto archive (minutes)', type: 'number', defaultValue: '' },
       { id: 'reason', label: 'Audit Log Reason', type: 'string', defaultValue: '' }
     ],
     outputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'channel_id_out', label: 'Channel ID', type: 'string' }]
@@ -908,7 +933,7 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'action_voice_channel_status', category: NodeCategories.ACTIONS, label: 'Set Voice Channel Status', color: '#10b981',
-    description: 'Sets or clears a voice channel status. Requires Set Voice Channel Status; Manage Channels may also be required.',
+    description: 'Sets or clears a voice channel status. Requires Set Voice Channel Status, Manage Channels may also be required.',
     inputs: [
       { id: 'exec', label: 'Exec', type: 'exec' },
       { id: 'channel_id', label: 'Voice Channel ID', type: 'string', defaultValue: '' },
@@ -981,7 +1006,7 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'data_array_create', category: NodeCategories.VALUES, label: 'Create Array', color: '#06b6d4',
-    description: 'Collects connected values in order. One extra socket appears as you use each socket, up to 50 items; use Combine Arrays to combine arrays.',
+    description: 'Collects connected values in order. One extra socket appears as you use each socket, up to 50 items, use Combine Arrays to combine arrays.',
     inputs: [{ id: 'item_1', label: 'Item 1', type: 'arg', defaultValue: null }],
     outputs: [{ id: 'array', label: 'Array', type: 'object' }, { id: 'length', label: 'Length', type: 'number' }]
   },
@@ -1005,7 +1030,7 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'data_array_append', category: NodeCategories.VALUES, label: 'Append Array Items', color: '#06b6d4',
-    description: 'Returns a copy with connected items appended in socket order. Connect an item to reveal another socket, up to 50; chain another Append Array Items node for more.',
+    description: 'Returns a copy with connected items appended in socket order. Connect an item to reveal another socket, up to 50, chain another Append Array Items node for more.',
     inputs: [{ id: 'array', label: 'Array', type: 'object', defaultValue: [] }, { id: 'item_1', label: 'Item 1', type: 'arg', defaultValue: undefined }],
     outputs: [{ id: 'array', label: 'Array', type: 'object' }, { id: 'length', label: 'Length', type: 'number' }]
   },
@@ -1029,7 +1054,7 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'data_string_split', category: NodeCategories.VALUES, label: 'Split Text', color: '#06b6d4',
-    description: 'Splits text at each exact separator string. Connect Part 1, Part 2, and more as needed; each used output reveals the next socket. It does not parse command prefixes or quoted arguments.',
+    description: 'Splits text at each exact separator string. Connect Part 1, Part 2, and more as needed, each used output reveals the next socket. It does not parse command prefixes or quoted arguments.',
     inputs: [{ id: 'text', label: 'Text', type: 'string', defaultValue: '' }, { id: 'separator', label: 'Separator', type: 'string', defaultValue: ',' }],
     outputs: [{ id: 'array', label: 'Parts', type: 'object' }, { id: 'length', label: 'Count', type: 'number' }]
   },
@@ -1130,7 +1155,7 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'data_get_modal_value', category: NodeCategories.VALUES, label: 'Get Modal Value', color: '#06b6d4',
-    description: 'Reads a submitted modal field by custom ID; multi-select fields return arrays.',
+    description: 'Reads a submitted modal field by custom ID, multi-select fields return arrays.',
     inputs: [
       { id: 'submitted_values', label: 'Submitted Values', type: 'object', defaultValue: [] },
       { id: 'custom_id', label: 'Field Custom ID', type: 'string', defaultValue: '' }
@@ -1344,8 +1369,14 @@ export function registerPluginNodeDefinitions(plugins = []) {
   for (const plugin of plugins) {
     if (!['wasm-adapter', 'host-adapter'].includes(plugin?.kind) || !Array.isArray(plugin.nodes)) continue;
     for (const node of plugin.nodes) {
-      if (!node?.pluginAdapter || typeof node.type !== 'string' || !node.type.startsWith(`${plugin.id}.`)) continue;
-      BuiltInNodeDefinitions.push({ ...node, pluginId: plugin.id, pluginName: plugin.name || plugin.id });
+      if (!node || typeof node.type !== 'string' || !node.type.startsWith(`${plugin.id}.`)) continue;
+      BuiltInNodeDefinitions.push({
+        ...node,
+        category: String(node.category || plugin.name || plugin.id).trim().slice(0, 48),
+        pluginAdapter: true,
+        pluginId: plugin.id,
+        pluginName: plugin.name || plugin.id
+      });
       adapterNodeTypes.add(node.type);
     }
   }
