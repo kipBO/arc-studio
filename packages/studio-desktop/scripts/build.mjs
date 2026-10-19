@@ -23,9 +23,13 @@ try {
   const releaseChannel = ['stable', 'nightly'].includes(process.env.ARC_RELEASE_CHANNEL)
     ? process.env.ARC_RELEASE_CHANNEL
     : rootPackage.version.includes('-') ? 'nightly' : 'stable';
+  const updateRepository = process.env.ARC_UPDATE_REPOSITORY || process.env.GITHUB_REPOSITORY || 'relentiousdragon/arc-studio';
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(updateRepository)) {
+    throw new Error(`Invalid GitHub updater repository: ${updateRepository}.`);
+  }
   const expectedUpdateEndpoint = releaseChannel === 'nightly'
-    ? 'https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json'
-    : 'https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json';
+    ? `https://github.com/${updateRepository}/releases/download/nightly/latest.json`
+    : `https://github.com/${updateRepository}/releases/latest/download/latest.json`;
   if (process.env.ARC_UPDATE_ENDPOINT && process.env.ARC_UPDATE_ENDPOINT !== expectedUpdateEndpoint) {
     throw new Error(`The ${releaseChannel} desktop build must use its matching updater endpoint.`);
   }
@@ -45,7 +49,7 @@ try {
   }
   tauriBuildConfig.plugins = { updater: { endpoints: [expectedUpdateEndpoint] } };
   tauriArgs.push('--config', JSON.stringify(tauriBuildConfig));
-  await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target, ARC_RELEASE_CHANNEL: releaseChannel } });
+  await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target, ARC_RELEASE_CHANNEL: releaseChannel, ARC_UPDATE_REPOSITORY: updateRepository } });
   if (process.platform === 'darwin') {
     const config = JSON.parse(fs.readFileSync(path.join('src-tauri', 'tauri.conf.json'), 'utf8'));
     const arch = target === 'universal-apple-darwin' ? 'universal' : target.startsWith('aarch64') ? 'arm64' : 'x64';
