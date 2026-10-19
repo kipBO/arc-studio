@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ArrowLeft, Check, ChevronDown, Copy, Plus, Search, Trash2 } from 'lucide-react';
 import { DISCORD_PERMISSION_GROUPS, bitfieldToPermissions, permissionsToBitfield } from '../nodes/permissionCatalog.js';
-import { AnimatedDropdown } from '../ui/CustomControls.jsx';
+import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { useStudioEscape } from './useStudioEscape.js';
@@ -31,6 +31,7 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
   const [expandedTargets, setExpandedTargets] = useState(() => new Set());
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const isOverwrite = mode === 'overwrites';
+  const isCommand = mode === 'command';
   const initialCount = Math.max(1, Number(draft.overwriteCount) || 0, ...connectedTargetIds.map((id) => Number(/target_id_(\d+)/.exec(id)?.[1]) || 0), ...Object.keys(draft).map((id) => Number(/^target_id_(\d+)$/.exec(id)?.[1]) || 0).filter((index) => index > 0 && draft[`target_id_${index}`]));
   const [targetCount, setTargetCount] = useState(Math.min(MAX_OVERWRITES, initialCount));
   const hasUnappliedChanges = JSON.stringify(draft) !== JSON.stringify(data || {}) || targetCount !== Math.min(MAX_OVERWRITES, initialCount);
@@ -79,7 +80,10 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
     : canonicalBitfield(draft.permissions) === null;
   const apply = () => {
     if (invalidBitfield) return;
-    if (!isOverwrite) return onApply?.({ ...draft, permissions: canonicalBitfield(draft.permissions) });
+    if (!isOverwrite) {
+      const permissions = canonicalBitfield(draft.permissions);
+      return onApply?.({ ...draft, permissions: isCommand && String(draft.permissions ?? '').trim() === '' ? '' : permissions });
+    }
     const normalized = { ...draft, overwriteCount: targetCount };
     for (let index = 1; index <= targetCount; index += 1) {
       normalized[`allowBits_${index}`] = canonicalBitfield(draft[`allowBits_${index}`]) || '0';
@@ -99,12 +103,12 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
   return <section className="permission-studio" aria-label="Permission editor">
     <header className="permission-studio-header">
       <button type="button" className="permission-studio-back" onClick={close}><ArrowLeft size={16} /> Back</button>
-      <div className="permission-studio-title"><div><h1>Permission editor</h1><p>{nodeName} · {isOverwrite ? 'Channel access rules' : 'Role permissions'}</p></div></div>
+      <div className="permission-studio-title"><div><h1>{isCommand ? 'Command permissions' : 'Permission editor'}</h1><p>{nodeName} · {isOverwrite ? 'Channel access rules' : isCommand ? 'Slash command defaults' : 'Role permissions'}</p></div></div>
       <button type="button" className="permission-studio-apply" onClick={apply} disabled={invalidBitfield}><Check size={15} /> Apply</button>
     </header>
     <div className="permission-studio-toolbar">
       <label className="permission-studio-search"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={isOverwrite ? 'Search permissions, target type, or ID' : 'Search permissions'} autoCapitalize="none" autoCorrect="off" /></label>
-      <span>{isOverwrite ? 'Unset permissions inherit from the server and parent category.' : 'Choose the permissions this role should receive.'}</span>
+      <span>{isOverwrite ? 'Unset permissions inherit from the server and parent category.' : isCommand ? 'Members need every selected permission. Administrators can always use the command.' : 'Choose the permissions this role should receive.'}</span>
     </div>
     <div className="permission-studio-scroll">
       {isOverwrite ? <div className="permission-targets">
@@ -134,7 +138,7 @@ export function PermissionStudioView({ mode = 'role', nodeName = 'Permissions', 
           </article>;
         })}
         <button type="button" className="permission-add-target" disabled={targetCount >= MAX_OVERWRITES} onClick={() => setTargetCount((current) => Math.min(MAX_OVERWRITES, current + 1))}><Plus size={15} /> Add target overwrite <span>{targetCount}/{MAX_OVERWRITES}</span></button>
-      </div> : <article className="permission-role-card"><div className="permission-bitfield-grid role-bitfield"><BitfieldField label="Role permission BigInt" value={draft.permissions || ''} invalid={canonicalBitfield(draft.permissions) === null} copied={copiedField === 'permissions'} onChange={(value) => setDraft((current) => ({ ...current, permissions: value }))} onCopy={() => copyBitfield('permissions')} /><span>Decimal or hexadecimal (`0x…`). Unknown permission bits are preserved when you toggle named permissions.</span></div><PermissionList roleMode groups={groups} query={query} allow={selectedFor(0).allow} deny={[]} onChange={(key, state) => setPermission(0, key, state)} /><footer>{selectedFor(0).allow.length} known permissions selected · BigInt {draft.permissions || '0'}</footer></article>}
+      </div> : <article className="permission-role-card"><div className="permission-bitfield-grid role-bitfield"><BitfieldField label={isCommand ? 'Command permission bitfield' : 'Role permission BigInt'} value={draft.permissions || ''} invalid={canonicalBitfield(draft.permissions) === null} copied={copiedField === 'permissions'} onChange={(value) => setDraft((current) => ({ ...current, permissions: value }))} onCopy={() => copyBitfield('permissions')} /><span>Decimal or hexadecimal (`0x…`). Unknown permission bits are preserved when you toggle named permissions.</span></div>{isCommand && <label className="slash-command-choice"><AnimatedCheckbox checked={String(draft.permissions ?? '').trim() === '0'} label="Administrators only" onChange={(checked) => setDraft((current) => ({ ...current, permissions: checked ? '0' : '' }))} /><span>Administrators only. This sets Discord’s default permissions to 0.</span></label>}<PermissionList roleMode groups={groups} query={query} allow={selectedFor(0).allow} deny={[]} onChange={(key, state) => setPermission(0, key, state)} /><footer>{selectedFor(0).allow.length} known permissions selected · BigInt {draft.permissions || '0'}</footer></article>}
       {!groups.length && !(isOverwrite && Array.from({ length: targetCount }, (_, index) => targetMatches(index + 1)).some(Boolean)) && <p className="permission-empty">No permissions or targets match “{search}”.</p>}
     </div>
     <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard permission changes?" subtitle="These edits have not been applied to the graph." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph is unchanged until you choose Apply.</p></Modal>
