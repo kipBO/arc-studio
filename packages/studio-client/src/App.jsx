@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AppWindow, Bot, Braces, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, RotateCcw, Save, ShieldCheck, SlidersHorizontal, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, Bot, Braces, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -13,6 +13,8 @@ import { GraphLibraryPanel } from './components/panels/GraphLibraryPanel.jsx';
 import { EmbedStudioView } from './components/panels/EmbedStudioView.jsx';
 import { DiscordTextStudioView } from './components/panels/DiscordTextStudioView.jsx';
 import { PermissionStudioView } from './components/panels/PermissionStudioView.jsx';
+import { SlashCommandStudioView } from './components/panels/SlashCommandStudioView.jsx';
+import { PopupModalStudioView } from './components/panels/PopupModalStudioView.jsx';
 import { GraphValidationModal } from './components/modals/GraphValidationModal.jsx';
 import { BotSettingsModal } from './components/modals/BotSettingsModal.jsx';
 import { PluginStoreModal } from './components/modals/PluginStoreModal.jsx';
@@ -34,8 +36,14 @@ import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
-import { embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
+import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
+import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 //
+const LEGACY_EMBED_PIN_FIELDS = {
+  title: ['title', 'value'], description: ['description', 'value'], url: ['url', 'url'], color: ['color', 'value'],
+  author_name: ['author', 'name'], author_url: ['author', 'url'], author_icon: ['author', 'icon'],
+  footer_text: ['footer', 'text'], footer_icon: ['footer', 'icon'], thumbnail_url: ['thumbnail', 'url'], image_url: ['image', 'url']
+};
 const DEFAULT_SETTINGS = {
   snapToGrid: true,
   wirePulse: true,
@@ -52,7 +60,6 @@ const DEFAULT_SETTINGS = {
   snapshotRetentionHours: 12,
   uiSounds: false,
   autoUpdateChecks: true,
-  updateChannel: 'stable',
   compactContextMenus: false,
   discordRpcEnabled: true,
   discordRpcRedactWorkspace: false,
@@ -81,6 +88,60 @@ const TAG_GROUP_COLORS = [
   { id: 'amber', label: 'Amber', value: '#e6aa4b' },
   { id: 'red', label: 'Red', value: '#e47777' }
 ];
+
+function collectTemplateValuePaths(value, root, depth = 0, output = [], seen = new Set()) {
+  if (depth >= 4 || value == null || typeof value !== 'object' || seen.has(value)) return output;
+  seen.add(value);
+  const entries = Array.isArray(value)
+    ? value.slice(0, 10).map((_item, index) => [index, value[index]])
+    : Object.entries(value).slice(0, 40).filter(([key]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key));
+  for (const [key, child] of entries) {
+    const path = Array.isArray(value) ? `${root}[${key}]` : `${root}.${key}`;
+    output.push({ path, label: path });
+    collectTemplateValuePaths(child, path, depth + 1, output, seen);
+  }
+  seen.delete(value);
+  return output;
+}
+
+function getNodeOutputSample(source, pinId, variables, graphNodes) {
+  if (!source) return undefined;
+  if (source.type === 'variable_get' && pinId === 'value') return variables.find((item) => item.id === source.data?.variableId)?.initialValue;
+  if (source.type === 'event_modal_submit' && pinId === 'submitted_values') return [{ type: 1, components: [{ custom_id: 'field_id', value: 'text value', values: ['selected_value'] }] }];
+  if (source.type === 'build_modal' && pinId === 'modal') {
+    const modal = source.data?.modal || {};
+    return { custom_id: modal.customId, title: modal.title, components: (modal.components || []).map((field) => ({ type: 18, component: { custom_id: field.customId, value: '', values: [] } })) };
+  }
+  if (source.type === 'data_get_modal_value' && pinId === 'value') {
+    const fieldId = String(source.data?.custom_id || '');
+    const field = graphNodes.flatMap((item) => item.type === 'build_modal' ? item.data?.modal?.components || [] : []).find((item) => item.customId === fieldId);
+    return ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select', 'checkbox_group'].includes(field?.type) ? ['selected_value'] : '';
+  }
+  if (source.type === 'value_text' || source.type === 'value_number' || source.type === 'value_boolean') return source.data?.value;
+  if (source.type === 'data_array_create' && pinId === 'array') return Object.keys(source.data || {}).filter((key) => /^item_\d+$/.test(key)).sort().map((key) => source.data[key]);
+  const direct = source.data?.[pinId];
+  if (direct !== undefined && typeof direct !== 'string') return direct;
+  if (pinId === 'value' && source.data?.value !== undefined) return source.data.value;
+  return undefined;
+}
+
+function getTemplateValuePaths(graph, node, variables) {
+  const paths = [];
+  for (const variable of variables) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '')) collectTemplateValuePaths(variable.initialValue, variable.name, 0, paths);
+  }
+  if (!graph || !node) return paths;
+  const nodeById = new Map((graph.nodes || []).map((item) => [item.id, item]));
+  for (const wire of graph.connections || []) {
+    if (wire.targetNodeId !== node.id) continue;
+    const argument = /^arg_(\d+)$/.exec(wire.targetPinId);
+    if (!argument) continue;
+    const root = `arg${argument[1]}`;
+    const sample = getNodeOutputSample(nodeById.get(wire.sourceNodeId), wire.sourcePinId, variables, graph.nodes || []);
+    collectTemplateValuePaths(sample, root, 0, paths);
+  }
+  return [...new Map(paths.map((item) => [item.path, item])).values()];
+}
 
 function mergeCollaborativeAttachments(current, incoming) {
   const localByName = new Map((current || []).filter((item) => item?.filename).map((item) => [item.filename, item]));
@@ -188,6 +249,34 @@ function safeStorageRemove(key) {
   removeAppStorage(key);
 }
 
+function readLocalDesktopSessionToken() {
+  try { return localStorage.getItem('arc_local_session_token') || ''; }
+  catch { return ''; }
+}
+
+function writeLocalDesktopSessionToken(token) {
+  try { localStorage.setItem('arc_local_session_token', token); }
+  catch {}
+}
+
+function removeLocalDesktopSessionToken() {
+  try { localStorage.removeItem('arc_local_session_token'); }
+  catch {}
+  try { window.__TAURI_INTERNALS__?.invoke?.('delete_local_session_token').catch(() => {}); }
+  catch {}
+}
+
+function getInitialAuthToken(desktopMode) {
+  if (desktopMode) {
+    try {
+      if (localStorage.getItem('arc_workspace_mode') !== 'remote') {
+        return readLocalDesktopSessionToken() || safeStorageGet('arc_token');
+      }
+    } catch {}
+  }
+  return safeStorageGet('arc_token');
+}
+
 function readStoredJson(key, fallback) {
   try {
     const saved = readAppStorage(key);
@@ -227,6 +316,7 @@ function readBrowserStudioRoute() {
 //
 export function App() {
   const desktopMode = Boolean(window.__ARC_STUDIO_CONFIG__?.desktop);
+  const desktopReleaseChannel = window.__ARC_STUDIO_CONFIG__?.releaseChannel === 'nightly' ? 'nightly' : 'stable';
   const initialBrowserRouteRef = useRef(null);
   if (!desktopMode && initialBrowserRouteRef.current === null) initialBrowserRouteRef.current = readBrowserStudioRoute();
   const browserRouteHandledRef = useRef(false);
@@ -241,7 +331,7 @@ export function App() {
   const [workspaceSwitchOpen, setWorkspaceSwitchOpen] = useState(false);
   const localSessionRef = useRef(null);
   if (desktopMode && !localSessionRef.current) {
-    const savedLocalToken = safeStorageGet('arc_local_session_token');
+    const savedLocalToken = readLocalDesktopSessionToken();
     if (savedLocalToken) localSessionRef.current = { token: savedLocalToken, user: null };
   }
   const localDesktopWorkspace = desktopMode && workspaceMode === 'local';
@@ -256,9 +346,16 @@ export function App() {
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
+  const [serverUpdate, setServerUpdate] = useState(null);
+  const [stableUpdateReady, setStableUpdateReady] = useState(null);
+  const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
+  const [updateInstallPromptOpen, setUpdateInstallPromptOpen] = useState(false);
+  const [updateInstalling, setUpdateInstalling] = useState(false);
+  const updateRef = useRef(null);
   const [canResetPrimaryAdminWithMasterKey, setCanResetPrimaryAdminWithMasterKey] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
-  const [authToken, setAuthToken] = useState(() => safeStorageGet('arc_token'));
+  const [authToken, setAuthToken] = useState(() => getInitialAuthToken(desktopMode));
+  const [localSessionRestoreReady, setLocalSessionRestoreReady] = useState(() => !desktopMode || workspaceMode !== 'local' || Boolean(getInitialAuthToken(desktopMode)));
   const [currentUser, setCurrentUser] = useState(null);
   const [collaborators, setCollaborators] = useState([]);
   const [remoteCollaborationActions, setRemoteCollaborationActions] = useState([]);
@@ -269,11 +366,15 @@ export function App() {
   const [localAccountUsername, setLocalAccountUsername] = useState('');
   const [needsSetup, setNeedsSetup] = useState(false);
   const [studioVersion, setStudioVersion] = useState(studioPackage.version);
+  const [studioServerVersion, setStudioServerVersion] = useState('');
+  const currentUpdateChannel = desktopMode
+    ? desktopReleaseChannel
+    : /-(?:alpha|beta|rc|nightly)(?:[.-]|$)/i.test(studioServerVersion || studioVersion) ? 'nightly' : 'stable';
+  const stagedUpdateInstallCheckedRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
   const [theme, setTheme] = useState(getInitialTheme);
   const [hasThemeChoice, setHasThemeChoice] = useState(hasSavedThemeChoice);
   const [settings, setSettings] = useState(() => readStoredJson('arc_editor_settings', { ...DEFAULT_SETTINGS, uiSounds: desktopMode }));
-  const [pendingSettingsReload, setPendingSettingsReload] = useState(null);
   const uiScale = ['80', '90', '100', '110', '120', '130', '140'].includes(String(settings.uiScale)) ? String(settings.uiScale) : '100';
   const [isLocked, setIsLocked] = useState(() => {
     try { return readAppStorage('arc_ui_locked') === 'true'; }
@@ -320,6 +421,8 @@ export function App() {
   const [openedProjectFiles, setOpenedProjectFiles] = useState([]);
   const [projectImportTrusted, setProjectImportTrusted] = useState(false);
   const [projectImportError, setProjectImportError] = useState('');
+  const [projectImportCompatibility, setProjectImportCompatibility] = useState(null);
+  const [projectImportOldVersionApproved, setProjectImportOldVersionApproved] = useState(false);
   const [projectTemplateDialog, setProjectTemplateDialog] = useState(false);
   const [newProjectTemplate, setNewProjectTemplate] = useState('ticket');
   const [projectNameManuallyEdited, setProjectNameManuallyEdited] = useState(false);
@@ -347,12 +450,8 @@ export function App() {
   const [tagGroupSearch, setTagGroupSearch] = useState('');
   const [tagGroupError, setTagGroupError] = useState('');
   const [closeGraphDialog, setCloseGraphDialog] = useState(null);
-  const [recoveryDrafts, setRecoveryDrafts] = useState([]);
-  const [recoveryDraftKey, setRecoveryDraftKey] = useState('');
-  const [recoveryCompareId, setRecoveryCompareId] = useState(null);
+  const [recoveryLoadedKey, setRecoveryLoadedKey] = useState('');
   const recoveryDraftsRef = useRef([]);
-  const recoveryCheckedKeysRef = useRef(new Set());
-  const [reloadConfirm, setReloadConfirm] = useState(false);
   const [gatewayIntentConfirm, setGatewayIntentConfirm] = useState([]);
   const [validationResult, setValidationResult] = useState(null);
   const [botStatus, setBotStatus] = useState('DISCONNECTED');
@@ -428,6 +527,8 @@ export function App() {
     } });
     setProjectImportTrusted(false);
     setProjectImportError('');
+    setProjectImportCompatibility(null);
+    setProjectImportOldVersionApproved(false);
   }, [desktopMode, openedProjectFiles, projectImportFile]);
   useEffect(() => {
     const updateNetworkState = () => setNetworkOnline(navigator.onLine !== false);
@@ -441,46 +542,100 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!networkOnline || (desktopMode && settings.autoUpdateChecks === false)) return undefined;
+    if (settings.autoUpdateChecks === false) { setServerUpdate(null); return undefined; }
+    if (!networkOnline || !studioServerVersion || (desktopMode && workspaceMode === 'local')) return undefined;
     let active = true;
-    const checkForStudioUpdate = async () => {
+    const checkForServerUpdate = async () => {
       try {
-        const channel = desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable';
-        const endpoint = channel === 'nightly'
+        const endpoint = currentUpdateChannel === 'nightly'
           ? 'https://api.github.com/repos/relentiousdragon/arc-studio/releases?per_page=100'
           : 'https://api.github.com/repos/relentiousdragon/arc-studio/releases/latest';
-        const response = await fetch(endpoint, {
-          headers: { Accept: 'application/vnd.github+json' },
-          cache: 'no-store'
-        });
-        if (!response.ok) {
-          if (response.status === 404 && active) setAppUpdate(null);
-          return;
-        }
-        const responseData = await response.json();
-        const releases = channel === 'nightly' ? (Array.isArray(responseData) ? responseData : []) : [responseData];
-        const release = releases.filter((item) => !item.draft && (channel === 'nightly' ? item.prerelease === true : item.prerelease !== true) && compareArcVersions(item.tag_name, studioVersion) === 1)
+        const response = await fetch(endpoint, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+        if (!response.ok) return;
+        const data = await response.json();
+        const releases = Array.isArray(data) ? data : [data];
+        const release = releases.filter((item) => !item.draft && (currentUpdateChannel === 'nightly' ? item.prerelease === true : item.prerelease !== true) && compareArcVersions(item.tag_name, studioServerVersion) === 1)
           .sort((left, right) => compareArcVersions(right.tag_name, left.tag_name) || 0)[0];
-        if (!release) { if (active) setAppUpdate(null); return; }
-        const version = String(release.tag_name || '').replace(/^v/i, '');
-        if (!version || compareArcVersions(version, studioVersion) !== 1) {
-          if (active) setAppUpdate(null);
-          return;
-        }
         if (!active) return;
-        setAppUpdate({
+        if (!release) { setServerUpdate(null); return; }
+        const version = String(release.tag_name || '').replace(/^v/i, '');
+        setServerUpdate({
           version,
-          url: release.html_url,
-          title: release.name || `ARC Studio ${version}`,
-          notes: String(release.body || '').slice(0, 6000),
-          kind: classifyArcUpdate(version, studioVersion)
+          url: release.html_url || `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`,
+          title: release.name || `ARC Studio Server ${version}`,
+          kind: classifyArcUpdate(version, studioServerVersion)
         });
       } catch {}
     };
-    checkForStudioUpdate();
-    const interval = window.setInterval(checkForStudioUpdate, 6 * 60 * 60 * 1000);
+    checkForServerUpdate();
+    const interval = window.setInterval(checkForServerUpdate, 6 * 60 * 60 * 1000);
     return () => { active = false; window.clearInterval(interval); };
-  }, [networkOnline, desktopMode, settings.autoUpdateChecks, settings.updateChannel, studioVersion]);
+  }, [currentUpdateChannel, desktopMode, networkOnline, settings.autoUpdateChecks, studioServerVersion, workspaceMode]);
+
+  useEffect(() => {
+    if (!desktopMode || stagedUpdateInstallCheckedRef.current) return;
+    stagedUpdateInstallCheckedRef.current = true;
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (typeof invoke !== 'function') return;
+    invoke('install_staged_update', { channel: desktopReleaseChannel }).catch((error) => console.warn('Could not apply the staged ARC Studio update:', error));
+  }, [desktopMode, desktopReleaseChannel]);
+
+  useEffect(() => {
+    if (!desktopMode) return;
+    window.__TAURI_INTERNALS__?.invoke?.('mark_update_healthy').catch((error) => console.warn('Could not confirm ARC Studio started after its update:', error));
+  }, [desktopMode]);
+
+  useEffect(() => {
+    if (!desktopMode || settings.autoUpdateChecks === false) {
+      setAppUpdate(null);
+      return undefined;
+    }
+    let active = true;
+    const checkForDesktopUpdate = async () => {
+      try {
+        const invoke = window.__TAURI_INTERNALS__?.invoke;
+        if (typeof invoke !== 'function') return;
+        if (!active) return;
+        if (!networkOnline) return;
+        if (desktopReleaseChannel === 'stable') {
+          const staged = await invoke('stage_stable_update');
+          if (!active) return;
+          setAppUpdate(null);
+          setStableUpdateReady(staged?.staged ? { version: staged.version } : null);
+          return;
+        }
+        const metadata = await invoke('check_channel_update', { channel: desktopReleaseChannel });
+        const { Update } = await import('@tauri-apps/plugin-updater');
+        const update = metadata ? new Update(metadata) : null;
+        if (!active) { await update?.close(); return; }
+        const previous = updateRef.current;
+        updateRef.current = update;
+        if (previous && previous !== update) await previous.close().catch(() => {});
+        if (!update) { setAppUpdate(null); return; }
+        const version = String(update.version || '').replace(/^v/i, '');
+        setStableUpdateReady(null);
+        setAppUpdate({
+          native: true,
+          version,
+          title: `ARC Studio ${version}`,
+          notes: String(update.body || '').slice(0, 6000),
+          kind: classifyArcUpdate(version, update.currentVersion || studioVersion),
+          url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`
+        });
+      } catch (error) {
+        if (active) console.warn('ARC Studio update check failed:', error);
+      }
+    };
+    checkForDesktopUpdate();
+    const interval = window.setInterval(checkForDesktopUpdate, 6 * 60 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+      const update = updateRef.current;
+      updateRef.current = null;
+      update?.close().catch(() => {});
+    };
+  }, [desktopMode, networkOnline, settings.autoUpdateChecks, studioVersion, desktopReleaseChannel]);
 
   useEffect(() => {
     if (!settings.uiSounds) return undefined;
@@ -529,6 +684,11 @@ export function App() {
   const [discordTextStudio, setDiscordTextStudio] = useState(null);
   const textCollaborationRef = useRef(new Map());
   const [permissionStudio, setPermissionStudio] = useState(null);
+  const [slashCommandStudio, setSlashCommandStudio] = useState(null);
+  const [modalStudio, setModalStudio] = useState(null);
+  const studioFocusReturnRef = useRef(null);
+  const studioWasOpenRef = useRef(false);
+  const slashCommandBaseRef = useRef(new Map());
   const [graphUploadProgress, setGraphUploadProgress] = useState(null);
   const [savingGraphIds, setSavingGraphIds] = useState([]);
   const [nodePrefabDialog, setNodePrefabDialog] = useState(null);
@@ -598,8 +758,21 @@ export function App() {
   const embedStudioOpenForActiveGraph = Boolean(embedStudio && embedStudio.graphId === activeTabId && embedStudio.projectId === activeProjectId);
   const discordTextStudioOpenForActiveGraph = Boolean(discordTextStudio && discordTextStudio.graphId === activeTabId && discordTextStudio.projectId === activeProjectId);
   const permissionStudioOpenForActiveGraph = Boolean(permissionStudio && permissionStudio.graphId === activeTabId && permissionStudio.projectId === activeProjectId);
+  const slashCommandStudioOpenForActiveGraph = Boolean(slashCommandStudio && slashCommandStudio.graphId === activeTabId && slashCommandStudio.projectId === activeProjectId);
+  const modalStudioOpenForActiveGraph = Boolean(modalStudio && modalStudio.graphId === activeTabId && modalStudio.projectId === activeProjectId);
+  const anyStudioOpenForActiveGraph = embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph;
+  useEffect(() => {
+    if (anyStudioOpenForActiveGraph) { studioWasOpenRef.current = true; return; }
+    if (!studioWasOpenRef.current) return;
+    studioWasOpenRef.current = false;
+    const target = studioFocusReturnRef.current;
+    studioFocusReturnRef.current = null;
+    if (!target || target.graphId !== activeTabId) return;
+    requestAnimationFrame(() => document.querySelector(`[data-node-card-id="${CSS.escape(target.nodeId)}"]`)?.focus({ preventScroll: true }));
+  }, [activeTabId, anyStudioOpenForActiveGraph]);
   const activeCollabStudio = discordTextStudioOpenForActiveGraph ? { id: discordTextStudio.collabId, type: 'text', label: discordTextStudio.label || 'Text editor' }
-    : embedStudioOpenForActiveGraph ? { id: embedStudio.collabId, type: 'embed', label: 'Embed Studio' } : null;
+    : embedStudioOpenForActiveGraph ? { id: embedStudio.collabId, type: 'embed', label: 'Embed Studio' }
+      : slashCommandStudioOpenForActiveGraph ? { id: slashCommandStudio.collabId, type: 'arguments', label: 'Command arguments' } : null;
   const studioCollaborators = activeCollabStudio ? remoteCollaborationActions.filter((peer) => peer.action?.studioId === activeCollabStudio.id) : [];
   const textStudioCursors = studioCollaborators.filter((peer) => peer.action?.kind === 'studio-cursor' || peer.action?.kind === 'studio-draft').map((peer) => ({ username: peer.username, color: peer.color, caret: peer.action.kind === 'studio-cursor' ? peer.action.caret : peer.action.draft?.caret ?? 0 }));
   useEffect(() => {
@@ -697,11 +870,71 @@ export function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    document.documentElement.dataset.releaseChannel = desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable';
+    document.documentElement.dataset.releaseChannel = desktopMode ? desktopReleaseChannel : 'stable';
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = theme === 'dark' ? '#191c21' : '#f5f6f7';
     if (hasThemeChoice) safeStorageSet('arc_theme', theme);
-  }, [theme, hasThemeChoice, desktopMode, settings.updateChannel]);
+  }, [theme, hasThemeChoice, desktopMode, desktopReleaseChannel]);
+
+  useEffect(() => {
+    if (!isReady || !authToken || !currentUser || !studioVersion || !networkOnline) return undefined;
+    const seenKey = 'arc_seen_release_notes_versions';
+    let seenVersions = [];
+    try {
+      const stored = JSON.parse(localStorage.getItem(seenKey) || '[]');
+      if (Array.isArray(stored)) seenVersions = stored.filter((version) => typeof version === 'string');
+    } catch {}
+    if (seenVersions.includes(studioVersion)) return undefined;
+
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    const loadReleaseNotes = async () => {
+      const tag = `v${studioVersion}`;
+      const releaseUrl = `https://github.com/relentiousdragon/arc-studio/releases/tag/${encodeURIComponent(tag)}`;
+      try {
+        const response = await fetch(`https://api.github.com/repos/relentiousdragon/arc-studio/releases/tags/${encodeURIComponent(tag)}`, {
+          headers: { Accept: 'application/vnd.github+json' },
+          cache: 'no-store',
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`Release notes request failed (${response.status}).`);
+        const release = await response.json();
+        if (cancelled) return;
+        setReleaseNotesNotice({
+          version: studioVersion,
+          title: release.name || `ARC Studio ${studioVersion}`,
+          notes: String(release.body || '').trim().slice(0, 12000) || 'This release does not include release notes.',
+          url: release.html_url || releaseUrl
+        });
+      } catch (error) {
+        if (cancelled || error?.name === 'AbortError' || navigator.onLine === false) return;
+        setReleaseNotesNotice({
+          version: studioVersion,
+          title: `ARC Studio ${studioVersion}`,
+          notes: 'Release notes could not be loaded. You can read them on the ARC Studio release page.',
+          url: releaseUrl
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    };
+    loadReleaseNotes();
+    return () => { cancelled = true; window.clearTimeout(timeout); controller.abort(); };
+  }, [authToken, currentUser, isReady, networkOnline, studioVersion]);
+
+  const dismissReleaseNotes = useCallback(() => {
+    if (releaseNotesNotice?.version) {
+      const seenKey = 'arc_seen_release_notes_versions';
+      try {
+        const stored = JSON.parse(localStorage.getItem(seenKey) || '[]');
+        const versions = Array.isArray(stored) ? stored.filter((version) => typeof version === 'string') : [];
+        if (!versions.includes(releaseNotesNotice.version)) versions.push(releaseNotesNotice.version);
+        localStorage.setItem(seenKey, JSON.stringify(versions.slice(-100)));
+      } catch {}
+    }
+    setReleaseNotesNotice(null);
+  }, [releaseNotesNotice]);
 
   useEffect(() => {
     if (!desktopMode || !macOSDesktop) return;
@@ -718,7 +951,7 @@ export function App() {
         canvas.height = 512;
         const context = canvas.getContext('2d');
         if (!context) return;
-        context.filter = settings.updateChannel === 'nightly' ? 'hue-rotate(42deg) saturate(1.08)' : 'none';
+        context.filter = desktopReleaseChannel === 'nightly' ? 'hue-rotate(42deg) saturate(1.08)' : 'none';
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
         const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
         if (!blob || cancelled) return;
@@ -728,7 +961,7 @@ export function App() {
     };
     updateDockIcon();
     return () => { cancelled = true; };
-  }, [desktopMode, macOSDesktop, settings.updateChannel]);
+  }, [desktopMode, macOSDesktop, desktopReleaseChannel]);
 
   useEffect(() => {
     document.body.dataset.compactContext = settings.compactContextMenus ? 'true' : 'false';
@@ -767,6 +1000,46 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!desktopMode || workspaceMode !== 'local') {
+      setLocalSessionRestoreReady(true);
+      return undefined;
+    }
+    let cancelled = false;
+    const keepSignedIn = (() => {
+      try { return localStorage.getItem('arc_local_keep_signed_in') !== 'false'; }
+      catch { return true; }
+    })();
+    const invoke = window.__TAURI_INTERNALS__?.invoke;
+    if (!keepSignedIn) {
+      safeStorageRemove('arc_token');
+      setAuthToken('');
+      removeLocalDesktopSessionToken();
+      setLocalSessionRestoreReady(true);
+      return undefined;
+    }
+    if (authToken) {
+      if (typeof invoke === 'function') invoke('save_local_session_token', { token: authToken }).catch(() => {});
+      setLocalSessionRestoreReady(true);
+      return undefined;
+    }
+    if (typeof invoke !== 'function') {
+      setLocalSessionRestoreReady(true);
+      return undefined;
+    }
+    invoke('get_local_session_token')
+      .then((token) => {
+        if (cancelled || typeof token !== 'string' || !token) return;
+        writeLocalDesktopSessionToken(token);
+        safeStorageSet('arc_token', token);
+        localSessionRef.current = { token, user: null };
+        setAuthToken(token);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLocalSessionRestoreReady(true); });
+    return () => { cancelled = true; };
+  }, [desktopMode, workspaceMode]);
+
+  useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 12000);
@@ -779,6 +1052,9 @@ export function App() {
       setIsReady(true);
       return () => { cancelled = true; window.clearTimeout(timeout); controller.abort(); };
     }
+    if (desktopMode && workspaceMode === 'local' && !localSessionRestoreReady) {
+      return () => { cancelled = true; window.clearTimeout(timeout); controller.abort(); };
+    }
     fetch(apiUrl('/api/system/status'), { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`Workspace returned HTTP ${res.status}.`);
@@ -787,6 +1063,7 @@ export function App() {
       .then(async (system) => {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
+        if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
         if (!desktopMode && typeof system.version === 'string' && system.version.trim()) setStudioVersion(system.version.trim());
         if (desktopMode && workspaceMode === 'local') {
           const ownerUsername = typeof system.localUsername === 'string' ? system.localUsername : '';
@@ -806,6 +1083,10 @@ export function App() {
           setNeedsSetup(true);
           setAuthToken('');
           safeStorageRemove('arc_token');
+          if (desktopMode && workspaceMode === 'local') {
+            removeLocalDesktopSessionToken();
+            localSessionRef.current = null;
+          }
           setCurrentUser(null);
           setIsReady(true);
           return;
@@ -821,6 +1102,10 @@ export function App() {
             if (!cancelled) {
               setAuthToken('');
               safeStorageRemove('arc_token');
+              if (desktopMode && workspaceMode === 'local') {
+                removeLocalDesktopSessionToken();
+                localSessionRef.current = null;
+              }
             }
           }
         }
@@ -838,7 +1123,7 @@ export function App() {
       })
       .finally(() => window.clearTimeout(timeout));
     return () => { cancelled = true; window.clearTimeout(timeout); controller.abort(); };
-  }, [workspaceRevision, workspaceMode, desktopMode]);
+  }, [workspaceRevision, workspaceMode, desktopMode, localSessionRestoreReady, authToken]);
 
   useEffect(() => {
     if (!authToken) { setProjectVariables([]); return undefined; }
@@ -997,7 +1282,7 @@ export function App() {
             arcEvents.emit('toast:notify', { id: 'arc-session-replacement', title: 'Signed out', message: 'This account was signed in elsewhere.', type: 'warning', duration: 3200 });
             safeStorageRemove('arc_token');
             if (desktopMode && workspaceMode === 'local') {
-              safeStorageRemove('arc_local_session_token');
+              removeLocalDesktopSessionToken();
               localSessionRef.current = null;
             }
             setAuthToken('');
@@ -1019,7 +1304,7 @@ export function App() {
             arcEvents.emit('toast:notify', { id: 'arc-session-revoked', title: 'Signed out', message: 'A workspace administrator ended this session.', type: 'warning', duration: 5000 });
             safeStorageRemove('arc_token');
             if (desktopMode && workspaceMode === 'local') {
-              safeStorageRemove('arc_local_session_token');
+              removeLocalDesktopSessionToken();
               localSessionRef.current = null;
             }
             setAuthToken('');
@@ -1036,7 +1321,7 @@ export function App() {
             arcEvents.emit('toast:notify', { id: 'arc-session-idle', title: 'Signed out', message: 'You were signed out after being idle.', type: 'info', duration: 5000 });
             safeStorageRemove('arc_token');
             if (desktopMode && workspaceMode === 'local') {
-              safeStorageRemove('arc_local_session_token');
+              removeLocalDesktopSessionToken();
               localSessionRef.current = null;
             }
             setAuthToken('');
@@ -1161,6 +1446,20 @@ export function App() {
             const base = liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
             const local = tabsRef.current.find((item) => item.id === incoming.id);
             const merged = mergeGraphState(base, local || base, incoming);
+            setSlashCommandStudio((current) => {
+              if (!current || current.graphId !== incoming.id) return current;
+              const incomingNode = incoming.nodes?.find((node) => node.id === current.nodeId && node.type === 'event_slash_command');
+              if (!incomingNode || !Array.isArray(incomingNode.data?.options)) return current;
+              const remoteOptions = incomingNode.data.options.map((option, index) => ({
+                ...option,
+                id: option.id || `option:${current.nodeId}:${index}`,
+                choices: (Array.isArray(option.choices) ? option.choices : []).map((choice, choiceIndex) => ({ ...choice, id: choice.id || `choice:${current.nodeId}:${index}:${choiceIndex}` }))
+              }));
+              const baseOptions = slashCommandBaseRef.current.get(current.collabId) || current.options;
+              const mergedOptions = mergeCollaborativeValue(baseOptions, current.options, remoteOptions);
+              slashCommandBaseRef.current.set(current.collabId, remoteOptions);
+              return { ...current, options: mergedOptions, sharedDraft: mergedOptions };
+            });
             liveGraphBaseRef.current.set(incoming.id, snapshotGraph(incoming));
             lastLiveGraphSentRef.current.set(incoming.id, JSON.stringify(snapshotGraph(incoming)));
             setTabs((current) => current.map((tab) => {
@@ -1222,6 +1521,18 @@ export function App() {
                   const merged = mergeCollaborativeValue(baseDraft, localDraft, action.action.draft);
                   collaborativeEmbedBaseRef.current.set(current.collabId, action.action.draft);
                   return { ...current, ...merged, attachments: mergeCollaborativeAttachments(current.attachments || [], action.action.draft.attachments || []), isDirty: true };
+                });
+              } else if (action.action.studioType === 'arguments') {
+                const collabId = action.action.studioId;
+                const remoteOptions = Array.isArray(action.action.draft?.options) ? action.action.draft.options : null;
+                if (!remoteOptions) return;
+                setSlashCommandStudio((current) => {
+                  if (current?.collabId !== collabId) return current;
+                  const localOptions = current.options || [];
+                  const baseOptions = slashCommandBaseRef.current.get(collabId) || localOptions;
+                  const mergedOptions = mergeCollaborativeValue(baseOptions, localOptions, remoteOptions);
+                  slashCommandBaseRef.current.set(collabId, remoteOptions);
+                  return { ...current, options: mergedOptions, sharedDraft: mergedOptions };
                 });
               } else {
                 const collabId = action.action.studioId;
@@ -1653,11 +1964,8 @@ export function App() {
   const recoveryWorkspace = workspaceMode === 'remote' ? (() => { try { const url = new URL(remoteWorkspaceUrl); return `${url.origin}${url.pathname}`; } catch { return 'remote'; } })() : (desktopMode ? 'desktop-local' : window.location.origin);
   const recoveryStorageKey = `arc_graph_recovery:${workspaceMode}:${recoveryWorkspace}:${currentUser?.id || 'guest'}:${activeProjectId || 'default'}`;
   useEffect(() => {
-    if (!authToken || !activeProjectId || !graphsHydratedRef.current || recoveryCheckedKeysRef.current.has(recoveryStorageKey)) return;
-    recoveryCheckedKeysRef.current.add(recoveryStorageKey);
+    if (!authToken || !activeProjectId || !graphsHydratedRef.current || recoveryLoadedKey === recoveryStorageKey) return;
     recoveryDraftsRef.current = [];
-    setRecoveryDrafts([]);
-    setRecoveryDraftKey(recoveryStorageKey);
     let stored = [];
     try { stored = JSON.parse(safeStorageGet(recoveryStorageKey, '[]')); } catch {}
     const savedById = new Map(savedGraphs.map((graph) => [graph.id, graph]));
@@ -1665,11 +1973,25 @@ export function App() {
       && (!savedById.has(entry.graph.id) || !sameGraphContent(entry.graph, savedById.get(entry.graph.id))))
       .slice(0, MAX_OPEN_GRAPH_TABS);
     recoveryDraftsRef.current = recoverable;
-    setRecoveryDrafts(recoverable);
-  }, [authToken, activeProjectId, recoveryStorageKey, savedGraphs]);
+    if (recoverable.length) {
+      const recovered = recoverable.map((entry) => ({ ...entry.graph, isDirty: true }));
+      setTabs((current) => {
+        const byId = new Map(recovered.map((graph) => [graph.id, graph]));
+        for (const graph of current) if (!byId.has(graph.id)) byId.set(graph.id, graph);
+        return [...byId.values()].slice(0, MAX_OPEN_GRAPH_TABS);
+      });
+      setActiveTabId(recovered.at(-1)?.id || activeTabId);
+      arcEvents.emit('toast:notify', {
+        title: `Restored ${recoverable.length} unsaved graph${recoverable.length === 1 ? '' : 's'}`,
+        message: 'Your tabs are open as unsaved graphs.',
+        type: 'success'
+      });
+    }
+    setRecoveryLoadedKey(recoveryStorageKey);
+  }, [authToken, activeProjectId, activeTabId, recoveryLoadedKey, recoveryStorageKey, savedGraphs]);
 
   useEffect(() => {
-    if (!authToken || !activeProjectId || !recoveryCheckedKeysRef.current.has(recoveryStorageKey)) return;
+    if (!authToken || !activeProjectId || recoveryLoadedKey !== recoveryStorageKey) return;
     const entries = new Map(recoveryDraftsRef.current.map((entry) => [entry.graph.id, entry]));
     for (const graph of tabs) {
       if (!graph?.id) continue;
@@ -1686,7 +2008,7 @@ export function App() {
       if (next.length) safeStorageSet(recoveryStorageKey, JSON.stringify(next));
       else safeStorageRemove(recoveryStorageKey);
     } catch {}
-  }, [authToken, activeProjectId, recoveryStorageKey, savedGraphs, tabs]);
+  }, [authToken, activeProjectId, recoveryLoadedKey, recoveryStorageKey, savedGraphs, tabs]);
 
   const handleSaveGraph = useCallback(async () => {
     if (!activeTabId || !authToken) return;
@@ -1743,7 +2065,6 @@ export function App() {
     const remaining = tabs.filter((tab) => tab.id !== id);
     setTabs(remaining);
     recoveryDraftsRef.current = recoveryDraftsRef.current.filter((entry) => entry.graph?.id !== id);
-    setRecoveryDrafts((current) => current.filter((entry) => entry.graph?.id !== id));
     historyRef.current.delete(id);
     historyGroupRef.current = false;
     if (activeTabId === id) setActiveTabId(remaining[Math.min(index, remaining.length - 1)]?.id || null);
@@ -2276,6 +2597,7 @@ export function App() {
 
   const openDiscordTextStudio = useCallback((node, fieldKey, label, value, maxLength, applyValue, parentStudioId = '', parentBlockContext = null) => {
     if (!activeGraph || !activeProjectId || (!applyValue && (!node?.id || !fieldKey))) return;
+    if (node?.id) studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const collabId = `text:${activeProjectId}:${activeGraph.id}:${parentStudioId || `${node?.id || 'inline'}:${fieldKey || label}`}`;
     const initialText = String(value ?? '');
     textCollaborationRef.current.set(collabId, { baseText: initialText, localText: initialText, caret: 0 });
@@ -2289,10 +2611,11 @@ export function App() {
       value: initialText,
       localDraft: initialText,
       maxLength,
+      templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables),
       applyValue,
       parentBlockContext
     });
-  }, [activeGraph, activeProjectId]);
+  }, [activeGraph, activeProjectId, availableVariables]);
 
   const openVariableTextEditor = useCallback((variable, scope) => {
     const targetGraphId = activeTabId;
@@ -2326,6 +2649,7 @@ export function App() {
 
   const openPermissionStudio = useCallback((node) => {
     if (!node?.id || !activeGraph || !activeProjectId) return;
+    studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
     setPermissionStudio({
       projectId: activeProjectId,
@@ -2349,6 +2673,73 @@ export function App() {
     if (activeTabId === graph.id) setActiveNodes(nextNodes);
     setPermissionStudio(null);
   }, [activeProjectId, activeTabId, permissionStudio, recordHistory, tabs]);
+
+  const openSlashCommandStudio = useCallback((node) => {
+    if (!node?.id || node.type !== 'event_slash_command' || !activeGraph || !activeProjectId) return;
+    studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
+    const collabId = `arguments:${activeProjectId}:${activeGraph.id}:${node.id}`;
+    const options = structuredClone(Array.isArray(node.data?.options) ? node.data.options : []).map((option, index) => ({
+      ...option,
+      id: option.id || `option:${node.id}:${index}`,
+      choices: (Array.isArray(option.choices) ? option.choices : []).map((choice, choiceIndex) => ({ ...choice, id: choice.id || `choice:${node.id}:${index}:${choiceIndex}` }))
+    }));
+    slashCommandBaseRef.current.set(collabId, options);
+    setSlashCommandStudio({
+      projectId: activeProjectId,
+      graphId: activeGraph.id,
+      nodeId: node.id,
+      collabId,
+      commandName: String(node.data?.commandName || ''),
+      options,
+      sharedDraft: options
+    });
+  }, [activeGraph, activeProjectId]);
+
+  const updateSlashCommandStudioDraft = useCallback((options) => {
+    if (!slashCommandStudio) return;
+    sendCollaborationAction({ kind: 'studio-draft', studioId: slashCommandStudio.collabId, studioType: 'arguments', draft: { options } });
+    setSlashCommandStudio((current) => current?.collabId === slashCommandStudio.collabId ? { ...current, options, sharedDraft: options } : current);
+  }, [sendCollaborationAction, slashCommandStudio]);
+
+  const applySlashCommandStudio = useCallback((options) => {
+    if (!slashCommandStudio) return;
+    const graph = tabs.find((tab) => tab.id === slashCommandStudio.graphId);
+    if (!graph || slashCommandStudio.projectId !== activeProjectId) { setSlashCommandStudio(null); return; }
+    const nextNodes = (graph.nodes || []).map((node) => node.id === slashCommandStudio.nodeId ? { ...node, data: { ...node.data, options } } : node);
+    recordHistory(graph.id, { graph });
+    setTabs((previous) => previous.map((tab) => tab.id === graph.id ? { ...tab, nodes: nextNodes, isDirty: true } : tab));
+    if (activeTabId === graph.id) setActiveNodes(nextNodes);
+    setSlashCommandStudio(null);
+  }, [activeProjectId, activeTabId, recordHistory, slashCommandStudio, tabs]);
+
+  const openModalStudioForNode = useCallback((node) => {
+    if (!node?.id || !activeGraph || !activeProjectId) return;
+    studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
+    setModalStudio({
+      projectId: activeProjectId,
+      graphId: activeGraph.id,
+      nodeId: node.id,
+      nodeName: node.label || BuiltInNodeDefinitions.find((item) => item.type === node.type)?.label || 'Show Popup Modal',
+      modal: structuredClone(node.data?.modal || createDefaultModal())
+    });
+  }, [activeGraph, activeProjectId]);
+
+  const updateModalStudioDraft = useCallback((modal) => {
+    setModalStudio((current) => current ? { ...current, modal } : current);
+  }, []);
+
+  const applyModalStudio = useCallback((modal) => {
+    if (!modalStudio) return;
+    const graph = tabs.find((tab) => tab.id === modalStudio.graphId);
+    if (!graph || modalStudio.projectId !== activeProjectId) { setModalStudio(null); return; }
+    const nextNodes = (graph.nodes || []).map((node) => node.id === modalStudio.nodeId
+      ? { ...node, data: { ...node.data, modal } }
+      : node);
+    recordHistory(graph.id, { graph });
+    setTabs((previous) => previous.map((tab) => tab.id === graph.id ? { ...tab, nodes: nextNodes, isDirty: true } : tab));
+    if (activeTabId === graph.id) setActiveNodes(nextNodes);
+    setModalStudio(null);
+  }, [activeProjectId, activeTabId, modalStudio, recordHistory, tabs]);
 
   const updateEmbedStudioBlockValue = useCallback((blockId, fieldKey, value) => {
     setEmbedStudio((current) => {
@@ -2386,15 +2777,65 @@ export function App() {
   }, [activeProjectId, activeTabId, discordTextStudio, recordHistory, tabs, updateEmbedStudioBlockValue]);
 
   const openEmbedStudioForNode = useCallback((node) => {
+    if (node?.id && activeTabId) studioFocusReturnRef.current = { graphId: activeTabId, nodeId: node.id };
     const isMessageComponentsNode = ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type);
 
     const embedWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
     const embedSourceNode = embedWire ? activeNodes.find((n) => n.id === embedWire.sourceNodeId) : null;
-    const initialBlocks = embedSourceNode?.data?.blocks
+    let initialBlocks = embedSourceNode?.data?.blocks
       ? structuredClone(getEmbedBlocks(embedSourceNode.data))
       : node.data?.blocks
         ? structuredClone(getEmbedBlocks(node.data))
         : [];
+
+    const wiredFields = {};
+    if (node.type === 'build_embed') {
+      if (!Array.isArray(node.data?.blocks)) {
+        const legacyWires = activeConnections.filter((item) => item.targetNodeId === node.id);
+        let migratedBlocks = [...initialBlocks];
+        for (const wire of legacyWires) {
+          const legacyField = LEGACY_EMBED_PIN_FIELDS[wire.targetPinId];
+          if (legacyField && !migratedBlocks.some((block) => block.type === legacyField[0])) migratedBlocks.push(createEmbedBlock(legacyField[0]));
+          if (wire.targetPinId === 'timestamp') {
+            const timestamp = migratedBlocks.find((block) => block.type === 'timestamp');
+            if (timestamp) timestamp.now = false;
+            else migratedBlocks.push({ ...createEmbedBlock('timestamp'), now: false });
+          }
+          const legacyFieldPin = /^field_(.+)_(name|value)$/.exec(wire.targetPinId);
+          if (legacyFieldPin && !migratedBlocks.some((block) => block.id === legacyFieldPin[1])) migratedBlocks.push({ id: legacyFieldPin[1], type: 'field', name: '', value: '', inline: false });
+        }
+        initialBlocks = migratedBlocks;
+      }
+      const blockPins = embedBlockPins(initialBlocks);
+      const sourcePinLabel = (wire) => {
+        const sourceNode = activeNodes.find((item) => item.id === wire.sourceNodeId);
+        if (!sourceNode) return wire.sourcePinId;
+        if (sourceNode.type === 'variable_get') return availableVariables.find((variable) => variable.id === sourceNode.data?.variableId)?.name || 'Value';
+        if (sourceNode.type === 'function_input') return sourceNode.data?.name || 'Value';
+        const sourceDefinition = BuiltInNodeDefinitions.find((item) => item.type === sourceNode.type);
+        const dynamicPins = sourceNode.type === 'build_embed' ? embedBlockPins(getEmbedBlocks(sourceNode.data || {})) : [];
+        return [...(sourceDefinition?.outputs || []), ...dynamicPins].find((pin) => pin.id === wire.sourcePinId)?.label || wire.sourcePinId;
+      };
+      const makeToken = (label) => {
+        const words = String(label || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').match(/[A-Za-z0-9]+/g) || [];
+        return words.map((word, index) => index ? `${word[0].toUpperCase()}${word.slice(1)}` : `${word[0].toLowerCase()}${word.slice(1)}`).join('') || 'value';
+      };
+      for (const wire of activeConnections.filter((item) => item.targetNodeId === node.id)) {
+        let targetPin = blockPins.find((pin) => pin.id === wire.targetPinId);
+        if (!targetPin && LEGACY_EMBED_PIN_FIELDS[wire.targetPinId]) {
+          const [type, key] = LEGACY_EMBED_PIN_FIELDS[wire.targetPinId];
+          const block = initialBlocks.find((item) => item.type === type);
+          if (block) targetPin = blockPins.find((pin) => pin.id === `block_${block.id}_${key}`);
+        }
+        if (!targetPin) {
+          const legacyField = /^field_(.+)_(name|value)$/.exec(wire.targetPinId);
+          if (legacyField) targetPin = blockPins.find((pin) => pin.id === `block_${legacyField[1]}_${legacyField[2]}`);
+        }
+        if (!targetPin) continue;
+        const label = sourcePinLabel(wire);
+      wiredFields[targetPin.id] = { label, source: `${activeNodes.find((item) => item.id === wire.sourceNodeId)?.label || BuiltInNodeDefinitions.find((item) => item.type === activeNodes.find((entry) => entry.id === wire.sourceNodeId)?.type)?.label || 'Node'} · ${label}`, token: `{{${makeToken(label)}}}` };
+      }
+    }
 
     const componentsWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
     const compSourceNode = componentsWire ? activeNodes.find((n) => n.id === componentsWire.sourceNodeId) : null;
@@ -2406,8 +2847,22 @@ export function App() {
 
     const contentWire = activeConnections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
     const contentSourceNode = contentWire ? activeNodes.find((n) => n.id === contentWire.sourceNodeId) : null;
+    const sourceDescription = (wire, sourceNode) => {
+      if (!wire) return '';
+      const definition = BuiltInNodeDefinitions.find((item) => item.type === sourceNode?.type);
+      const pin = [...(definition?.outputs || [])].find((item) => item.id === wire.sourcePinId);
+      return `${sourceNode?.label || definition?.label || 'Node'} · ${pin?.label || wire.sourcePinId}`;
+    };
     let initialContent = String(node.data?.content || '');
     if (contentWire && contentSourceNode) {
+      const sourceDefinition = BuiltInNodeDefinitions.find((item) => item.type === contentSourceNode.type);
+      const outputLabel = contentSourceNode.type === 'variable_get'
+        ? availableVariables.find((item) => item.id === contentSourceNode.data?.variableId)?.name || 'value'
+        : contentSourceNode.type === 'function_input'
+          ? contentSourceNode.data?.name || 'value'
+          : sourceDefinition?.outputs?.find((pin) => pin.id === contentWire.sourcePinId)?.label || contentWire.sourcePinId;
+      const token = String(outputLabel).replace(/([a-z0-9])([A-Z])/g, '$1 $2').match(/[A-Za-z0-9]+/g)?.map((word, index) => index ? `${word[0].toUpperCase()}${word.slice(1)}` : `${word[0].toLowerCase()}${word.slice(1)}`).join('') || 'value';
+      initialContent = `{{${token}}}`;
       if (contentSourceNode.type === 'value_text') {
         initialContent = String(contentSourceNode.data?.value ?? '');
       } else if (contentSourceNode.type === 'format_text') {
@@ -2435,10 +2890,14 @@ export function App() {
       isEmbedWired: Boolean(embedWire),
       isComponentsWired: Boolean(componentsWire),
       isContentWired: Boolean(contentWire),
+      embedSourceLabel: sourceDescription(embedWire, embedSourceNode),
+      componentsSourceLabel: sourceDescription(componentsWire, compSourceNode),
+      contentSourceLabel: sourceDescription(contentWire, contentSourceNode),
       id: null,
       name: node.data?.embedName || embedSourceNode?.data?.embedName || 'Untitled embed',
       content: initialContent,
-      blocks: isMessageComponentsNode ? initialBlocks : structuredClone(getEmbedBlocks(node.data || {})),
+      blocks: isMessageComponentsNode || node.type === 'build_embed' ? initialBlocks : structuredClone(getEmbedBlocks(node.data || {})),
+      wiredFields,
       components: initialComponents,
       attachments: structuredClone(node.data?.attachments || embedSourceNode?.data?.attachments || []),
       isDirty: false
@@ -2520,13 +2979,30 @@ export function App() {
         }
         return node;
       });
+      const embedNode = activeNodes.find((node) => node.id === embedStudio.nodeId);
+      if (embedNode?.type === 'build_embed' && !Array.isArray(embedNode.data?.blocks)) {
+        const pinRemap = new Map();
+        for (const [legacyPin, [type, key]] of Object.entries(LEGACY_EMBED_PIN_FIELDS)) {
+          const block = embedStudio.blocks.find((item) => item.type === type);
+          if (block) pinRemap.set(legacyPin, `block_${block.id}_${key}`);
+        }
+        for (const block of embedStudio.blocks) {
+          if (block.type !== 'field') continue;
+          pinRemap.set(`field_${block.id}_name`, `block_${block.id}_name`);
+          pinRemap.set(`field_${block.id}_value`, `block_${block.id}_value`);
+        }
+        const nextConnections = activeConnections.map((wire) => wire.targetNodeId === embedNode.id && pinRemap.has(wire.targetPinId)
+          ? { ...wire, targetPinId: pinRemap.get(wire.targetPinId) }
+          : wire);
+        if (nextConnections.some((wire, index) => wire !== activeConnections[index])) handleConnectionsChange(nextConnections);
+      }
       handleNodesChange(nextNodes);
     } else {
       try { await persistEmbedAsset(embedStudio); }
       catch (error) { arcEvents.emit('toast:notify', { title: 'Embed not saved', message: error.message, type: 'error' }); return; }
     }
     setEmbedStudio(null);
-  }, [activeNodes, embedStudio, handleNodesChange, persistEmbedAsset]);
+  }, [activeConnections, activeNodes, embedStudio, handleConnectionsChange, handleNodesChange, persistEmbedAsset]);
 
   const handleSaveEmbedAsAsset = useCallback(async () => {
     if (!embedStudio) return;
@@ -2704,7 +3180,7 @@ export function App() {
     }
     safeStorageRemove('arc_token');
     if (desktopMode && workspaceMode === 'local') {
-      safeStorageRemove('arc_local_session_token');
+      removeLocalDesktopSessionToken();
       localSessionRef.current = null;
     }
     setAuthToken('');
@@ -2719,10 +3195,16 @@ export function App() {
     else safeStorageSet('arc_token', token);
     if (desktopMode && workspaceMode === 'local') {
       if (persistSession) {
-        safeStorageSet('arc_local_session_token', token);
+        writeLocalDesktopSessionToken(token);
         localSessionRef.current = { token, user };
+        try {
+          const invoke = window.__TAURI_INTERNALS__?.invoke;
+          if (typeof invoke === 'function') await invoke('save_local_session_token', { token });
+        } catch (error) {
+          arcEvents.emit('toast:notify', { title: 'Session storage unavailable', message: error.message || 'ARC will keep this session in app storage only.', type: 'warning' });
+        }
       } else {
-        safeStorageRemove('arc_local_session_token');
+        removeLocalDesktopSessionToken();
         localSessionRef.current = { token, user };
       }
     }
@@ -2832,16 +3314,22 @@ export function App() {
   };
 
   const handleImportProject = async () => {
-    if (!projectImportFile || !projectImportTrusted || projectBusy) return;
+    if (!projectImportFile || !projectImportTrusted || projectBusy || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved) return;
     setProjectBusy(true);
     setProjectImportError('');
     try {
       const bundle = JSON.parse(await projectImportFile.text());
       const response = await fetch(apiUrl('/api/projects/import'), {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ bundle, trusted: true })
+        body: JSON.stringify({ bundle, trusted: true, allowOldVersion: projectImportOldVersionApproved })
       });
       const data = await response.json();
+      if (response.status === 409 && ['PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED', 'PROJECT_REQUIRES_NEWER_ARC'].includes(data.code)) {
+        setProjectImportCompatibility(data);
+        setProjectImportOldVersionApproved(false);
+        setProjectImportError('');
+        return;
+      }
       if (!response.ok) throw new Error(data.error || 'Could not import the project.');
       setProjects(data.projects || []);
       setMaxProjects(localDesktopWorkspace ? null : data.maxProjects === undefined ? maxProjects : data.maxProjects);
@@ -2849,6 +3337,8 @@ export function App() {
       projectImportPathRef.current = null;
       setProjectImportFile(null);
       setProjectImportTrusted(false);
+      setProjectImportCompatibility(null);
+      setProjectImportOldVersionApproved(false);
       arcEvents.emit('toast:notify', { title: 'Project imported', message: imported?.name || 'Project added to your workspace', type: 'success' });
     } catch (error) { setProjectImportError(error.message); }
     finally { setProjectBusy(false); }
@@ -2865,6 +3355,8 @@ export function App() {
     setProjectImportFile(null);
     setProjectImportTrusted(false);
     setProjectImportError('');
+    setProjectImportCompatibility(null);
+    setProjectImportOldVersionApproved(false);
   };
 
   const handleSetProjectLimit = async (value) => {
@@ -3159,7 +3651,9 @@ export function App() {
     }
     setWorkspaceError('');
     setCurrentUser(null);
-    setAuthToken(safeStorageGet('arc_token'));
+    setAuthToken(mode === 'local' && desktopMode
+      ? readLocalDesktopSessionToken() || safeStorageGet('arc_token')
+      : safeStorageGet('arc_token'));
     setNeedsSetup(false);
     setIsReady(false);
     setTabs([]);
@@ -3215,9 +3709,9 @@ export function App() {
     if (workspaceMode === 'local' && authToken && currentUser) {
       localSessionRef.current = { token: authToken, user: currentUser };
       try {
-        if (localStorage.getItem('arc_local_keep_signed_in') !== 'false') safeStorageSet('arc_local_session_token', authToken);
-        else safeStorageRemove('arc_local_session_token');
-      } catch { safeStorageSet('arc_local_session_token', authToken); }
+        if (localStorage.getItem('arc_local_keep_signed_in') !== 'false') writeLocalDesktopSessionToken(authToken);
+        else removeLocalDesktopSessionToken();
+      } catch { writeLocalDesktopSessionToken(authToken); }
     } else if (workspaceMode === 'remote' && authToken) {
       try { await fetch(apiUrl('/api/auth/logout'), { method: 'POST', headers: { 'x-arc-token': authToken } }); } catch {}
       safeStorageRemove('arc_token');
@@ -3247,7 +3741,7 @@ export function App() {
       setWorkspaceRevision((revision) => revision + 1);
     } catch {
       localSessionRef.current = null;
-      safeStorageRemove('arc_local_session_token');
+      removeLocalDesktopSessionToken();
       safeStorageRemove('arc_token');
       setAuthToken('');
       setCurrentUser(null);
@@ -3269,10 +3763,15 @@ export function App() {
         serverPort = Number(serverUrl.port) || 80;
       }
     } catch { /* Rust */ }
-    const savedRemoteOrigins = Object.keys(localStorage).filter((key) => key.startsWith('arc_remember_password:') && localStorage.getItem(key) === 'true').map((key) => key.slice('arc_remember_password:'.length));
-    await invoke('reset_local_data', { username: currentUser?.username || '', password, serverPort, savedRemoteOrigins });
-    localStorage.clear();
-    sessionStorage.clear();
+    await invoke('reset_local_data', { username: currentUser?.username || '', password, serverPort });
+    try {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('arc_remote_') || key.startsWith('arc_trusted_') || key.includes('::workspace:')) continue;
+        localStorage.removeItem(key);
+      }
+      localStorage.setItem('arc_workspace_mode', 'local');
+      sessionStorage.clear();
+    } catch {}
   };
 
   const adjustUiScale = (step) => {
@@ -3319,6 +3818,15 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event) => {
       const target = event.target;
+      const command = event.metaKey || event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (command && !event.shiftKey && !event.altKey && key === 'w') {
+        event.preventDefault();
+        event.stopPropagation();
+        const dialogIsOpen = Boolean(closeGraphDialog) || (target instanceof HTMLElement && target.closest('[role="dialog"]'));
+        if (!dialogIsOpen && activeTabId) handleCloseTab(activeTabId);
+        return;
+      }
       if (event.key === 'F5') {
         event.preventDefault();
         event.stopPropagation();
@@ -3331,8 +3839,6 @@ export function App() {
         return;
       }
       if (target instanceof HTMLElement && target.closest('[role="dialog"]')) return;
-      const command = event.metaKey || event.ctrlKey;
-      const key = event.key.toLowerCase();
       if (command && !event.altKey && key === 'tab' && tabs.length > 1) {
         event.preventDefault();
         event.stopPropagation();
@@ -3368,12 +3874,6 @@ export function App() {
           openNodeRename(selectedNode);
           return;
         }
-      }
-      if (command && !event.shiftKey && !event.altKey && key === 'w') {
-        event.preventDefault();
-        event.stopPropagation();
-        if (activeTabId) handleCloseTab(activeTabId);
-        return;
       }
       if (command && event.shiftKey && !event.altKey && key === 'r') {
         event.preventDefault();
@@ -3449,7 +3949,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, openNodeRename, openPaletteAt, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, tabs]);
+  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, openNodeRename, openPaletteAt, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -3460,41 +3960,51 @@ export function App() {
   };
 
   const handleUpdateSettings = (next) => {
-    if (desktopMode && (next.updateChannel === 'nightly' ? 'nightly' : 'stable') !== (settings.updateChannel === 'nightly' ? 'nightly' : 'stable')) {
-      setPendingSettingsReload(next);
-      const hasUnsavedGraphs = tabs.some((graph) => graph.isDirty || !savedGraphs.some((saved) => saved.id === graph.id));
-      const hasUnsavedEmbed = Boolean(embedStudio && (embedStudio.mode === 'new' || embedStudio.isDirty));
-      if (hasUnsavedGraphs || hasUnsavedEmbed) setReloadConfirm(true);
-      else {
-        setSettings(next);
-        safeStorageSet('arc_editor_settings', JSON.stringify(next));
-        window.location.reload();
-      }
-      return;
-    }
-    setSettings(next);
-    safeStorageSet('arc_editor_settings', JSON.stringify(next));
-  };
-
-  const cancelPendingReload = () => {
-    setReloadConfirm(false);
-    setPendingSettingsReload(null);
-  };
-
-  const confirmPendingReload = () => {
-    if (pendingSettingsReload) {
-      setSettings(pendingSettingsReload);
-      safeStorageSet('arc_editor_settings', JSON.stringify(pendingSettingsReload));
-    }
-    window.location.reload();
+    const { updateChannel: _legacyUpdateChannel, ...persistedSettings } = next;
+    setSettings(persistedSettings);
+    safeStorageSet('arc_editor_settings', JSON.stringify(persistedSettings));
   };
 
   const handleOpenStudioUpdate = useCallback((url) => {
+    if (appUpdate?.native) {
+      setUpdateInstallPromptOpen(true);
+      return;
+    }
     if (!/^https:\/\/github\.com\/relentiousdragon\/arc-studio\/releases\//.test(String(url || ''))) return;
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (desktopMode && typeof invoke === 'function') invoke('open_external_url', { url }).catch(() => {});
     else window.open(url, '_blank', 'noopener,noreferrer');
-  }, [desktopMode]);
+  }, [appUpdate, desktopMode]);
+
+  const handleInstallStudioUpdate = useCallback(async () => {
+    const update = updateRef.current;
+    if (!update || updateInstalling) return;
+    setUpdateInstalling(true);
+    const publishProgress = (message, progress = null) => arcEvents.emit('toast:notify', {
+      id: 'arc-studio-update-progress',
+      title: 'Updating ARC Studio',
+      message,
+      type: 'info',
+      loading: progress === null,
+      progress,
+      persistent: true
+    });
+    publishProgress(`Downloading and verifying version ${update.version}…`);
+    try {
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (typeof invoke !== 'function' || !Number.isInteger(update.rid)) throw new Error('The selected update is no longer available. Check for updates again.');
+      publishProgress('Downloading and verifying update…');
+      await invoke('install_channel_update', { rid: update.rid, channel: desktopReleaseChannel });
+      updateRef.current = null;
+      setAppUpdate(null);
+      setUpdateInstallPromptOpen(false);
+      await update.close().catch(() => {});
+    } catch (error) {
+      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: error?.message || 'ARC Studio could not install the update.', type: 'error', duration: 7000 });
+    } finally {
+      setUpdateInstalling(false);
+    }
+  }, [desktopReleaseChannel, updateInstalling]);
 
   const handleSidebarResize = (sidebarId, width) => {
     const next = { ...sidebarWidths, [sidebarId]: Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, Math.round(width))) };
@@ -3524,14 +4034,15 @@ export function App() {
   };
 
   if (!isReady) {
-    return <main className="boot-screen" data-theme={theme} data-release-channel={desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable'}><div className="boot-mark"><img src="/arc.png" alt="ARC" /></div></main>;
+    return <main className="boot-screen" data-theme={theme} data-release-channel={desktopMode ? desktopReleaseChannel : 'stable'}><div className="boot-mark"><img src="/arc.png" alt="ARC" /></div></main>;
   }
 
   if (workspaceSwitchOpen || needsSetup || needsProjectOnboarding || !authToken || !currentUser) {
     return (
-      <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable'} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
+      <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={desktopMode ? desktopReleaseChannel : 'stable'} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
         <SplashScreen
           studioVersion={studioVersion}
+          releaseChannel={desktopMode ? desktopReleaseChannel : undefined}
           needsSetup={needsSetup}
           localAccountUsername={desktopMode && workspaceMode === 'local' ? localAccountUsername : ''}
           needsProjectOnboarding={needsProjectOnboarding}
@@ -3552,6 +4063,10 @@ export function App() {
             setAuthToken('');
             setCurrentUser(null);
             safeStorageRemove('arc_token');
+            if (desktopMode && workspaceMode === 'local') {
+              removeLocalDesktopSessionToken();
+              localSessionRef.current = null;
+            }
           }}
           onToggleTheme={toggleTheme}
           canResetPrimaryAdminWithMasterKey={canResetPrimaryAdminWithMasterKey}
@@ -3564,12 +4079,12 @@ export function App() {
   }
 
   return (
-    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={desktopMode && settings.updateChannel === 'nightly' ? 'nightly' : 'stable'} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
+    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={desktopMode ? desktopReleaseChannel : 'stable'} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
       <TopBar
         tabs={tabs}
         graphTabStatuses={graphTabStatuses}
         saveFeedbackGraphId={saveFeedback?.graphId}
-        hideGraphSave={embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph}
+        hideGraphSave={embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph}
         activeTabId={activeTabId}
         botStatus={botStatus}
         networkOnline={networkOnline}
@@ -3602,6 +4117,7 @@ export function App() {
         validationErrors={graphValidation.errors.length}
         validationWarnings={graphValidation.warnings.length}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        serverUpdateAvailable={Boolean(serverUpdate)}
         onOpenBotSettings={() => setIsBotSettingsOpen(true)}
         onOpenUsers={() => setIsUserMgmtOpen(true)}
         onLogout={handleLogout}
@@ -3653,13 +4169,18 @@ export function App() {
             name={embedStudio.name}
             content={embedStudio.content || ''}
             blocks={embedStudio.blocks}
+            wiredFields={embedStudio.wiredFields || {}}
             components={embedStudio.components || []}
             componentsOnly={embedStudio.mode === 'components-node'}
             isEmbedWired={Boolean(embedStudio.isEmbedWired)}
             isComponentsWired={Boolean(embedStudio.isComponentsWired)}
             isContentWired={Boolean(embedStudio.isContentWired)}
+            contentSourceLabel={embedStudio.contentSourceLabel}
+            embedSourceLabel={embedStudio.embedSourceLabel}
+            componentsSourceLabel={embedStudio.componentsSourceLabel}
             appEmojis={appEmojis}
             graphVariables={availableVariables}
+            templateValuePaths={discordTextStudio.templateValuePaths || []}
             botProfile={botProfile}
             botStatus={botStatus}
             theme={theme}
@@ -3707,11 +4228,32 @@ export function App() {
             data={permissionStudio.data}
             connectedTargetIds={permissionStudio.connectedTargetIds}
             permissionsConnected={permissionStudio.permissionsConnected}
+            variables={availableVariables}
             onApply={applyPermissionStudio}
             onClose={() => setPermissionStudio(null)}
           />}
 
-          {!embedStudioOpenForActiveGraph && !discordTextStudioOpenForActiveGraph && !permissionStudioOpenForActiveGraph && <>
+          {slashCommandStudioOpenForActiveGraph && <SlashCommandStudioView
+            key={slashCommandStudio.collabId}
+            commandName={slashCommandStudio.commandName}
+            options={slashCommandStudio.options}
+            collaborators={studioCollaborators}
+            onDraftChange={updateSlashCommandStudioDraft}
+            onApply={applySlashCommandStudio}
+            onClose={() => setSlashCommandStudio(null)}
+          />}
+
+          {modalStudioOpenForActiveGraph && <PopupModalStudioView
+            key={`${modalStudio.projectId}:${modalStudio.graphId}:${modalStudio.nodeId}`}
+            graphName={activeGraph?.name || 'Untitled graph'}
+            nodeName={modalStudio.nodeName}
+            modal={modalStudio.modal}
+            onDraftChange={updateModalStudioDraft}
+            onApply={applyModalStudio}
+            onClose={() => setModalStudio(null)}
+          />}
+
+          {!embedStudioOpenForActiveGraph && !discordTextStudioOpenForActiveGraph && !permissionStudioOpenForActiveGraph && !slashCommandStudioOpenForActiveGraph && !modalStudioOpenForActiveGraph && <>
           <NodeCanvas
             graphId={activeTabId}
             projectId={activeProjectId}
@@ -3754,6 +4296,8 @@ export function App() {
             onOpenEmbedStudio={openEmbedStudioForNode}
             onOpenTextStudio={openDiscordTextStudio}
             onOpenPermissionStudio={openPermissionStudio}
+            onOpenSlashCommandStudio={openSlashCommandStudio}
+            onOpenModalStudio={openModalStudioForNode}
             onOpenFunctionGraph={handleOpenGraph}
             remoteActions={remoteCollaborationActions}
             onCollaborationAction={sendCollaborationAction}
@@ -3821,7 +4365,7 @@ export function App() {
               {projectError && <p className="field-error">{projectError}</p>}
               <Button type="submit" icon={Plus} onContextMenu={(event) => openProjectMenu(event, null)} disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} loading={projectBusy}>Create project</Button>
               <button className="project-import-button" type="button" disabled={projectBusy || maxProjects !== null && projects.length >= maxProjects} onClick={() => { document.getElementById('project-import-file')?.click(); }}><FileUp size={14} />Import project file</button>
-              <input id="project-import-file" type="file" accept=".arcproject,.arcproject.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); } event.target.value = ''; }} />
+              <input id="project-import-file" type="file" accept=".arcproject,.arcproject.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) { setProjectImportFile(file); setProjectImportTrusted(false); setProjectImportError(''); setProjectImportCompatibility(null); setProjectImportOldVersionApproved(false); } event.target.value = ''; }} />
               {!localDesktopWorkspace && currentUser?.role === 'admin' && <label className="project-limit-control"><span>Project limit</span><div><input aria-label="Maximum projects" type="number" min="1" step="1" value={maxProjects ?? ''} placeholder="Unlimited" onChange={(event) => { const next = event.target.value; if (next === '') setMaxProjects(null); else if (/^\d+$/.test(next)) setMaxProjects(Number(next)); }} onBlur={(event) => handleSetProjectLimit(event.target.value === '' ? 'unlimited' : Number(event.target.value))} /><button type="button" onClick={() => handleSetProjectLimit('unlimited')}>Unlimited</button></div></label>}
             </form>
           </aside>}
@@ -3896,10 +4440,14 @@ export function App() {
       <EditorSettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        settings={pendingSettingsReload || settings}
+        settings={settings}
         onUpdateSettings={handleUpdateSettings}
         appUpdate={appUpdate}
+        serverUpdate={serverUpdate}
+        stableUpdateReady={stableUpdateReady}
+        releaseChannel={desktopReleaseChannel}
         networkOnline={networkOnline}
+        onOpenStudioUpdate={handleOpenStudioUpdate}
         onAutoLayout={handleAutoLayout}
         onExportGraph={handleExportGraph}
         onResetLocalData={handleResetLocalData}
@@ -4000,64 +4548,6 @@ export function App() {
       >
         <p className="close-graph-copy">Save this graph to your Library before closing?</p>
       </Modal>
-      <Modal
-        isOpen={recoveryDraftKey === recoveryStorageKey && recoveryDrafts.length > 0}
-        onClose={() => {}}
-        title="Recover unsaved graphs?"
-        subtitle={`${recoveryDrafts.length} local recovery draft${recoveryDrafts.length === 1 ? '' : 's'} found from this workspace.`}
-        icon={RotateCcw}
-        footer={<><Button variant="secondary" onClick={() => { recoveryDraftsRef.current = []; setRecoveryDrafts([]); safeStorageRemove(recoveryStorageKey); setRecoveryCompareId(null); }}>Discard drafts</Button><Button icon={RotateCcw} disabled={!recoveryCompareId} onClick={() => {
-          const selected = recoveryDrafts.find((entry) => entry.graph.id === recoveryCompareId);
-          if (!selected) return;
-          const recovered = [{ ...selected.graph, isDirty: true }];
-          setTabs((current) => {
-            const byId = new Map(recovered.map((graph) => [graph.id, graph]));
-            for (const graph of current) if (!byId.has(graph.id)) byId.set(graph.id, graph);
-            return [...byId.values()].slice(0, MAX_OPEN_GRAPH_TABS);
-          });
-          setActiveTabId(recovered[0]?.id || activeTabId);
-          recoveryDraftsRef.current = [];
-          setRecoveryDrafts([]);
-          setRecoveryCompareId(null);
-        }}>Recover selected draft</Button></>}
-      >
-        <div className="close-graph-copy">Choose a draft to compare it with the latest saved graph. Recovery opens it as an unsaved tab.</div>
-        <ul className="recovery-graph-list">{recoveryDrafts.map((entry) => <li key={entry.graph.id} className={recoveryCompareId === entry.graph.id ? 'is-selected' : ''}><div><strong>{entry.graph.name || 'Untitled graph'}</strong><span>{new Date(entry.savedAt || 0).toLocaleString()}</span></div><Button variant="secondary" onClick={() => setRecoveryCompareId(entry.graph.id)}>{recoveryCompareId === entry.graph.id ? 'Comparing' : 'Compare'}</Button></li>)}</ul>
-        {recoveryCompareId && (() => {
-          const draft = recoveryDrafts.find((entry) => entry.graph.id === recoveryCompareId)?.graph;
-          if (!draft) return null;
-          const saved = savedGraphs.find((graph) => graph.id === draft.id);
-          if (!saved) return <div className="recovery-diff"><strong>No saved version yet</strong><span>This draft will create a new saved graph when you save it.</span></div>;
-          const savedNodes = new Map((saved.nodes || []).map((node) => [node.id, node]));
-          const draftNodes = new Map((draft.nodes || []).map((node) => [node.id, node]));
-          const added = [...draftNodes.values()].filter((node) => !savedNodes.has(node.id));
-          const removed = [...savedNodes.values()].filter((node) => !draftNodes.has(node.id));
-          const changed = [...draftNodes.values()].filter((node) => savedNodes.has(node.id) && JSON.stringify(node) !== JSON.stringify(savedNodes.get(node.id)));
-          const changedNames = [...added.map((node) => `+ ${node.label || BuiltInNodeDefinitions.find((item) => item.type === node.type)?.label || node.type}`), ...changed.map((node) => `~ ${node.label || BuiltInNodeDefinitions.find((item) => item.type === node.type)?.label || node.type}`), ...removed.map((node) => `− ${node.label || BuiltInNodeDefinitions.find((item) => item.type === node.type)?.label || node.type}`)].slice(0, 12);
-          const wireKey = (wire) => wire.id || `${wire.sourceNodeId}:${wire.sourcePinId}->${wire.targetNodeId}:${wire.targetPinId}`;
-          const savedWires = new Map((saved.connections || []).map((wire) => [wireKey(wire), wire]));
-          const draftWires = new Map((draft.connections || []).map((wire) => [wireKey(wire), wire]));
-          const wiresAdded = [...draftWires].filter(([id, wire]) => !savedWires.has(id) || JSON.stringify(savedWires.get(id)) !== JSON.stringify(wire)).length;
-          const wiresRemoved = [...savedWires].filter(([id, wire]) => !draftWires.has(id) || JSON.stringify(draftWires.get(id)) !== JSON.stringify(wire)).length;
-          const savedVariables = new Map((saved.variables || []).map((variable) => [variable.id, variable]));
-          const draftVariables = new Map((draft.variables || []).map((variable) => [variable.id, variable]));
-          const variablesAdded = [...draftVariables].filter(([id]) => !savedVariables.has(id)).length;
-          const variablesRemoved = [...savedVariables].filter(([id]) => !draftVariables.has(id)).length;
-          const variablesChanged = [...draftVariables].filter(([id, variable]) => savedVariables.has(id) && JSON.stringify(savedVariables.get(id)) !== JSON.stringify(variable)).length;
-          const hasChanges = changedNames.length || wiresAdded || wiresRemoved || variablesAdded || variablesRemoved || variablesChanged;
-          return <div className="recovery-diff"><strong>Draft compared with latest saved graph</strong><span>{added.length} nodes added · {changed.length} changed · {removed.length} removed</span><span>{wiresAdded} wires added · {wiresRemoved} removed</span><span>{variablesAdded} variables added · {variablesChanged} changed · {variablesRemoved} removed</span>{changedNames.map((name, index) => <small key={`${index}-${name}`}>{name}</small>)}{!hasChanges && <small>Node, wire, and variable data match.</small>}</div>;
-        })()}
-      </Modal>
-      <Modal
-        isOpen={reloadConfirm}
-        onClose={cancelPendingReload}
-        title="Reload ARC Studio?"
-        subtitle="Unsaved changes will be lost."
-        icon={AlertCircle}
-        footer={<><Button variant="secondary" onClick={cancelPendingReload}>Cancel</Button><Button variant="danger" onClick={confirmPendingReload}>Reload</Button></>}
-      >
-        <p className="close-graph-copy">You have unsaved graph or embed changes. Reloading now will discard them.</p>
-      </Modal>
       <Modal isOpen={Boolean(nodePrefabDialog)} onClose={() => setNodePrefabDialog(null)} title="Save node prefab" subtitle="Add this configured node to Saved nodes." icon={FileCode2} footer={<><Button variant="secondary" onClick={() => setNodePrefabDialog(null)}>Cancel</Button><Button onClick={handleSaveNodePrefab}>Save node</Button></>}>
         <form onSubmit={handleSaveNodePrefab}><TextInput label="Node name" placeholder="My node" value={nodePrefabDialog?.name || ''} maxLength={80} autoFocus error={nodePrefabError} onChange={(event) => { setNodePrefabDialog((current) => current ? { ...current, name: event.target.value } : current); setNodePrefabError(''); }} /></form>
       </Modal>
@@ -4091,9 +4581,9 @@ export function App() {
         title="Import project file?"
         subtitle={projectImportFile?.name || ''}
         icon={ShieldCheck}
-        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy} onClick={handleImportProject}>Trust and import</Button></>}
+        footer={<><Button variant="secondary" disabled={projectBusy} onClick={cancelProjectImport}>Cancel</Button><Button icon={FileUp} loading={projectBusy} disabled={!projectImportTrusted || projectBusy || projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' || projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && !projectImportOldVersionApproved} onClick={handleImportProject}>{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' ? 'Newer ARC Studio required' : projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' ? 'Import older project' : 'Trust and import'}</Button></>}
       >
-        <div className="project-import-warning"><strong>Only import a project from someone you trust.</strong><p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p><label><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>{projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}</div>
+        <div className="project-import-warning"><strong>Only import a project from someone you trust.</strong><p>Project files contain graphs, settings, and assets. Importing adds the project to this workspace and marks it trusted here.</p><label><input type="checkbox" checked={projectImportTrusted} onChange={(event) => setProjectImportTrusted(event.target.checked)} /><span>I trust the source of this project file.</span></label>{projectImportCompatibility?.code === 'PROJECT_OLD_VERSION_CONFIRMATION_REQUIRED' && <div className="project-import-compatibility-warning" role="alert"><strong>Older project version</strong><p>{projectImportCompatibility.unknownProjectVersion ? 'This file does not record an ARC Studio version.' : `Created with ARC Studio ${projectImportCompatibility.projectVersion}; this is at least 10 releases older than ${projectImportCompatibility.currentVersion}.`} Its graphs or settings may behave differently. Review it before using it.</p><label><input type="checkbox" checked={projectImportOldVersionApproved} onChange={(event) => setProjectImportOldVersionApproved(event.target.checked)} /><span>I understand and want to import this older project.</span></label></div>}{projectImportCompatibility?.code === 'PROJECT_REQUIRES_NEWER_ARC' && <div className="project-import-compatibility-warning" role="alert"><strong>Update ARC Studio to import this project</strong><p>Created with ARC Studio {projectImportCompatibility.projectVersion}. This workspace runs {projectImportCompatibility.currentVersion || 'an older version'}; open it with ARC Studio {projectImportCompatibility.projectVersion} or newer.</p></div>}{projectImportError && <p className="field-error" role="alert">{projectImportError}</p>}</div>
       </Modal>
       <Modal isOpen={projectTemplateDialog} onClose={() => { if (!projectBusy) { setProjectTemplateDialog(false); setProjectError(''); } }} title="Create from template" subtitle="Pick a starter project and give it a name." footer={<><Button variant="secondary" disabled={projectBusy} onClick={() => setProjectTemplateDialog(false)}>Cancel</Button><Button icon={Plus} loading={projectBusy} disabled={!newProjectName.trim() || projectBusy} onClick={handleCreateProjectFromTemplate}>Create project</Button></>}>
         <div className="project-template-dialog-form">
@@ -4105,6 +4595,29 @@ export function App() {
           {projectError && <p className="field-error" role="alert">{projectError}</p>}
         </div>
       </Modal>
+      <Modal
+        isOpen={updateInstallPromptOpen}
+        onClose={() => !updateInstalling && setUpdateInstallPromptOpen(false)}
+        title={`Update ARC Studio to ${appUpdate?.version || 'the latest version'}?`}
+        subtitle={`Signed ${desktopReleaseChannel} update · ARC Studio will restart after installation.`}
+        icon={Download}
+        footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateInstallPromptOpen(false)}>Later</Button><Button icon={Download} loading={updateInstalling} onClick={handleInstallStudioUpdate}>Download and install</Button></>}
+      >
+        <p className="close-graph-copy">Your graphs and settings are saved in your workspace. The update will be verified before it is installed.</p>
+        {appUpdate?.notes && <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{appUpdate.notes}</pre>}
+      </Modal>
+      <Modal
+        isOpen={Boolean(releaseNotesNotice)}
+        onClose={dismissReleaseNotes}
+        title={releaseNotesNotice?.title || `What’s new in ARC Studio ${studioVersion}`}
+        subtitle="Release notes"
+        icon={Sparkles}
+        maxWidth="max-w-2xl"
+        footer={<><a className="studio-button studio-button-secondary" href={releaseNotesNotice?.url} target="_blank" rel="noreferrer">View release</a><Button onClick={dismissReleaseNotes}>Got it</Button></>}
+      >
+        <pre className="release-notes-content">{releaseNotesNotice?.notes}</pre>
+      </Modal>
+      {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} />}
       <ToastContainer />
       <TooltipLayer />
@@ -4419,6 +4932,16 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
         && (candidate.nodes || []).some((item) => item.type === 'event_slash_command' && String(item.data?.commandName || '').toLowerCase() === normalizedName));
       if (name && (duplicateInGraph || conflictingGraph)) errors.push(`Slash command /${name} is defined more than once. Names must be unique.`);
       if (name) slashCommandNames.add(normalizedName);
+      for (const option of Array.isArray(node.data?.options) ? node.data.options : []) {
+        if (option.autocomplete && option.dynamicAutocomplete && (!nodes.some((item) => item.type === 'event_slash_autocomplete') || !nodes.some((item) => item.type === 'action_respond_autocomplete'))) {
+          warnings.push(`/${normalizedName} · ${option.name}: add On Command Autocomplete and Respond to Autocomplete to provide graph-generated suggestions.`);
+        }
+      }
+    }
+    if (node.type === 'action_respond_autocomplete') {
+      const hasChoices = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'choices')
+        || Array.isArray(node.data?.choices) && node.data.choices.length > 0;
+      if (!hasChoices) warnings.push(`${node.label || 'Respond to Autocomplete'}: connect an array of suggestion objects with name and value fields.`);
     }
     if (['variable_get', 'variable_set'].includes(node.type) && !variableById.has(node.data?.variableId)) errors.push(`${node.label || node.type}: select a graph variable.`);
     if (node.type === 'function_call') {
