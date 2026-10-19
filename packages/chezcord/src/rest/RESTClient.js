@@ -384,6 +384,32 @@ export class RESTClient {
     return this.request('DELETE', `/guilds/${guildId}/members/${userId}/roles/${roleId}`, { headers });
   }
 
+  modifyGuildMember(guildId, userId, changes, reason) {
+    if (!guildId || !userId) throw new TypeError('Guild and user IDs are required.');
+    if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new TypeError('Member changes must be an object.');
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('PATCH', `/guilds/${guildId}/members/${userId}`, { body: changes, headers });
+  }
+
+  removeGuildMember(guildId, userId, reason) {
+    if (!guildId || !userId) throw new TypeError('Guild and user IDs are required.');
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('DELETE', `/guilds/${guildId}/members/${userId}`, { headers });
+  }
+
+  banGuildMember(guildId, userId, { deleteMessageSeconds = 0 } = {}, reason) {
+    if (!guildId || !userId) throw new TypeError('Guild and user IDs are required.');
+    const seconds = Math.max(0, Math.min(604800, Math.trunc(Number(deleteMessageSeconds) || 0)));
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('PUT', `/guilds/${guildId}/bans/${userId}`, { body: { delete_message_seconds: seconds }, headers });
+  }
+
+  unbanGuildMember(guildId, userId, reason) {
+    if (!guildId || !userId) throw new TypeError('Guild and user IDs are required.');
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('DELETE', `/guilds/${guildId}/bans/${userId}`, { headers });
+  }
+
   getGuildEmojis(guildId) {
     return this.request('GET', `/guilds/${guildId}/emojis`);
   }
