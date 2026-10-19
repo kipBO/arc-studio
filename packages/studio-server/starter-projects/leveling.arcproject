@@ -1,0 +1,1856 @@
+{
+  "format": "arc-project",
+  "version": 1,
+  "project": {
+    "name": "Leveling Bot",
+    "createdWithVersion": "2026.1.1-alpha.6",
+    "starter": {
+      "id": "leveling",
+      "name": "Leveling Bot",
+      "description": "Track message activity and show community progress.",
+      "icon": "TrendingUp",
+      "highlights": [
+        "Human message activity counter",
+        "Goal checks with current and remaining totals",
+        "Live range and community choice commands",
+        "Welcome card and optional join message",
+        "Six rotating bot activities, updated every ten minutes"
+      ],
+      "setup": [
+        "The counter is shared by the server and resets when the bot process restarts.",
+        "Set welcome-channel-id in Project Variables to enable automatic welcome messages.",
+        "Enable the Server Members Intent for member join messages.",
+        "Edit Bot Presence to change the activity messages and timing."
+      ],
+      "order": 4
+    }
+  },
+  "files": {
+    "graphs.json": {
+      "graphs": [
+        {
+          "id": "community_progress_counter",
+          "name": "On Message Create · Activity Counter",
+          "description": "Adds one point for each message sent by a human member.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_event",
+              "type": "event_message_create",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_is_human",
+              "type": "logic_not",
+              "x": 340,
+              "y": 340,
+              "data": {}
+            },
+            {
+              "id": "progress_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_get_total",
+              "type": "variable_get",
+              "x": 340,
+              "y": 560,
+              "data": {
+                "variableId": "starter_xp_total",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "progress_one",
+              "type": "value_number",
+              "x": 620,
+              "y": 560,
+              "data": {
+                "value": 1
+              }
+            },
+            {
+              "id": "progress_add",
+              "type": "math_add",
+              "x": 900,
+              "y": 470,
+              "data": {}
+            },
+            {
+              "id": "progress_set_total",
+              "type": "variable_set",
+              "x": 1200,
+              "y": 120,
+              "data": {
+                "variableId": "starter_xp_total",
+                "scope": "project"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_event_exec_progress_branch_exec",
+              "sourceNodeId": "progress_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_event_is_bot_progress_is_human_value",
+              "sourceNodeId": "progress_event",
+              "sourcePinId": "is_bot",
+              "targetNodeId": "progress_is_human",
+              "targetPinId": "value"
+            },
+            {
+              "id": "progress_is_human_result_progress_branch_condition",
+              "sourceNodeId": "progress_is_human",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "progress_branch_true_exec_progress_set_total_exec",
+              "sourceNodeId": "progress_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "progress_set_total",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_get_total_value_progress_add_a",
+              "sourceNodeId": "progress_get_total",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_add",
+              "targetPinId": "a"
+            },
+            {
+              "id": "progress_one_value_progress_add_b",
+              "sourceNodeId": "progress_one",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_add",
+              "targetPinId": "b"
+            },
+            {
+              "id": "progress_add_result_progress_set_total_value",
+              "sourceNodeId": "progress_add",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_set_total",
+              "targetPinId": "value"
+            }
+          ]
+        },
+        {
+          "id": "progress_rank",
+          "name": "Slash: /rank",
+          "description": "Handles /rank.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_rank_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "rank",
+                "description": "Show the community activity total.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_rank_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_rank_get",
+              "type": "variable_get",
+              "x": 350,
+              "y": 400,
+              "data": {
+                "variableId": "starter_xp_total",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "progress_rank_format",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "The community has earned **{{arg1}}** activity points since the bot last started."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_rank_event_exec_progress_rank_reply_exec",
+              "sourceNodeId": "progress_rank_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_rank_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_rank_event_application_id_progress_rank_reply_application_id",
+              "sourceNodeId": "progress_rank_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_rank_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_rank_event_interaction_id_progress_rank_reply_interaction_id",
+              "sourceNodeId": "progress_rank_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_rank_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_rank_event_interaction_token_progress_rank_reply_interaction_token",
+              "sourceNodeId": "progress_rank_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_rank_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_rank_get_value_progress_rank_format_arg_1",
+              "sourceNodeId": "progress_rank_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_rank_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_rank_format_text_progress_rank_reply_content",
+              "sourceNodeId": "progress_rank_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_rank_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "progress_activity",
+          "name": "Slash: /activity",
+          "description": "Handles /activity.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_activity_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "activity",
+                "description": "Show the live activity counter.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_activity_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_activity_get",
+              "type": "variable_get",
+              "x": 350,
+              "y": 400,
+              "data": {
+                "variableId": "starter_xp_total",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "progress_activity_format",
+              "type": "format_text",
+              "x": 700,
+              "y": 400,
+              "data": {
+                "template": "Current community activity: **{{arg1}}** points."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_activity_event_exec_progress_activity_reply_exec",
+              "sourceNodeId": "progress_activity_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_activity_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_activity_event_application_id_progress_activity_reply_application_id",
+              "sourceNodeId": "progress_activity_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_activity_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_activity_event_interaction_id_progress_activity_reply_interaction_id",
+              "sourceNodeId": "progress_activity_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_activity_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_activity_event_interaction_token_progress_activity_reply_interaction_token",
+              "sourceNodeId": "progress_activity_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_activity_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_activity_get_value_progress_activity_format_arg_1",
+              "sourceNodeId": "progress_activity_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_activity_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_activity_format_text_progress_activity_reply_content",
+              "sourceNodeId": "progress_activity_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_activity_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "progress_rules",
+          "name": "Slash: /rules",
+          "description": "Handles /rules.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_rules_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "rules",
+                "description": "Show the community activity rules.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_rules_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_rules_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 370,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "progress_rules_embed_title",
+                    "type": "title",
+                    "value": "Activity and community rules"
+                  },
+                  {
+                    "id": "progress_rules_embed_description",
+                    "type": "description",
+                    "value": "Activity points are added for messages from human members. Keep posts constructive, avoid spam, and follow the server rules. The counter is shared by the whole server."
+                  },
+                  {
+                    "id": "progress_rules_embed_color",
+                    "type": "color",
+                    "value": "#27A879"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_rules_event_exec_progress_rules_reply_exec",
+              "sourceNodeId": "progress_rules_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_rules_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_rules_event_application_id_progress_rules_reply_application_id",
+              "sourceNodeId": "progress_rules_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_rules_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_rules_event_interaction_id_progress_rules_reply_interaction_id",
+              "sourceNodeId": "progress_rules_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_rules_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_rules_event_interaction_token_progress_rules_reply_interaction_token",
+              "sourceNodeId": "progress_rules_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_rules_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_rules_embed_embed_progress_rules_reply_embed",
+              "sourceNodeId": "progress_rules_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "progress_rules_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "progress_about",
+          "name": "Slash: /about",
+          "description": "Handles /about.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_about_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "about",
+                "description": "About the community progress bot.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_about_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_about_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 370,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "progress_about_embed_title",
+                    "type": "title",
+                    "value": "Community Progress"
+                  },
+                  {
+                    "id": "progress_about_embed_description",
+                    "type": "description",
+                    "value": "Tracks a shared server activity total and lets members check progress toward a target. The counter lives in memory and starts at zero when the bot process restarts."
+                  },
+                  {
+                    "id": "progress_about_embed_color",
+                    "type": "color",
+                    "value": "#27A879"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_about_event_exec_progress_about_reply_exec",
+              "sourceNodeId": "progress_about_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_about_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_about_event_application_id_progress_about_reply_application_id",
+              "sourceNodeId": "progress_about_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_about_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_about_event_interaction_id_progress_about_reply_interaction_id",
+              "sourceNodeId": "progress_about_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_about_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_about_event_interaction_token_progress_about_reply_interaction_token",
+              "sourceNodeId": "progress_about_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_about_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_about_embed_embed_progress_about_reply_embed",
+              "sourceNodeId": "progress_about_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "progress_about_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "progress_help",
+          "name": "Slash: /help",
+          "description": "Handles /help.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_help_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "help",
+                "description": "List community progress commands.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_help_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_help_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 370,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "progress_help_embed_title",
+                    "type": "title",
+                    "value": "Progress commands"
+                  },
+                  {
+                    "id": "progress_help_embed_description",
+                    "type": "description",
+                    "value": "**/rank** and **/activity** show the shared counter.\n**/goal** checks whether the current total reached your target.\n**/roll**, **/choose**, and **/coinflip** are community games.\nUse **/welcome** for the member guide."
+                  },
+                  {
+                    "id": "progress_help_embed_color",
+                    "type": "color",
+                    "value": "#27A879"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_help_event_exec_progress_help_reply_exec",
+              "sourceNodeId": "progress_help_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_help_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_help_event_application_id_progress_help_reply_application_id",
+              "sourceNodeId": "progress_help_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_help_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_help_event_interaction_id_progress_help_reply_interaction_id",
+              "sourceNodeId": "progress_help_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_help_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_help_event_interaction_token_progress_help_reply_interaction_token",
+              "sourceNodeId": "progress_help_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_help_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_help_embed_embed_progress_help_reply_embed",
+              "sourceNodeId": "progress_help_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "progress_help_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "progress_goal",
+          "name": "Slash: /goal",
+          "description": "Checks the shared counter against a target.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_goal_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "goal",
+                "description": "Check progress toward a community activity target.",
+                "options": [
+                  {
+                    "name": "target",
+                    "description": "Activity points needed to reach the goal.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 1000000000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "progress_goal_get",
+              "type": "variable_get",
+              "x": 350,
+              "y": 420,
+              "data": {
+                "variableId": "starter_xp_total",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "progress_goal_compare",
+              "type": "math_compare",
+              "x": 650,
+              "y": 400,
+              "data": {
+                "operation": "greater_or_equal"
+              }
+            },
+            {
+              "id": "progress_goal_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_goal_reached_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 420,
+              "data": {
+                "template": "🎉 The community reached its goal of **{{arg1}}** points! Current total: **{{arg2}}**."
+              }
+            },
+            {
+              "id": "progress_goal_needed",
+              "type": "math_subtract",
+              "x": 650,
+              "y": 650,
+              "data": {}
+            },
+            {
+              "id": "progress_goal_remaining_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 700,
+              "data": {
+                "template": "The community is **{{arg1}}** points away from its goal of **{{arg2}}**. Current total: **{{arg3}}**."
+              }
+            },
+            {
+              "id": "progress_goal_reached_reply",
+              "type": "action_reply_interaction",
+              "x": 1240,
+              "y": 100,
+              "data": {
+                "ephemeral": false
+              }
+            },
+            {
+              "id": "progress_goal_remaining_reply",
+              "type": "action_reply_interaction",
+              "x": 1240,
+              "y": 400,
+              "data": {
+                "ephemeral": false
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_goal_get_value_progress_goal_compare_a",
+              "sourceNodeId": "progress_goal_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_goal_compare",
+              "targetPinId": "a"
+            },
+            {
+              "id": "progress_goal_event_option_target_progress_goal_compare_b",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "option_target",
+              "targetNodeId": "progress_goal_compare",
+              "targetPinId": "b"
+            },
+            {
+              "id": "progress_goal_event_exec_progress_goal_branch_exec",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_goal_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_goal_compare_result_progress_goal_branch_condition",
+              "sourceNodeId": "progress_goal_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_goal_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "progress_goal_branch_true_exec_progress_goal_reached_reply_exec",
+              "sourceNodeId": "progress_goal_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "progress_goal_reached_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_goal_get_value_progress_goal_reached_format_arg_2",
+              "sourceNodeId": "progress_goal_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_goal_reached_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "progress_goal_event_option_target_progress_goal_reached_format_arg_1",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "option_target",
+              "targetNodeId": "progress_goal_reached_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_goal_reached_format_text_progress_goal_reached_reply_content",
+              "sourceNodeId": "progress_goal_reached_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_goal_reached_reply",
+              "targetPinId": "content"
+            },
+            {
+              "id": "progress_goal_branch_false_exec_progress_goal_remaining_reply_exec",
+              "sourceNodeId": "progress_goal_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "progress_goal_remaining_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_goal_event_option_target_progress_goal_needed_a",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "option_target",
+              "targetNodeId": "progress_goal_needed",
+              "targetPinId": "a"
+            },
+            {
+              "id": "progress_goal_get_value_progress_goal_needed_b",
+              "sourceNodeId": "progress_goal_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_goal_needed",
+              "targetPinId": "b"
+            },
+            {
+              "id": "progress_goal_needed_result_progress_goal_remaining_format_arg_1",
+              "sourceNodeId": "progress_goal_needed",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_goal_remaining_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_goal_event_option_target_progress_goal_remaining_format_arg_2",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "option_target",
+              "targetNodeId": "progress_goal_remaining_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "progress_goal_get_value_progress_goal_remaining_format_arg_3",
+              "sourceNodeId": "progress_goal_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_goal_remaining_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "progress_goal_remaining_format_text_progress_goal_remaining_reply_content",
+              "sourceNodeId": "progress_goal_remaining_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_goal_remaining_reply",
+              "targetPinId": "content"
+            },
+            {
+              "id": "progress_goal_event_application_id_progress_goal_reached_reply_application_id",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_goal_reached_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_goal_event_interaction_id_progress_goal_reached_reply_interaction_id",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_goal_reached_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_goal_event_interaction_token_progress_goal_reached_reply_interaction_token",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_goal_reached_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_goal_event_application_id_progress_goal_remaining_reply_application_id",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_goal_remaining_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_goal_event_interaction_id_progress_goal_remaining_reply_interaction_id",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_goal_remaining_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_goal_event_interaction_token_progress_goal_remaining_reply_interaction_token",
+              "sourceNodeId": "progress_goal_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_goal_remaining_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "progress_roll",
+          "name": "Slash: /roll",
+          "description": "Handles /roll.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_roll_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "roll",
+                "description": "Roll within a chosen range.",
+                "options": [
+                  {
+                    "name": "minimum",
+                    "description": "Lowest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 1000000
+                  },
+                  {
+                    "name": "maximum",
+                    "description": "Highest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 1000000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "progress_roll_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_roll_random",
+              "type": "math_random",
+              "x": 380,
+              "y": 360,
+              "data": {}
+            },
+            {
+              "id": "progress_roll_format",
+              "type": "format_text",
+              "x": 720,
+              "y": 360,
+              "data": {
+                "template": "🎲 <@{{arg1}}> rolled **{{arg2}}**."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_roll_event_exec_progress_roll_reply_exec",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_roll_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_roll_event_application_id_progress_roll_reply_application_id",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_roll_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_roll_event_interaction_id_progress_roll_reply_interaction_id",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_roll_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_roll_event_interaction_token_progress_roll_reply_interaction_token",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_roll_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_roll_event_option_minimum_progress_roll_random_min",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "option_minimum",
+              "targetNodeId": "progress_roll_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "progress_roll_event_option_maximum_progress_roll_random_max",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "option_maximum",
+              "targetNodeId": "progress_roll_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "progress_roll_event_user_id_progress_roll_format_arg_1",
+              "sourceNodeId": "progress_roll_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "progress_roll_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_roll_random_result_progress_roll_format_arg_2",
+              "sourceNodeId": "progress_roll_random",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_roll_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "progress_roll_format_text_progress_roll_reply_content",
+              "sourceNodeId": "progress_roll_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_roll_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "progress_choose",
+          "name": "Slash: /choose",
+          "description": "Handles /choose.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_choose_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "choose",
+                "description": "Choose one of three community options.",
+                "options": [
+                  {
+                    "name": "first",
+                    "description": "First option.",
+                    "type": 3,
+                    "required": true
+                  },
+                  {
+                    "name": "second",
+                    "description": "Second option.",
+                    "type": 3,
+                    "required": true
+                  },
+                  {
+                    "name": "third",
+                    "description": "Third option.",
+                    "type": 3,
+                    "required": true
+                  }
+                ]
+              }
+            },
+            {
+              "id": "progress_choose_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_choose_list",
+              "type": "data_array_create",
+              "x": 390,
+              "y": 340,
+              "data": {}
+            },
+            {
+              "id": "progress_choose_min",
+              "type": "value_number",
+              "x": 390,
+              "y": 560,
+              "data": {
+                "value": 0
+              }
+            },
+            {
+              "id": "progress_choose_max",
+              "type": "value_number",
+              "x": 390,
+              "y": 680,
+              "data": {
+                "value": 2
+              }
+            },
+            {
+              "id": "progress_choose_random",
+              "type": "math_random",
+              "x": 680,
+              "y": 540,
+              "data": {}
+            },
+            {
+              "id": "progress_choose_get",
+              "type": "data_array_get",
+              "x": 960,
+              "y": 400,
+              "data": {}
+            },
+            {
+              "id": "progress_choose_format",
+              "type": "format_text",
+              "x": 1220,
+              "y": 400,
+              "data": {
+                "template": "My pick: **{{arg1}}**"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_choose_event_exec_progress_choose_reply_exec",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_choose_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_choose_event_application_id_progress_choose_reply_application_id",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_choose_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_choose_event_interaction_id_progress_choose_reply_interaction_id",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_choose_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_choose_event_interaction_token_progress_choose_reply_interaction_token",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_choose_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_choose_event_option_first_progress_choose_list_item_1",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "option_first",
+              "targetNodeId": "progress_choose_list",
+              "targetPinId": "item_1"
+            },
+            {
+              "id": "progress_choose_event_option_second_progress_choose_list_item_2",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "option_second",
+              "targetNodeId": "progress_choose_list",
+              "targetPinId": "item_2"
+            },
+            {
+              "id": "progress_choose_event_option_third_progress_choose_list_item_3",
+              "sourceNodeId": "progress_choose_event",
+              "sourcePinId": "option_third",
+              "targetNodeId": "progress_choose_list",
+              "targetPinId": "item_3"
+            },
+            {
+              "id": "progress_choose_list_array_progress_choose_get_array",
+              "sourceNodeId": "progress_choose_list",
+              "sourcePinId": "array",
+              "targetNodeId": "progress_choose_get",
+              "targetPinId": "array"
+            },
+            {
+              "id": "progress_choose_min_value_progress_choose_random_min",
+              "sourceNodeId": "progress_choose_min",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_choose_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "progress_choose_max_value_progress_choose_random_max",
+              "sourceNodeId": "progress_choose_max",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_choose_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "progress_choose_random_result_progress_choose_get_index",
+              "sourceNodeId": "progress_choose_random",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_choose_get",
+              "targetPinId": "index"
+            },
+            {
+              "id": "progress_choose_get_value_progress_choose_format_arg_1",
+              "sourceNodeId": "progress_choose_get",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_choose_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_choose_format_text_progress_choose_reply_content",
+              "sourceNodeId": "progress_choose_format",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_choose_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "progress_coinflip",
+          "name": "Slash: /coinflip",
+          "description": "Handles /coinflip.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_coinflip_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "coinflip",
+                "description": "Flip a fair coin.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_coin_random",
+              "type": "math_random",
+              "x": 340,
+              "y": 350,
+              "data": {}
+            },
+            {
+              "id": "progress_coin_half",
+              "type": "value_number",
+              "x": 340,
+              "y": 540,
+              "data": {
+                "value": 0.5
+              }
+            },
+            {
+              "id": "progress_coin_compare",
+              "type": "math_compare",
+              "x": 630,
+              "y": 400,
+              "data": {
+                "operation": "less_than"
+              }
+            },
+            {
+              "id": "progress_coin_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_coin_heads",
+              "type": "action_reply_interaction",
+              "x": 1190,
+              "y": 80,
+              "data": {
+                "content": "🪙 Heads!",
+                "ephemeral": false
+              }
+            },
+            {
+              "id": "progress_coin_tails",
+              "type": "action_reply_interaction",
+              "x": 1190,
+              "y": 340,
+              "data": {
+                "content": "🪙 Tails!",
+                "ephemeral": false
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_coin_random_result_progress_coin_compare_a",
+              "sourceNodeId": "progress_coin_random",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_coin_compare",
+              "targetPinId": "a"
+            },
+            {
+              "id": "progress_coin_half_value_progress_coin_compare_b",
+              "sourceNodeId": "progress_coin_half",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_coin_compare",
+              "targetPinId": "b"
+            },
+            {
+              "id": "progress_coin_event_exec_progress_coin_branch_exec",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_coin_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_coin_compare_result_progress_coin_branch_condition",
+              "sourceNodeId": "progress_coin_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_coin_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "progress_coin_branch_true_exec_progress_coin_heads_exec",
+              "sourceNodeId": "progress_coin_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "progress_coin_heads",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_coin_event_application_id_progress_coin_heads_application_id",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_coin_heads",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_coin_event_interaction_id_progress_coin_heads_interaction_id",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_coin_heads",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_coin_event_interaction_token_progress_coin_heads_interaction_token",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_coin_heads",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_coin_branch_false_exec_progress_coin_tails_exec",
+              "sourceNodeId": "progress_coin_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "progress_coin_tails",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_coin_event_application_id_progress_coin_tails_application_id",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_coin_tails",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_coin_event_interaction_id_progress_coin_tails_interaction_id",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_coin_tails",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_coin_event_interaction_token_progress_coin_tails_interaction_token",
+              "sourceNodeId": "progress_coinflip_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_coin_tails",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "progress_welcome",
+          "name": "Slash: /welcome",
+          "description": "Handles /welcome.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_welcome_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "welcome",
+                "description": "Show the community quick-start card.",
+                "options": []
+              }
+            },
+            {
+              "id": "progress_welcome_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "progress_welcome_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 370,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "progress_welcome_embed_title",
+                    "type": "title",
+                    "value": "Welcome to the community"
+                  },
+                  {
+                    "id": "progress_welcome_embed_description",
+                    "type": "description",
+                    "value": "Use /rules to read the guidelines, /help to see commands, and /goal to check community progress."
+                  },
+                  {
+                    "id": "progress_welcome_embed_color",
+                    "type": "color",
+                    "value": "#27A879"
+                  }
+                ],
+                "components": [
+                  {
+                    "components": [
+                      {
+                        "type": "button",
+                        "style": "primary",
+                        "label": "Show quick start",
+                        "customId": "progress_welcome_start"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_welcome_event_exec_progress_welcome_reply_exec",
+              "sourceNodeId": "progress_welcome_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_welcome_event_application_id_progress_welcome_reply_application_id",
+              "sourceNodeId": "progress_welcome_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_welcome_event_interaction_id_progress_welcome_reply_interaction_id",
+              "sourceNodeId": "progress_welcome_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_welcome_event_interaction_token_progress_welcome_reply_interaction_token",
+              "sourceNodeId": "progress_welcome_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "progress_welcome_embed_embed_progress_welcome_reply_embed",
+              "sourceNodeId": "progress_welcome_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "embed"
+            },
+            {
+              "id": "progress_welcome_embed_components_progress_welcome_reply_components",
+              "sourceNodeId": "progress_welcome_embed",
+              "sourcePinId": "components",
+              "targetNodeId": "progress_welcome_reply",
+              "targetPinId": "components"
+            }
+          ]
+        },
+        {
+          "id": "progress_welcome_button",
+          "name": "On Button Click · Quick Start",
+          "description": "Replies to the quick-start button.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_welcome_button_event",
+              "type": "event_button_click",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_welcome_button_compare",
+              "type": "compare_text",
+              "x": 340,
+              "y": 350,
+              "data": {
+                "text_b": "progress_welcome_start",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "progress_welcome_button_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_welcome_button_reply",
+              "type": "action_reply_interaction",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "content": "Start here: read /rules, meet the community, and use /goal to help track shared progress.",
+                "ephemeral": true
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_welcome_button_event_exec_progress_welcome_button_branch_exec",
+              "sourceNodeId": "progress_welcome_button_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_welcome_button_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_welcome_button_event_custom_id_progress_welcome_button_compare_text_a",
+              "sourceNodeId": "progress_welcome_button_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "progress_welcome_button_compare",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "progress_welcome_button_compare_result_progress_welcome_button_branch_condition",
+              "sourceNodeId": "progress_welcome_button_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_welcome_button_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "progress_welcome_button_branch_true_exec_progress_welcome_button_reply_exec",
+              "sourceNodeId": "progress_welcome_button_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "progress_welcome_button_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_welcome_button_event_application_id_progress_welcome_button_reply_application_id",
+              "sourceNodeId": "progress_welcome_button_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "progress_welcome_button_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "progress_welcome_button_event_interaction_id_progress_welcome_button_reply_interaction_id",
+              "sourceNodeId": "progress_welcome_button_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "progress_welcome_button_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "progress_welcome_button_event_interaction_token_progress_welcome_button_reply_interaction_token",
+              "sourceNodeId": "progress_welcome_button_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "progress_welcome_button_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "progress_member_join",
+          "name": "On Member Joined",
+          "description": "Sends a configured welcome message.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "progress_join_event",
+              "type": "event_member_join",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_join_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_progress_welcome_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "progress_join_check",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "progress_join_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "progress_join_text",
+              "type": "format_text",
+              "x": 900,
+              "y": 420,
+              "data": {
+                "template": "Welcome <@{{arg1}}>! Read /rules and use /help to get started."
+              }
+            },
+            {
+              "id": "progress_join_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "progress_join_event_exec_progress_join_branch_exec",
+              "sourceNodeId": "progress_join_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "progress_join_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_join_event_user_id_progress_join_text_arg_1",
+              "sourceNodeId": "progress_join_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "progress_join_text",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "progress_join_channel_value_progress_join_check_text_a",
+              "sourceNodeId": "progress_join_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_join_check",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "progress_join_check_result_progress_join_branch_condition",
+              "sourceNodeId": "progress_join_check",
+              "sourcePinId": "result",
+              "targetNodeId": "progress_join_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "progress_join_branch_false_exec_progress_join_send_exec",
+              "sourceNodeId": "progress_join_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "progress_join_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "progress_join_channel_value_progress_join_send_channel_id",
+              "sourceNodeId": "progress_join_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "progress_join_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "progress_join_text_text_progress_join_send_content",
+              "sourceNodeId": "progress_join_text",
+              "sourcePinId": "text",
+              "targetNodeId": "progress_join_send",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "leveling_presence_rotation",
+          "name": "Bot Presence",
+          "description": "Changes activity every ten minutes.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "leveling_presence_schedule_1",
+              "type": "event_cron",
+              "x": 60,
+              "y": 80,
+              "data": {
+                "cronExpression": "0 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_1",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 80,
+              "data": {
+                "status": "online",
+                "activity_text": "Community progress",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "leveling_presence_schedule_2",
+              "type": "event_cron",
+              "x": 60,
+              "y": 260,
+              "data": {
+                "cronExpression": "10 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_2",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 260,
+              "data": {
+                "status": "online",
+                "activity_text": "Message activity",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "leveling_presence_schedule_3",
+              "type": "event_cron",
+              "x": 60,
+              "y": 440,
+              "data": {
+                "cronExpression": "20 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_3",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 440,
+              "data": {
+                "status": "online",
+                "activity_text": "The top spot",
+                "activity_type": 5
+              }
+            },
+            {
+              "id": "leveling_presence_schedule_4",
+              "type": "event_cron",
+              "x": 60,
+              "y": 620,
+              "data": {
+                "cronExpression": "30 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_4",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 620,
+              "data": {
+                "status": "online",
+                "activity_text": "Community chat",
+                "activity_type": 2
+              }
+            },
+            {
+              "id": "leveling_presence_schedule_5",
+              "type": "event_cron",
+              "x": 60,
+              "y": 800,
+              "data": {
+                "cronExpression": "40 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_5",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 800,
+              "data": {
+                "status": "online",
+                "activity_text": "Member levels",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "leveling_presence_schedule_6",
+              "type": "event_cron",
+              "x": 60,
+              "y": 980,
+              "data": {
+                "cronExpression": "50 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "leveling_presence_activity_6",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 980,
+              "data": {
+                "status": "online",
+                "activity_text": "New milestones",
+                "activity_type": 3
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "leveling_presence_schedule_1_exec_leveling_presence_activity_1_exec",
+              "sourceNodeId": "leveling_presence_schedule_1",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "leveling_presence_schedule_2_exec_leveling_presence_activity_2_exec",
+              "sourceNodeId": "leveling_presence_schedule_2",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "leveling_presence_schedule_3_exec_leveling_presence_activity_3_exec",
+              "sourceNodeId": "leveling_presence_schedule_3",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "leveling_presence_schedule_4_exec_leveling_presence_activity_4_exec",
+              "sourceNodeId": "leveling_presence_schedule_4",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "leveling_presence_schedule_5_exec_leveling_presence_activity_5_exec",
+              "sourceNodeId": "leveling_presence_schedule_5",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_5",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "leveling_presence_schedule_6_exec_leveling_presence_activity_6_exec",
+              "sourceNodeId": "leveling_presence_schedule_6",
+              "sourcePinId": "exec",
+              "targetNodeId": "leveling_presence_activity_6",
+              "targetPinId": "exec"
+            }
+          ]
+        }
+      ],
+      "deletedIds": []
+    },
+    "graph-library.json": {
+      "defaultGraphId": "community_progress_counter",
+      "templates": [],
+      "snapshots": []
+    },
+    "bot-config.json": {},
+    "statistics.json": {},
+    "embeds.json": [],
+    "project-variables.json": [
+      {
+        "id": "starter_xp_total",
+        "name": "serverActivity",
+        "type": "number",
+        "initialValue": 0
+      },
+      {
+        "id": "project_var_progress_welcome_channel_id",
+        "name": "welcome-channel-id",
+        "type": "string",
+        "initialValue": ""
+      }
+    ]
+  }
+}
