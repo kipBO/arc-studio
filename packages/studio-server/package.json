@@ -1,0 +1,24 @@
+{
+  "name": "arc-studio-server",
+  "version": "2026.1.1-alpha.6",
+  "description": "ARC Studio Backend Server",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "dev:desktop": "node scripts/dev-desktop.mjs",
+    "test": "node --test tests/crypto.test.js"
+  },
+  "dependencies": {
+    "chezcord": "*",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "mongodb": "^6.21.0"
+  },
+  "license": "Apache-2.0"
+}
