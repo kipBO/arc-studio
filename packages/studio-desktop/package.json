@@ -1,0 +1,16 @@
+{
+  "name": "arc-studio-desktop",
+  "version": "2026.1.1-alpha.6",
+  "private": true,
+  "description": "Tauri desktop shell for ARC Studio",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node ../../scripts/sync-version.mjs",
+    "dev": "tauri dev",
+    "build": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
