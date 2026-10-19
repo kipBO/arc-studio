@@ -5,6 +5,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { Button } from '../ui/Button.jsx';
 import { TextInput, Toggle } from '../ui/Inputs.jsx';
+import { compareArcVersions } from '../../core/appUpdates.js';
 //
 async function readResponse(response, fallback) {
   const data = await response.json().catch(() => ({}));
@@ -41,6 +42,7 @@ function validateRepositoryUrl(value) {
 
 export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize, networkOnline = true }) {
   const [catalog, setCatalog] = useState([]);
+  const [studioVersion, setStudioVersion] = useState(window.__arc?.version || '0.0.0');
   const [installed, setInstalled] = useState([]);
   const [repository, setRepository] = useState({ url: 'https://github.com/relentiousdragon/arc-plugins', provider: 'github' });
   const [repositoryDraft, setRepositoryDraft] = useState('');
@@ -113,7 +115,10 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       fetch(apiUrl('/api/plugins/catalog'), { headers }).then((response) => readResponse(response, 'Could not load plugin catalog.')),
       fetch(apiUrl('/api/plugins/source'), { headers }).then((response) => readResponse(response, 'Could not load plugin source settings.'))
     ]);
-    if (catalogResult.status === 'fulfilled') setCatalog(Array.isArray(catalogResult.value.plugins) ? catalogResult.value.plugins : []);
+    if (catalogResult.status === 'fulfilled') {
+      setCatalog(Array.isArray(catalogResult.value.plugins) ? catalogResult.value.plugins : []);
+      if (catalogResult.value.studioVersion) setStudioVersion(catalogResult.value.studioVersion);
+    }
     if (sourceResult.status === 'fulfilled' && sourceResult.value.repository?.url) setRepository(sourceResult.value.repository);
 
     const failures = [];
@@ -239,6 +244,11 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           && (file.webkitRelativePath || '').split('/')[1] === 'adapter.wasm')
         : null;
       if (pack?.kind === 'wasm-adapter' && !adapterFile) throw new Error('This adapter folder needs its compiled adapter.wasm beside arc-plugin.json.');
+      if (typeof pack?.minArcStudioVersion !== 'string' || !pack.minArcStudioVersion.trim()) throw new Error('This plugin must declare minArcStudioVersion in its manifest.');
+      const minimumStudioVersion = pack.minArcStudioVersion.trim();
+      const compatibility = compareArcVersions(studioVersion, minimumStudioVersion);
+      if (compatibility === null) throw new Error('This plugin has an invalid minArcStudioVersion requirement.');
+      if (compatibility < 0) throw new Error(`${pack.name || pack.id || 'This plugin'} requires ARC Studio ${minimumStudioVersion} or newer. This workspace is running ${studioVersion}.`);
       if (adapterFile && adapterFile.size > 8 * 1024 * 1024) throw new Error('The adapter.wasm file must be no larger than 8 MiB.');
       setConfirmAutoUpdate(true);
       setConfirmTrust(false);
@@ -367,14 +377,15 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
                 <div className="plugin-store-title"><strong>{plugin.name}</strong><span>v{plugin.version}</span></div>
                 <p>{plugin.description || available?.description || 'Installed plugin pack.'}</p>
                 <small className="plugin-store-installed">By {plugin.author || available?.author || 'Unknown author'} · {plugin.sourceType === 'builtin' ? 'Built-in integration' : plugin.sourceType === 'local' ? 'Local import' : `Installed · auto-update ${plugin.autoUpdate ? 'on' : 'off'}`}{updateAvailable ? ` · v${available.version} available` : ''}{plugin.installedBy ? ` · Installed by ${plugin.installedBy}` : ''}</small>
+                {plugin.studioCompatible === false && <small className="plugin-store-origin is-untrusted">Requires ARC Studio {plugin.minArcStudioVersion} or newer · this workspace is {plugin.studioVersion || studioVersion}</small>}
                 {plugin.permissions?.length > 0 && <small className="plugin-store-origin">This project grants: {plugin.grantedPermissions?.length ? plugin.permissions.filter((permission) => plugin.grantedPermissions.includes(permission.id)).map((permission) => permission.name).join(' · ') : 'No elevated permissions'}</small>}
                 {noticesFor(plugin).length > 0 && <button type="button" className="plugin-store-license-link" onClick={() => setSelectedNotices({ name: plugin.name, notices: noticesFor(plugin) })}>Third-party licenses</button>}
               </div>
               <div className="plugin-store-card-actions">
-                {(plugin.settingsSchema?.length || available?.settingsSchema?.length) > 0 && <Button variant="secondary" size="sm" icon={Settings2} disabled={!canInstall} onClick={() => openPluginSettings(plugin)}>Settings</Button>}
-                {plugin.permissions?.length > 0 && <Button variant="secondary" size="sm" icon={ShieldCheck} disabled={!canInstall} onClick={() => beginInstall({ ...plugin, builtIn: plugin.sourceType === 'builtin', grantedPermissions: plugin.grantedPermissions || [] }, true)}>Permissions</Button>}
+                {(plugin.settingsSchema?.length || available?.settingsSchema?.length) > 0 && <Button variant="secondary" size="sm" icon={Settings2} disabled={!canInstall || plugin.studioCompatible === false} onClick={() => openPluginSettings(plugin)}>Settings</Button>}
+                {plugin.permissions?.length > 0 && <Button variant="secondary" size="sm" icon={ShieldCheck} disabled={!canInstall || plugin.studioCompatible === false} onClick={() => beginInstall({ ...plugin, builtIn: plugin.sourceType === 'builtin', grantedPermissions: plugin.grantedPermissions || [] }, true)}>Permissions</Button>}
                 {updateAvailable
-                  ? <Button size="sm" loading={busyId === plugin.id} disabled={!canInstall || available.arcApiVersion !== 1} onClick={() => beginInstall(available)}>Update</Button>
+                  ? <Button size="sm" loading={busyId === plugin.id} disabled={!canInstall || available.arcApiVersion !== 1 || available.studioCompatible === false} title={available.studioCompatible === false ? `Requires ARC Studio ${available.minArcStudioVersion} or newer` : undefined} onClick={() => beginInstall(available)}>Update</Button>
                   : <Button variant="secondary" size="sm" icon={Trash2} loading={busyId === plugin.id} disabled={!canInstall} onClick={() => uninstall(plugin)}>Remove</Button>}
               </div>
             </article>;
@@ -402,6 +413,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
                 <div className="plugin-store-title"><strong>{plugin.name}</strong><span>v{plugin.version}</span></div>
                 <p>{plugin.description || 'No description provided.'}</p>
                 <div className="plugin-store-meta"><span>{plugin.author || 'Unknown author'}</span>{plugin.license && <span>{plugin.license}</span>}{(plugin.tags || []).map((tag) => <span className="plugin-store-tag" key={tag}>{tag}</span>)}</div>
+                {plugin.minArcStudioVersion !== '0.0.0' && <small className={`plugin-store-origin ${plugin.studioCompatible === false ? 'is-untrusted' : ''}`}>{plugin.studioCompatible === false ? `Requires ARC Studio ${plugin.minArcStudioVersion} or newer · this workspace is ${plugin.studioVersion || studioVersion}` : `Requires ARC Studio ${plugin.minArcStudioVersion} or newer`}</small>}
                 <small className={`plugin-store-origin ${plugin.sourceTrust === 'custom' ? 'is-untrusted' : ''}`}>{plugin.sourceTrust === 'default' ? 'Default source' : plugin.sourceTrust === 'bundled' ? 'Bundled with ARC Studio' : 'Outside default source'} · {plugin.repositoryUrl || repository.url}</small>
                 {plugin.permissions?.length > 0 && <small className="plugin-store-origin">Permissions: {plugin.permissions.map((permission) => permission.name).join(' · ')}</small>}
                 {plugin.sourceTrust === 'custom' && <div className="plugin-trust-warning"><AlertTriangle size={13} /><span>This plugin comes from a non-default catalogue. ARC does not verify its publisher or review its contents.</span></div>}
@@ -412,7 +424,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
                 <a className="plugin-store-source" href={plugin.sourceUrl} target="_blank" rel="noreferrer" aria-label={`View ${plugin.name} source`}><ExternalLink size={14} /></a>
                 {current && !updateAvailable
                   ? <Button variant="secondary" size="sm" icon={Trash2} loading={busyId === plugin.id} disabled={!canInstall} onClick={() => uninstall(plugin)}>Remove</Button>
-                  : <Button size="sm" loading={busyId === plugin.id} disabled={!canInstall || plugin.arcApiVersion !== 1} onClick={() => beginInstall(plugin)}>{current ? 'Update' : 'Install'}</Button>}
+                  : <Button size="sm" loading={busyId === plugin.id} disabled={!canInstall || plugin.arcApiVersion !== 1 || plugin.studioCompatible === false} title={plugin.studioCompatible === false ? `Requires ARC Studio ${plugin.minArcStudioVersion} or newer` : undefined} onClick={() => beginInstall(plugin)}>{current ? 'Update' : 'Install'}</Button>}
               </div>
             </article>;
           })}</div>}
@@ -483,7 +495,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
 
     <Modal isOpen={Boolean(confirmAction)} onClose={() => !busyId && setConfirmAction(null)} title={confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install'} subtitle={confirmAction?.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing'} icon={ShieldCheck}>
       {error && <p className="plugin-store-error">{error}</p>}
-      <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
+      <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span><span>Requires ARC Studio {confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion} or newer</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
       <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : 'The default catalogue is the recommended source, but ARC does not independently audit every publisher. Data packs contain graph data; WebAssembly adapters run in a restricted worker.'}</span></div>
       {confirmationPermissions.length > 0 && <section className="plugin-permission-review" aria-label="Plugin permissions">
         <strong>Permissions for this project</strong>
