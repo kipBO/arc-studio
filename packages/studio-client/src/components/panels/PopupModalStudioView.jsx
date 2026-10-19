@@ -4,7 +4,7 @@ import { ModalNodeBuilder } from '../nodes/ModalNodeBuilder.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { useStudioEscape } from './useStudioEscape.js';
-
+//
 function validateModal(modal) {
   const title = String(modal?.title || '').trim();
   const customId = String(modal?.customId || '').trim();
