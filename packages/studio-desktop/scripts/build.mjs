@@ -19,8 +19,33 @@ const run = (file, args, options = {}) => new Promise((resolve, reject) => {
 try {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
   execFileSync(process.execPath, [path.join(repoRoot, 'scripts', 'sync-version.mjs')], { stdio: 'inherit' });
+  const rootPackage = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  const releaseChannel = ['stable', 'nightly'].includes(process.env.ARC_RELEASE_CHANNEL)
+    ? process.env.ARC_RELEASE_CHANNEL
+    : rootPackage.version.includes('-') ? 'nightly' : 'stable';
+  const expectedUpdateEndpoint = releaseChannel === 'nightly'
+    ? 'https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json'
+    : 'https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json';
+  if (process.env.ARC_UPDATE_ENDPOINT && process.env.ARC_UPDATE_ENDPOINT !== expectedUpdateEndpoint) {
+    throw new Error(`The ${releaseChannel} desktop build must use its matching updater endpoint.`);
+  }
   const tauriArgs = ['build', '--target', target, '--bundles', process.platform === 'darwin' ? 'app' : process.platform === 'win32' ? 'nsis' : 'appimage'];
-  await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target } });
+  const signingConfigured = Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY || process.env.TAURI_SIGNING_PRIVATE_KEY_PATH);
+  const tauriBuildConfig = { bundle: { createUpdaterArtifacts: signingConfigured } };
+  let nightlyIconDirectory = null;
+  if (releaseChannel === 'nightly') {
+    nightlyIconDirectory = path.join(repoRoot, 'packages', 'studio-desktop', 'src-tauri', 'target', 'nightly-icons');
+    execFileSync(process.execPath, [
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'create-nightly-icons.mjs'),
+      path.join(repoRoot, 'packages', 'studio-desktop', 'src-tauri', 'icons'),
+      nightlyIconDirectory
+    ], { stdio: 'inherit' });
+    tauriBuildConfig.bundle.icon = ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico']
+      .map((name) => path.join(nightlyIconDirectory, name));
+  }
+  tauriBuildConfig.plugins = { updater: { endpoints: [expectedUpdateEndpoint] } };
+  tauriArgs.push('--config', JSON.stringify(tauriBuildConfig));
+  await run(command, tauriArgs, { env: { ...process.env, ARC_DESKTOP_TARGET: target, ARC_RELEASE_CHANNEL: releaseChannel } });
   if (process.platform === 'darwin') {
     const config = JSON.parse(fs.readFileSync(path.join('src-tauri', 'tauri.conf.json'), 'utf8'));
     const arch = target === 'universal-apple-darwin' ? 'universal' : target.startsWith('aarch64') ? 'arm64' : 'x64';
@@ -33,7 +58,7 @@ try {
     // resolves the corresponding .icns in Contents/Resources at registration.
     const documentIconName = 'arcproject';
     const documentIconFilename = `${documentIconName}.icns`;
-    const documentIconSource = path.join('src-tauri', 'icons', 'icon.icns');
+    const documentIconSource = nightlyIconDirectory ? path.join(nightlyIconDirectory, 'icon.icns') : path.join('src-tauri', 'icons', 'icon.icns');
     const documentIconDestination = path.join(appPath, 'Contents', 'Resources', documentIconFilename);
     fs.copyFileSync(documentIconSource, documentIconDestination);
     const setPlistString = (key, value) => {
@@ -49,6 +74,12 @@ try {
     const typeIcon = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :UTExportedTypeDeclarations:0:UTTypeIconFile', infoPlist], { encoding: 'utf8' }).trim();
     if (documentIcon !== documentIconName || typeIcon !== documentIconName || !fs.existsSync(documentIconDestination)) {
       throw new Error('The ARC Studio project file icon could not be added to the macOS app bundle.');
+    }
+    if (signingConfigured) {
+      const updateArchive = path.join(path.dirname(appPath), `${appName}.tar.gz`);
+      await run('tar', ['-czf', updateArchive, '-C', path.dirname(appPath), appName]);
+      await run(command, ['signer', 'sign', '--app-version', config.version, updateArchive]);
+      console.log(`Signed macOS updater bundle: ${updateArchive}`);
     }
     const dmgDir = path.join(bundleRoot, 'dmg');
     fs.mkdirSync(dmgDir, { recursive: true });
@@ -122,6 +153,18 @@ try {
     fs.writeFileSync(`${installerPath}.sha256`, `${digest}  ${installer}\n`);
     console.log(`SHA-256 ${installer}: ${digest}`);
   }
+  const buildInfoPath = path.join('src-tauri', 'target', target, 'release', 'bundle', 'arc-build-info.json');
+  const buildInfo = {
+    schemaVersion: 1,
+    version: rootPackage.version,
+    channel: releaseChannel,
+    updaterEndpoint: expectedUpdateEndpoint,
+    target,
+    platform: process.platform,
+    architecture: process.arch
+  };
+  fs.writeFileSync(buildInfoPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
+  console.log(`Wrote build metadata: ${buildInfoPath}`);
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
