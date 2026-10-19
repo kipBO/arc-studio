@@ -4,7 +4,7 @@ import { Modal } from '../ui/Modal.jsx';
 import { Toggle, SelectInput, TextInput } from '../ui/Inputs.jsx';
 import { Button } from '../ui/Button.jsx';
 import { arcEvents } from '../../core/ArcEvents.js';
-import { DEFAULT_SHORTCUTS, formatShortcut, shortcutFromEvent } from '../../core/shortcuts.js';
+import { DEFAULT_SHORTCUTS, formatShortcut, getShortcutReservation, shortcutFromEvent } from '../../core/shortcuts.js';
 import { apiUrl } from '../../core/api.js';
 import studioPackage from '../../../package.json';
 import chezcordPackage from '../../../../chezcord/package.json';
@@ -40,6 +40,7 @@ function openExternal(event) {
 export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
+  const [shortcutCaptureError, setShortcutCaptureError] = useState('');
   const [resetPassword, setResetPassword] = useState('');
   const [resetError, setResetError] = useState('');
   const [resetPending, setResetPending] = useState(false);
@@ -65,18 +66,21 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     const onKeyDown = (event) => {
       event.preventDefault();
       event.stopPropagation();
-      if (event.key === 'Escape') return setRecording(null);
+      if (event.key === 'Escape') { setRecording(null); setShortcutCaptureError(''); return; }
       const binding = shortcutFromEvent(event);
       if (!binding) return;
+      const reservation = getShortcutReservation(binding, platform);
+      if (reservation) { setShortcutCaptureError(reservation); return; }
       update('shortcuts', { ...shortcuts, [recording]: binding });
       setRecording(null);
+      setShortcutCaptureError('');
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [recording, isOpen, settings]);
+  }, [recording, isOpen, settings, platform]);
 
   useEffect(() => {
-    if (!isOpen) setRecording(null);
+    if (!isOpen) { setRecording(null); setShortcutCaptureError(''); }
   }, [isOpen]);
 
   useEffect(() => {
@@ -113,7 +117,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
       <Toggle label="Execution pulse" description="Animate active connections" checked={settings.wirePulse ?? true} onChange={(value) => update('wirePulse', value)} />
       <Toggle label="Magnetic sockets" description="Assist wire placement near pins" checked={settings.magneticSnap ?? true} onChange={(value) => update('magneticSnap', value)} />
-      <Toggle label="Always show socket hints" description="Show a socket’s label and data type whenever you hover it" checked={settings.pinDescriptionsAlways ?? false} onChange={(value) => update('pinDescriptionsAlways', value)} />
+      <Toggle label="Always show socket hints" description="Show the socket’s purpose whenever you hover it" checked={settings.pinDescriptionsAlways ?? false} onChange={(value) => update('pinDescriptionsAlways', value)} />
       <Toggle label="Double-click wires to cut" description="Use a single click to pick up and reroute a wire" checked={settings.doubleClickWireToCut ?? false} onChange={(value) => update('doubleClickWireToCut', value)} />
       <SelectInput label="Connection style" value={settings.wireStyle || 'bezier'} options={[{ value: 'bezier', label: 'Bezier' }, { value: 'straight', label: 'Straight' }]} onChange={(value) => update('wireStyle', value)} />
       <Toggle label="Reduce motion" description="Use shorter transitions and disable decorative animation" checked={settings.reduceMotion ?? false} onChange={(value) => update('reduceMotion', value)} />
@@ -178,7 +182,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
     {activeTab === 'shortcuts' && desktopMode && <div className="settings-section settings-tab-content settings-shortcuts-content">
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
-      <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => setRecording(key)} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : formatShortcut(shortcuts[key], platform)}</button></div>)}</div>
+      <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : formatShortcut(shortcuts[key], platform)}</button></div>)}</div>
+      {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
       <div className="settings-shortcut-row"><span>Close active graph tab</span><kbd>{formatShortcut('mod+w', platform)}</kbd></div>
       <div className="settings-shortcut-row"><span>Connect / disconnect gateway</span><kbd>F5</kbd></div>
       <div className="settings-shortcut-row"><span>Reload ARC Studio</span><kbd>{formatShortcut('mod+shift+r', platform)}</kbd></div>
@@ -215,7 +220,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       </div>
       <section className="settings-about-section" aria-labelledby="about-updates-heading">
         <h3 id="about-updates-heading">Updates{serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</h3>
-        <Toggle label="Check for updates automatically" description="Checks for ARC Studio releases when you’re online." checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
+        <Toggle label="Check for updates automatically" description={desktopMode ? 'Checks for ARC Studio releases when you’re online.' : undefined} checked={settings.autoUpdateChecks !== false} onChange={(value) => update('autoUpdateChecks', value)} />
         {desktopMode && <><div className="settings-about-credit"><strong>Release channel</strong><span>{releaseChannel === 'nightly' ? 'Nightly' : 'Stable'}</span></div>
         <p className="settings-description">{releaseChannel === 'nightly' ? 'Nightly updates ask before downloading and installing.' : 'Stable updates download automatically and apply next launch.'}</p></>}
         {serverUpdate && <a href={serverUpdate.url} target="_blank" rel="noreferrer" onClick={openExternal}><Download size={14} /><span>ARC Studio Server update · v{serverUpdate.version}</span><ExternalLink size={12} /></a>}
@@ -230,7 +235,6 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       </section>
       <section className="settings-about-section" aria-labelledby="about-credits-heading">
         <h3 id="about-credits-heading">Credits</h3>
-        <div className="settings-about-credit"><strong>Termux Labs</strong></div>
         <a href="https://github.com/relentiousdragon" target="_blank" rel="noreferrer" onClick={openExternal}><span className="settings-about-credit-name">@relentiousdragon</span><ExternalLink size={12} /></a>
       </section>
       <section className="settings-about-license">
