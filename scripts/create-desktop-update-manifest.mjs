@@ -36,10 +36,11 @@ function walk(directory) {
 walk(releaseDirectory);
 
 const expectedBuilds = new Map([
-  ['universal-apple-darwin', 'darwin'],
-  ['x86_64-pc-windows-msvc', 'win32'],
-  ['x86_64-unknown-linux-gnu', 'linux'],
-  ['aarch64-unknown-linux-gnu', 'linux']
+  ['universal-apple-darwin', { platform: 'darwin' }],
+  ['x86_64-pc-windows-msvc', { platform: 'win32', architecture: 'x64' }],
+  ['aarch64-pc-windows-msvc', { platform: 'win32', architecture: 'arm64' }],
+  ['x86_64-unknown-linux-gnu', { platform: 'linux', architecture: 'x64' }],
+  ['aarch64-unknown-linux-gnu', { platform: 'linux', architecture: 'arm64' }]
 ]);
 const buildInfoFiles = files.filter((file) => path.basename(file) === 'arc-build-info.json');
 if (buildInfoFiles.length !== expectedBuilds.size) throw new Error(`Expected ${expectedBuilds.size} platform build metadata files; found ${buildInfoFiles.length}.`);
@@ -49,7 +50,8 @@ for (const file of buildInfoFiles) {
   if (info.schemaVersion !== 1 || info.version !== rootPackage.version || info.channel !== channel || info.updaterEndpoint !== expectedUpdaterEndpoint) {
     throw new Error(`${path.basename(path.dirname(file))}/arc-build-info.json does not match release version/channel (${rootPackage.version} · ${channel}).`);
   }
-  if (!expectedBuilds.has(info.target) || expectedBuilds.get(info.target) !== info.platform || seenTargets.has(info.target)) {
+  const expectedBuild = expectedBuilds.get(info.target);
+  if (!expectedBuild || expectedBuild.platform !== info.platform || (expectedBuild.architecture && expectedBuild.architecture !== info.architecture) || seenTargets.has(info.target)) {
     throw new Error(`Unexpected, duplicate, or mismatched desktop build metadata: ${info.target} (${info.platform}).`);
   }
   if (!file.includes(info.target)) throw new Error(`Build metadata for ${info.target} was uploaded with the wrong platform artifact.`);
@@ -89,12 +91,14 @@ const signedArtifact = (artifactPath) => {
 
 const macBundle = artifactFor('universal-apple-darwin', '.app.tar.gz');
 const winBundle = artifactFor('x86_64-pc-windows-msvc', '.exe');
+const winArmBundle = artifactFor('aarch64-pc-windows-msvc', '.exe');
 const linuxX64Bundle = artifactFor('x86_64-unknown-linux-gnu', '.AppImage');
 const linuxArmBundle = artifactFor('aarch64-unknown-linux-gnu', '.AppImage');
 const platforms = {
   'darwin-aarch64': signedArtifact(macBundle),
   'darwin-x86_64': signedArtifact(macBundle),
   'windows-x86_64': signedArtifact(winBundle),
+  'windows-aarch64': signedArtifact(winArmBundle),
   'linux-x86_64': signedArtifact(linuxX64Bundle),
   'linux-aarch64': signedArtifact(linuxArmBundle)
 };
