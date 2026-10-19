@@ -1,0 +1,2194 @@
+{
+  "format": "arc-project",
+  "version": 1,
+  "project": {
+    "name": "Ticket App",
+    "createdWithVersion": "2026.1.1-alpha.6",
+    "starter": {
+      "id": "ticket",
+      "name": "Ticket App",
+      "description": "Open private tickets, manage them with staff commands, and collect feedback.",
+      "icon": "Ticket",
+      "highlights": [
+        "Modal ticket intake with private channel permissions",
+        "Optional staff role access",
+        "Staff claim and rename commands",
+        "Button and slash-command close controls",
+        "Private feedback form routed to a configured channel",
+        "Six rotating bot activities, updated every ten minutes"
+      ],
+      "setup": [
+        "Set support-staff-role-id to your support role ID. Leave it blank if the bot and ticket opener are the only permitted viewers.",
+        "Set support-feedback-channel-id before using /feedback.",
+        "The bot needs Manage Channels, View Channels, Send Messages, Read Message History, and Embed Links.",
+        "Deploy the included slash commands after connecting the bot.",
+        "Edit Bot Presence to change the activity messages and timing."
+      ],
+      "order": 2
+    }
+  },
+  "files": {
+    "graphs.json": {
+      "graphs": [
+        {
+          "id": "support_open",
+          "name": "Slash: /ticket",
+          "description": "Handles /ticket.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_open_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "ticket",
+                "description": "Open a private support request.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_intake_modal_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 360,
+              "data": {
+                "modal": {
+                  "customId": "support_ticket_intake",
+                  "title": "Open a support ticket",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "ticket_subject",
+                      "label": "Short summary",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100,
+                      "placeholder": "What do you need help with?"
+                    },
+                    {
+                      "type": "text",
+                      "customId": "ticket_details",
+                      "label": "Details",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500,
+                      "placeholder": "Include the steps and context the team needs."
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "support_intake_modal_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_open_event_exec_support_intake_modal_show_exec",
+              "sourceNodeId": "support_open_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_intake_modal_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_open_event_interaction_id_support_intake_modal_show_interaction_id",
+              "sourceNodeId": "support_open_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_intake_modal_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_open_event_interaction_token_support_intake_modal_show_interaction_token",
+              "sourceNodeId": "support_open_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_intake_modal_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_intake_modal_builder_modal_support_intake_modal_show_modal",
+              "sourceNodeId": "support_intake_modal_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "support_intake_modal_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "support_panel",
+          "name": "Slash: /ticket-panel",
+          "description": "Handles /ticket-panel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_panel_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "ticket-panel",
+                "description": "Post the support desk entry point.",
+                "options": [],
+                "defaultMemberPermissions": "16"
+              }
+            },
+            {
+              "id": "support_panel_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "Select **Open a ticket** to send a private support request.",
+                "ephemeral": false
+              }
+            },
+            {
+              "id": "support_panel_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "support_panel_embed_title",
+                    "type": "title",
+                    "value": "Support desk"
+                  },
+                  {
+                    "id": "support_panel_embed_description",
+                    "type": "description",
+                    "value": "Open one private ticket for each issue. Include the relevant steps and context so the team can help."
+                  },
+                  {
+                    "id": "support_panel_embed_color",
+                    "type": "color",
+                    "value": "#168A78"
+                  }
+                ],
+                "components": [
+                  {
+                    "components": [
+                      {
+                        "type": "button",
+                        "style": "primary",
+                        "label": "Open a ticket",
+                        "customId": "support_ticket_open"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_panel_event_exec_support_panel_reply_exec",
+              "sourceNodeId": "support_panel_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_panel_event_application_id_support_panel_reply_application_id",
+              "sourceNodeId": "support_panel_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_panel_event_interaction_id_support_panel_reply_interaction_id",
+              "sourceNodeId": "support_panel_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_panel_event_interaction_token_support_panel_reply_interaction_token",
+              "sourceNodeId": "support_panel_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_panel_embed_embed_support_panel_reply_embed",
+              "sourceNodeId": "support_panel_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "embed"
+            },
+            {
+              "id": "support_panel_embed_components_support_panel_reply_components",
+              "sourceNodeId": "support_panel_embed",
+              "sourcePinId": "components",
+              "targetNodeId": "support_panel_reply",
+              "targetPinId": "components"
+            }
+          ]
+        },
+        {
+          "id": "support_open_button",
+          "name": "On Button Click · Open Ticket",
+          "description": "Opens the private support ticket form.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_open_button_event",
+              "type": "event_button_click",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_open_button_compare",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "support_ticket_open",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "support_open_button_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_open_button_modal",
+              "type": "build_modal",
+              "x": 620,
+              "y": 400,
+              "data": {
+                "modal": {
+                  "customId": "support_ticket_intake",
+                  "title": "Open a support ticket",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "ticket_subject",
+                      "label": "Short summary",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100,
+                      "placeholder": "What do you need help with?"
+                    },
+                    {
+                      "type": "text",
+                      "customId": "ticket_details",
+                      "label": "Details",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500,
+                      "placeholder": "Include steps and context."
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "support_open_button_show",
+              "type": "action_show_modal",
+              "x": 920,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_open_button_event_exec_support_open_button_branch_exec",
+              "sourceNodeId": "support_open_button_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_open_button_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_open_button_event_custom_id_support_open_button_compare_text_a",
+              "sourceNodeId": "support_open_button_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "support_open_button_compare",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "support_open_button_compare_result_support_open_button_branch_condition",
+              "sourceNodeId": "support_open_button_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "support_open_button_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "support_open_button_branch_true_exec_support_open_button_show_exec",
+              "sourceNodeId": "support_open_button_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "support_open_button_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_open_button_event_interaction_id_support_open_button_show_interaction_id",
+              "sourceNodeId": "support_open_button_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_open_button_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_open_button_event_interaction_token_support_open_button_show_interaction_token",
+              "sourceNodeId": "support_open_button_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_open_button_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_open_button_modal_modal_support_open_button_show_modal",
+              "sourceNodeId": "support_open_button_modal",
+              "sourcePinId": "modal",
+              "targetNodeId": "support_open_button_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "support_ticket_submit",
+          "name": "On Ticket Form Submitted",
+          "description": "Creates a private channel, posts the request, and returns its link.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_submit_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 380,
+              "data": {
+                "text_b": "support_ticket_intake",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "support_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_get_subject",
+              "type": "data_get_modal_value",
+              "x": 900,
+              "y": 430,
+              "data": {
+                "custom_id": "ticket_subject"
+              }
+            },
+            {
+              "id": "support_get_details",
+              "type": "data_get_modal_value",
+              "x": 900,
+              "y": 590,
+              "data": {
+                "custom_id": "ticket_details"
+              }
+            },
+            {
+              "id": "support_get_staff_role",
+              "type": "variable_get",
+              "x": 900,
+              "y": 760,
+              "data": {
+                "variableId": "project_var_support_staff_role_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "support_channel_name",
+              "type": "format_text",
+              "x": 1210,
+              "y": 740,
+              "data": {
+                "template": "ticket-{{arg1}}"
+              }
+            },
+            {
+              "id": "support_channel_topic",
+              "type": "format_text",
+              "x": 1210,
+              "y": 900,
+              "data": {
+                "template": "Opened by <@{{arg1}}> · {{arg2}}"
+              }
+            },
+            {
+              "id": "support_permissions",
+              "type": "data_permission_overwrites",
+              "x": 1210,
+              "y": 360,
+              "data": {
+                "overwriteCount": 4,
+                "target_type_1": 0,
+                "deny_1": [
+                  "ViewChannel"
+                ],
+                "target_type_2": 1,
+                "allow_2": [
+                  "ViewChannel",
+                  "SendMessages",
+                  "ReadMessageHistory",
+                  "AttachFiles",
+                  "EmbedLinks"
+                ],
+                "target_type_3": 1,
+                "allow_3": [
+                  "ViewChannel",
+                  "SendMessages",
+                  "ReadMessageHistory",
+                  "AttachFiles",
+                  "EmbedLinks"
+                ],
+                "target_type_4": 0,
+                "allow_4": [
+                  "ViewChannel",
+                  "SendMessages",
+                  "ReadMessageHistory",
+                  "AttachFiles",
+                  "EmbedLinks"
+                ]
+              }
+            },
+            {
+              "id": "support_create_channel",
+              "type": "action_create_channel",
+              "x": 1540,
+              "y": 120,
+              "data": {
+                "channel_type": "text",
+                "reason": "Support request opened from the ticket form."
+              }
+            },
+            {
+              "id": "support_welcome",
+              "type": "format_text",
+              "x": 1540,
+              "y": 520,
+              "data": {
+                "template": "New request from <@{{arg1}}>\n**{{arg2}}**\n\n{{arg3}}\n\nUse `/claim` to take ownership and `/close` when this request is finished."
+              }
+            },
+            {
+              "id": "support_post_request",
+              "type": "action_send_message",
+              "x": 1870,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_done",
+              "type": "action_edit_interaction_reply",
+              "x": 2200,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_reply_link",
+              "type": "format_text",
+              "x": 1870,
+              "y": 450,
+              "data": {
+                "template": "Your private ticket is ready: <#{{arg1}}>"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_submit_event_exec_support_submit_filter_branch_exec",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_submit_event_custom_id_support_submit_filter_text_a",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "support_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "support_submit_filter_result_support_submit_filter_branch_condition",
+              "sourceNodeId": "support_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "support_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "support_submit_filter_branch_true_exec_support_submit_defer_exec",
+              "sourceNodeId": "support_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "support_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_submit_event_interaction_id_support_submit_defer_interaction_id",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_submit_event_interaction_token_support_submit_defer_interaction_token",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_submit_event_user_id_support_channel_name_arg_1",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_channel_name",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_channel_name_text_support_create_channel_name",
+              "sourceNodeId": "support_channel_name",
+              "sourcePinId": "text",
+              "targetNodeId": "support_create_channel",
+              "targetPinId": "name"
+            },
+            {
+              "id": "support_get_subject_value_support_channel_topic_arg_2",
+              "sourceNodeId": "support_get_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "support_channel_topic",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "support_submit_event_user_id_support_channel_topic_arg_1",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_channel_topic",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_channel_topic_text_support_create_channel_topic",
+              "sourceNodeId": "support_channel_topic",
+              "sourcePinId": "text",
+              "targetNodeId": "support_create_channel",
+              "targetPinId": "topic"
+            },
+            {
+              "id": "support_submit_event_guild_id_support_create_channel_guild_id",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "support_create_channel",
+              "targetPinId": "guild_id"
+            },
+            {
+              "id": "support_submit_event_guild_id_support_permissions_target_id_1",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "guild_id",
+              "targetNodeId": "support_permissions",
+              "targetPinId": "target_id_1"
+            },
+            {
+              "id": "support_submit_event_user_id_support_permissions_target_id_2",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_permissions",
+              "targetPinId": "target_id_2"
+            },
+            {
+              "id": "support_submit_event_application_id_support_permissions_target_id_3",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_permissions",
+              "targetPinId": "target_id_3"
+            },
+            {
+              "id": "support_get_staff_role_value_support_permissions_target_id_4",
+              "sourceNodeId": "support_get_staff_role",
+              "sourcePinId": "value",
+              "targetNodeId": "support_permissions",
+              "targetPinId": "target_id_4"
+            },
+            {
+              "id": "support_permissions_overwrites_support_create_channel_permission_overwrites",
+              "sourceNodeId": "support_permissions",
+              "sourcePinId": "overwrites",
+              "targetNodeId": "support_create_channel",
+              "targetPinId": "permission_overwrites"
+            },
+            {
+              "id": "support_submit_defer_exec_support_create_channel_exec",
+              "sourceNodeId": "support_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_create_channel",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_submit_event_user_id_support_welcome_arg_1",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_welcome",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_get_subject_value_support_welcome_arg_2",
+              "sourceNodeId": "support_get_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "support_welcome",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "support_get_details_value_support_welcome_arg_3",
+              "sourceNodeId": "support_get_details",
+              "sourcePinId": "value",
+              "targetNodeId": "support_welcome",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "support_welcome_text_support_post_request_content",
+              "sourceNodeId": "support_welcome",
+              "sourcePinId": "text",
+              "targetNodeId": "support_post_request",
+              "targetPinId": "content"
+            },
+            {
+              "id": "support_create_channel_channel_id_support_post_request_channel_id",
+              "sourceNodeId": "support_create_channel",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_post_request",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "support_create_channel_exec_support_post_request_exec",
+              "sourceNodeId": "support_create_channel",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_post_request",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_create_channel_channel_id_support_reply_link_arg_1",
+              "sourceNodeId": "support_create_channel",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_reply_link",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_reply_link_text_support_done_content",
+              "sourceNodeId": "support_reply_link",
+              "sourcePinId": "text",
+              "targetNodeId": "support_done",
+              "targetPinId": "content"
+            },
+            {
+              "id": "support_post_request_exec_support_done_exec",
+              "sourceNodeId": "support_post_request",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_submit_event_application_id_support_done_application_id",
+              "sourceNodeId": "support_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_submit_defer_interaction_token_support_done_interaction_token",
+              "sourceNodeId": "support_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "support_close_button",
+          "name": "On Button Click · Close Ticket",
+          "description": "Closes the channel where the ticket control was clicked.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_close_event",
+              "type": "event_button_click",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_close_compare",
+              "type": "compare_text",
+              "x": 330,
+              "y": 350,
+              "data": {
+                "text_b": "support_ticket_close",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "support_close_branch",
+              "type": "branch_if",
+              "x": 600,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_close_defer",
+              "type": "action_defer_reply",
+              "x": 850,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_close_channel",
+              "type": "action_delete_channel",
+              "x": 1150,
+              "y": 120,
+              "data": {
+                "reason": "Ticket closed by its user or staff."
+              }
+            },
+            {
+              "id": "support_close_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1480,
+              "y": 120,
+              "data": {
+                "content": "Ticket closed."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_close_event_exec_support_close_branch_exec",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_event_custom_id_support_close_compare_text_a",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "support_close_compare",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "support_close_compare_result_support_close_branch_condition",
+              "sourceNodeId": "support_close_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "support_close_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "support_close_branch_true_exec_support_close_defer_exec",
+              "sourceNodeId": "support_close_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "support_close_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_event_interaction_id_support_close_defer_interaction_id",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_close_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_close_event_interaction_token_support_close_defer_interaction_token",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_close_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_close_defer_exec_support_close_channel_exec",
+              "sourceNodeId": "support_close_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_channel",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_event_channel_id_support_close_channel_channel_id",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_close_channel",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "support_close_channel_exec_support_close_done_exec",
+              "sourceNodeId": "support_close_channel",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_event_application_id_support_close_done_application_id",
+              "sourceNodeId": "support_close_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_close_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_close_defer_interaction_token_support_close_done_interaction_token",
+              "sourceNodeId": "support_close_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_close_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "support_claim",
+          "name": "Slash: /claim",
+          "description": "Claims the current ticket by recording the moderator in its channel topic.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_claim_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "claim",
+                "description": "Claim this ticket for staff follow-up.",
+                "defaultMemberPermissions": "16"
+              }
+            },
+            {
+              "id": "support_claim_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_claim_format",
+              "type": "format_text",
+              "x": 350,
+              "y": 400,
+              "data": {
+                "template": "Claimed by {{arg1}} · <@{{arg2}}>"
+              }
+            },
+            {
+              "id": "support_claim_edit",
+              "type": "action_edit_channel",
+              "x": 700,
+              "y": 120,
+              "data": {
+                "reason": "Ticket claimed by a moderator."
+              }
+            },
+            {
+              "id": "support_claim_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1050,
+              "y": 120,
+              "data": {
+                "content": "Ticket claimed."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_claim_event_exec_support_claim_defer_exec",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_claim_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_claim_event_interaction_id_support_claim_defer_interaction_id",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_claim_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_claim_event_interaction_token_support_claim_defer_interaction_token",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_claim_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_claim_defer_exec_support_claim_edit_exec",
+              "sourceNodeId": "support_claim_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_claim_edit",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_claim_event_channel_id_support_claim_edit_channel_id",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_claim_edit",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "support_claim_event_username_support_claim_format_arg_1",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "username",
+              "targetNodeId": "support_claim_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_claim_event_user_id_support_claim_format_arg_2",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_claim_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "support_claim_format_text_support_claim_edit_topic",
+              "sourceNodeId": "support_claim_format",
+              "sourcePinId": "text",
+              "targetNodeId": "support_claim_edit",
+              "targetPinId": "topic"
+            },
+            {
+              "id": "support_claim_edit_exec_support_claim_done_exec",
+              "sourceNodeId": "support_claim_edit",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_claim_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_claim_event_application_id_support_claim_done_application_id",
+              "sourceNodeId": "support_claim_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_claim_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_claim_defer_interaction_token_support_claim_done_interaction_token",
+              "sourceNodeId": "support_claim_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_claim_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "support_rename",
+          "name": "Slash: /rename-ticket",
+          "description": "Renames the current ticket channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_rename_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "rename-ticket",
+                "description": "Set a short name for this ticket.",
+                "defaultMemberPermissions": "16",
+                "options": [
+                  {
+                    "name": "name",
+                    "description": "New ticket channel name.",
+                    "type": 3,
+                    "required": true,
+                    "min_length": 3,
+                    "max_length": 90
+                  }
+                ]
+              }
+            },
+            {
+              "id": "support_rename_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_rename_edit",
+              "type": "action_edit_channel",
+              "x": 680,
+              "y": 120,
+              "data": {
+                "reason": "Ticket renamed by staff."
+              }
+            },
+            {
+              "id": "support_rename_done",
+              "type": "action_edit_interaction_reply",
+              "x": 1000,
+              "y": 120,
+              "data": {
+                "content": "Ticket channel renamed."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_rename_event_exec_support_rename_defer_exec",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_rename_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_rename_event_interaction_id_support_rename_defer_interaction_id",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_rename_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_rename_event_interaction_token_support_rename_defer_interaction_token",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_rename_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_rename_defer_exec_support_rename_edit_exec",
+              "sourceNodeId": "support_rename_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_rename_edit",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_rename_event_channel_id_support_rename_edit_channel_id",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_rename_edit",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "support_rename_event_option_name_support_rename_edit_name",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "option_name",
+              "targetNodeId": "support_rename_edit",
+              "targetPinId": "name"
+            },
+            {
+              "id": "support_rename_edit_exec_support_rename_done_exec",
+              "sourceNodeId": "support_rename_edit",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_rename_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_rename_event_application_id_support_rename_done_application_id",
+              "sourceNodeId": "support_rename_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_rename_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_rename_defer_interaction_token_support_rename_done_interaction_token",
+              "sourceNodeId": "support_rename_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_rename_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "support_close_command",
+          "name": "Slash: /close",
+          "description": "Closes the current ticket channel. Requires Manage Channels.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_close_cmd_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "close",
+                "description": "Close and delete this ticket channel.",
+                "defaultMemberPermissions": "16"
+              }
+            },
+            {
+              "id": "support_close_cmd_defer",
+              "type": "action_defer_reply",
+              "x": 350,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_close_cmd_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 680,
+              "y": 120,
+              "data": {
+                "content": "Closing this ticket channel."
+              }
+            },
+            {
+              "id": "support_close_cmd_delete",
+              "type": "action_delete_channel",
+              "x": 1000,
+              "y": 120,
+              "data": {
+                "reason": "Ticket closed by staff."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_close_cmd_event_exec_support_close_cmd_defer_exec",
+              "sourceNodeId": "support_close_cmd_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_cmd_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_cmd_event_interaction_id_support_close_cmd_defer_interaction_id",
+              "sourceNodeId": "support_close_cmd_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_close_cmd_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_close_cmd_event_interaction_token_support_close_cmd_defer_interaction_token",
+              "sourceNodeId": "support_close_cmd_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_close_cmd_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_close_cmd_defer_exec_support_close_cmd_reply_exec",
+              "sourceNodeId": "support_close_cmd_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_cmd_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_cmd_event_application_id_support_close_cmd_reply_application_id",
+              "sourceNodeId": "support_close_cmd_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_close_cmd_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_close_cmd_defer_interaction_token_support_close_cmd_reply_interaction_token",
+              "sourceNodeId": "support_close_cmd_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_close_cmd_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_close_cmd_reply_exec_support_close_cmd_delete_exec",
+              "sourceNodeId": "support_close_cmd_reply",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_close_cmd_delete",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_close_cmd_event_channel_id_support_close_cmd_delete_channel_id",
+              "sourceNodeId": "support_close_cmd_event",
+              "sourcePinId": "channel_id",
+              "targetNodeId": "support_close_cmd_delete",
+              "targetPinId": "channel_id"
+            }
+          ]
+        },
+        {
+          "id": "support_help",
+          "name": "Slash: /ticket-help",
+          "description": "Handles /ticket-help.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_help_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "ticket-help",
+                "description": "Show ticket actions and instructions.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_help_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_help_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "support_help_embed_title",
+                    "type": "title",
+                    "value": "Ticket workflow"
+                  },
+                  {
+                    "id": "support_help_embed_description",
+                    "type": "description",
+                    "value": "**Open:** use /ticket or the support panel.\n**Work:** staff can use /claim and /rename-ticket.\n**Finish:** use the Close ticket button or /close.\nKeep passwords, recovery codes, and other secrets out of ticket messages."
+                  },
+                  {
+                    "id": "support_help_embed_color",
+                    "type": "color",
+                    "value": "#168A78"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_help_event_exec_support_help_reply_exec",
+              "sourceNodeId": "support_help_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_help_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_help_event_application_id_support_help_reply_application_id",
+              "sourceNodeId": "support_help_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_help_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_help_event_interaction_id_support_help_reply_interaction_id",
+              "sourceNodeId": "support_help_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_help_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_help_event_interaction_token_support_help_reply_interaction_token",
+              "sourceNodeId": "support_help_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_help_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_help_embed_embed_support_help_reply_embed",
+              "sourceNodeId": "support_help_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "support_help_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "support_faq",
+          "name": "Slash: /faq",
+          "description": "Handles /faq.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_faq_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "faq",
+                "description": "Show common support answers.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_faq_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_faq_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "support_faq_embed_title",
+                    "type": "title",
+                    "value": "Support FAQ"
+                  },
+                  {
+                    "id": "support_faq_embed_description",
+                    "type": "description",
+                    "value": "**Account access:** use Discord’s official recovery steps.\n**Billing or account data:** never post payment details or passwords in a ticket.\n**Bug reports:** include what you expected, what happened, and the steps to reproduce it.\n**Urgent safety issue:** use /report to contact the moderation team."
+                  },
+                  {
+                    "id": "support_faq_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "support_faq_embed_footer",
+                    "type": "footer",
+                    "value": "Staff will reply in your private ticket."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_faq_event_exec_support_faq_reply_exec",
+              "sourceNodeId": "support_faq_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_faq_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_faq_event_application_id_support_faq_reply_application_id",
+              "sourceNodeId": "support_faq_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_faq_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_faq_event_interaction_id_support_faq_reply_interaction_id",
+              "sourceNodeId": "support_faq_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_faq_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_faq_event_interaction_token_support_faq_reply_interaction_token",
+              "sourceNodeId": "support_faq_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_faq_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_faq_embed_embed_support_faq_reply_embed",
+              "sourceNodeId": "support_faq_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "support_faq_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "support_hours",
+          "name": "Slash: /support-hours",
+          "description": "Handles /support-hours.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_hours_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "support-hours",
+                "description": "Explain how the support queue works.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_hours_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_hours_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "support_hours_embed_title",
+                    "type": "title",
+                    "value": "Support availability"
+                  },
+                  {
+                    "id": "support_hours_embed_description",
+                    "type": "description",
+                    "value": "The team reviews new tickets when moderators are available. Leave the relevant details in your ticket so someone can follow up. The bot keeps the ticket channel private to you, the bot, and the configured staff role."
+                  },
+                  {
+                    "id": "support_hours_embed_color",
+                    "type": "color",
+                    "value": "#168A78"
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_hours_event_exec_support_hours_reply_exec",
+              "sourceNodeId": "support_hours_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_hours_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_hours_event_application_id_support_hours_reply_application_id",
+              "sourceNodeId": "support_hours_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_hours_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_hours_event_interaction_id_support_hours_reply_interaction_id",
+              "sourceNodeId": "support_hours_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_hours_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_hours_event_interaction_token_support_hours_reply_interaction_token",
+              "sourceNodeId": "support_hours_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_hours_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_hours_embed_embed_support_hours_reply_embed",
+              "sourceNodeId": "support_hours_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "support_hours_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "support_policy",
+          "name": "Slash: /ticket-policy",
+          "description": "Handles /ticket-policy.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_policy_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "ticket-policy",
+                "description": "Show support and privacy guidance.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_policy_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_policy_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 360,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "support_policy_embed_title",
+                    "type": "title",
+                    "value": "Ticket privacy and conduct"
+                  },
+                  {
+                    "id": "support_policy_embed_description",
+                    "type": "description",
+                    "value": "Tickets are private support channels. Do not submit passwords, authentication codes, payment information, or another person’s private data. Keep one issue per ticket and close it when the team has resolved it."
+                  },
+                  {
+                    "id": "support_policy_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "support_policy_embed_footer",
+                    "type": "footer",
+                    "value": "Staff access depends on the configured support role."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_policy_event_exec_support_policy_reply_exec",
+              "sourceNodeId": "support_policy_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_policy_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_policy_event_application_id_support_policy_reply_application_id",
+              "sourceNodeId": "support_policy_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_policy_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_policy_event_interaction_id_support_policy_reply_interaction_id",
+              "sourceNodeId": "support_policy_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_policy_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_policy_event_interaction_token_support_policy_reply_interaction_token",
+              "sourceNodeId": "support_policy_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_policy_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_policy_embed_embed_support_policy_reply_embed",
+              "sourceNodeId": "support_policy_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "support_policy_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "support_feedback",
+          "name": "Slash: /feedback",
+          "description": "Handles /feedback.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_feedback_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "feedback",
+                "description": "Send private feedback about support.",
+                "options": []
+              }
+            },
+            {
+              "id": "support_feedback_builder_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 360,
+              "data": {
+                "modal": {
+                  "customId": "support_feedback_form",
+                  "title": "Support feedback",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "support_feedback_subject",
+                      "label": "Subject",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "support_feedback_details",
+                      "label": "Feedback",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "support_feedback_builder_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_feedback_event_exec_support_feedback_builder_show_exec",
+              "sourceNodeId": "support_feedback_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_feedback_builder_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_feedback_event_interaction_id_support_feedback_builder_show_interaction_id",
+              "sourceNodeId": "support_feedback_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_feedback_builder_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_feedback_event_interaction_token_support_feedback_builder_show_interaction_token",
+              "sourceNodeId": "support_feedback_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_feedback_builder_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_feedback_builder_builder_modal_support_feedback_builder_show_modal",
+              "sourceNodeId": "support_feedback_builder_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "support_feedback_builder_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "support_feedback_submit",
+          "name": "On Support Feedback Submitted",
+          "description": "Routes support feedback to the configured feedback channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "support_fb_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_fb_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "support_feedback_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "support_fb_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_fb_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "support_fb_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 380,
+              "data": {
+                "variableId": "project_var_support_feedback_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "support_fb_check",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 380,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "support_fb_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_fb_missing",
+              "type": "action_edit_interaction_reply",
+              "x": 1760,
+              "y": 420,
+              "data": {
+                "content": "Feedback is not configured yet. Set support-feedback-channel-id in Project Variables."
+              }
+            },
+            {
+              "id": "support_fb_subject",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 620,
+              "data": {
+                "custom_id": "support_feedback_subject"
+              }
+            },
+            {
+              "id": "support_fb_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 760,
+              "data": {
+                "custom_id": "support_feedback_details"
+              }
+            },
+            {
+              "id": "support_fb_format",
+              "type": "format_text",
+              "x": 1450,
+              "y": 720,
+              "data": {
+                "template": "**Support feedback** from <@{{arg1}}>\n**{{arg2}}**\n{{arg3}}"
+              }
+            },
+            {
+              "id": "support_fb_send",
+              "type": "action_send_message",
+              "x": 1760,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "support_fb_done",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Thank you. Your feedback was sent to the support team."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "support_fb_event_exec_support_fb_filter_branch_exec",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_fb_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_event_custom_id_support_fb_filter_text_a",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "support_fb_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "support_fb_filter_result_support_fb_filter_branch_condition",
+              "sourceNodeId": "support_fb_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "support_fb_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "support_fb_filter_branch_true_exec_support_fb_defer_exec",
+              "sourceNodeId": "support_fb_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "support_fb_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_event_interaction_id_support_fb_defer_interaction_id",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "support_fb_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "support_fb_event_interaction_token_support_fb_defer_interaction_token",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_fb_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_fb_defer_exec_support_fb_branch_exec",
+              "sourceNodeId": "support_fb_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_fb_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_channel_value_support_fb_check_text_a",
+              "sourceNodeId": "support_fb_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "support_fb_check",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "support_fb_check_result_support_fb_branch_condition",
+              "sourceNodeId": "support_fb_check",
+              "sourcePinId": "result",
+              "targetNodeId": "support_fb_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "support_fb_branch_true_exec_support_fb_missing_exec",
+              "sourceNodeId": "support_fb_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "support_fb_missing",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_event_application_id_support_fb_missing_application_id",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_fb_missing",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_fb_defer_interaction_token_support_fb_missing_interaction_token",
+              "sourceNodeId": "support_fb_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_fb_missing",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "support_fb_event_submitted_values_support_fb_subject_submitted_values",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "support_fb_subject",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "support_fb_event_submitted_values_support_fb_details_submitted_values",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "support_fb_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "support_fb_event_user_id_support_fb_format_arg_1",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "support_fb_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "support_fb_subject_value_support_fb_format_arg_2",
+              "sourceNodeId": "support_fb_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "support_fb_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "support_fb_details_value_support_fb_format_arg_3",
+              "sourceNodeId": "support_fb_details",
+              "sourcePinId": "value",
+              "targetNodeId": "support_fb_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "support_fb_format_text_support_fb_send_content",
+              "sourceNodeId": "support_fb_format",
+              "sourcePinId": "text",
+              "targetNodeId": "support_fb_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "support_fb_channel_value_support_fb_send_channel_id",
+              "sourceNodeId": "support_fb_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "support_fb_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "support_fb_branch_false_exec_support_fb_send_exec",
+              "sourceNodeId": "support_fb_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "support_fb_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_send_exec_support_fb_done_exec",
+              "sourceNodeId": "support_fb_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "support_fb_done",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "support_fb_event_application_id_support_fb_done_application_id",
+              "sourceNodeId": "support_fb_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "support_fb_done",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "support_fb_defer_interaction_token_support_fb_done_interaction_token",
+              "sourceNodeId": "support_fb_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "support_fb_done",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "ticket_presence_rotation",
+          "name": "Bot Presence",
+          "description": "Changes activity every ten minutes.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "ticket_presence_schedule_1",
+              "type": "event_cron",
+              "x": 60,
+              "y": 80,
+              "data": {
+                "cronExpression": "0 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_1",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 80,
+              "data": {
+                "status": "online",
+                "activity_text": "Support is here",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "ticket_presence_schedule_2",
+              "type": "event_cron",
+              "x": 60,
+              "y": 260,
+              "data": {
+                "cronExpression": "10 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_2",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 260,
+              "data": {
+                "status": "online",
+                "activity_text": "The ticket queue",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "ticket_presence_schedule_3",
+              "type": "event_cron",
+              "x": 60,
+              "y": 440,
+              "data": {
+                "cronExpression": "20 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_3",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 440,
+              "data": {
+                "status": "online",
+                "activity_text": "Member requests",
+                "activity_type": 2
+              }
+            },
+            {
+              "id": "ticket_presence_schedule_4",
+              "type": "event_cron",
+              "x": 60,
+              "y": 620,
+              "data": {
+                "cronExpression": "30 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_4",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 620,
+              "data": {
+                "status": "online",
+                "activity_text": "Fast responses",
+                "activity_type": 5
+              }
+            },
+            {
+              "id": "ticket_presence_schedule_5",
+              "type": "event_cron",
+              "x": 60,
+              "y": 800,
+              "data": {
+                "cronExpression": "40 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_5",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 800,
+              "data": {
+                "status": "online",
+                "activity_text": "Helping members",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "ticket_presence_schedule_6",
+              "type": "event_cron",
+              "x": 60,
+              "y": 980,
+              "data": {
+                "cronExpression": "50 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "ticket_presence_activity_6",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 980,
+              "data": {
+                "status": "online",
+                "activity_text": "Support tickets",
+                "activity_type": 3
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "ticket_presence_schedule_1_exec_ticket_presence_activity_1_exec",
+              "sourceNodeId": "ticket_presence_schedule_1",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "ticket_presence_schedule_2_exec_ticket_presence_activity_2_exec",
+              "sourceNodeId": "ticket_presence_schedule_2",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "ticket_presence_schedule_3_exec_ticket_presence_activity_3_exec",
+              "sourceNodeId": "ticket_presence_schedule_3",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "ticket_presence_schedule_4_exec_ticket_presence_activity_4_exec",
+              "sourceNodeId": "ticket_presence_schedule_4",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "ticket_presence_schedule_5_exec_ticket_presence_activity_5_exec",
+              "sourceNodeId": "ticket_presence_schedule_5",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_5",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "ticket_presence_schedule_6_exec_ticket_presence_activity_6_exec",
+              "sourceNodeId": "ticket_presence_schedule_6",
+              "sourcePinId": "exec",
+              "targetNodeId": "ticket_presence_activity_6",
+              "targetPinId": "exec"
+            }
+          ]
+        }
+      ],
+      "deletedIds": []
+    },
+    "graph-library.json": {
+      "defaultGraphId": "support_open",
+      "templates": [],
+      "snapshots": []
+    },
+    "bot-config.json": {},
+    "statistics.json": {},
+    "embeds.json": [],
+    "project-variables.json": [
+      {
+        "id": "project_var_support_staff_role_id",
+        "name": "support-staff-role-id",
+        "type": "string",
+        "initialValue": ""
+      },
+      {
+        "id": "project_var_support_feedback_channel_id",
+        "name": "support-feedback-channel-id",
+        "type": "string",
+        "initialValue": ""
+      }
+    ]
+  }
+}
