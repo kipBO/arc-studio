@@ -110,6 +110,7 @@ export function EmbedStudioView({
   componentsSourceLabel = '',
   appEmojis = [],
   graphVariables = [],
+  templateSuggestions = [],
   botProfile = null,
   botStatus = 'DISCONNECTED',
   theme = 'dark',
@@ -478,6 +479,7 @@ export function EmbedStudioView({
                 wiredFields={wiredFields}
                 appEmojis={appEmojis}
                 graphVariables={graphVariables}
+                templateSuggestions={templateSuggestions}
                 onChange={onBlocksChange}
                 onOpenTextStudio={onOpenTextStudio}
                 validation={validation}
