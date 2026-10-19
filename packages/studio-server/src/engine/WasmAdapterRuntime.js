@@ -28,7 +28,7 @@ const decode = (memory, pointer, length) => new TextDecoder('utf-8', { fatal: tr
   parentPort.postMessage(output);
 })().catch((error) => parentPort.postMessage({ __arcError: String(error?.message || error).slice(0, 500) }));
 `;
-
+//
 function readLeb(bytes, cursor) {
   let value = 0;
   let shift = 0;
