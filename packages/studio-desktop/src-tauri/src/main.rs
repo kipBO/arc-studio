@@ -472,6 +472,7 @@ fn is_arc_project_path(path: &Path) -> bool {
     path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| extension.eq_ignore_ascii_case("arcproject"))
 }
 
+#[cfg(target_os = "macos")]
 fn notify_project_file_opened<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
     if !is_arc_project_path(path) { return; }
     let Some(window) = app.get_webview_window("main") else { return; };
