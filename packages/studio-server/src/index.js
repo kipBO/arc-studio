@@ -324,7 +324,7 @@ wss.on('connection', (ws) => {
           }
           if (kind === 'node-edit' && typeof action.nodeId === 'string') cleanAction.nodeId = action.nodeId.slice(0, 100);
         } else if (kind === 'studio-draft') {
-          if (typeof action.studioId !== 'string' || action.studioId.length > 240 || !['embed', 'text'].includes(action.studioType) || !action.draft || typeof action.draft !== 'object' || Array.isArray(action.draft)) return;
+          if (typeof action.studioId !== 'string' || action.studioId.length > 240 || !['embed', 'text', 'arguments'].includes(action.studioType) || !action.draft || typeof action.draft !== 'object' || Array.isArray(action.draft)) return;
           let serialized;
           try { serialized = JSON.stringify(action.draft); } catch { return; }
           if (serialized.length > 300_000) return;
@@ -334,7 +334,7 @@ wss.on('connection', (ws) => {
           if (typeof action.studioId !== 'string' || action.studioId.length > 240 || !Number.isInteger(action.caret) || action.caret < 0 || action.caret > 1_000_000) return;
           cleanAction = { kind, studioId: action.studioId, caret: action.caret };
         } else if (kind === 'studio-focus') {
-          if (typeof action.studioId !== 'string' || action.studioId.length > 240 || !['embed', 'text'].includes(action.studioType)) return;
+          if (typeof action.studioId !== 'string' || action.studioId.length > 240 || !['embed', 'text', 'arguments'].includes(action.studioType)) return;
           cleanAction = { kind, studioId: action.studioId, studioType: action.studioType, label: typeof action.label === 'string' ? action.label.slice(0, 80) : '' };
         } else if (kind === 'node-edit') {
           if (typeof action.nodeId !== 'string' || action.nodeId.length > 100) return;
