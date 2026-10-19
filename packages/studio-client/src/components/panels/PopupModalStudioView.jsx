@@ -1,5 +1,5 @@
-import React, { useRef, useState } from 'react';
-import { ArrowLeft, Check, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Check, Moon, Sun, X } from 'lucide-react';
 import { ModalNodeBuilder } from '../nodes/ModalNodeBuilder.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -14,13 +14,39 @@ function validateModal(modal) {
   if (fields.length < 1 || fields.length > 5) return 'A modal must contain 1–5 fields.';
   const ids = new Set();
   for (const [index, field] of fields.entries()) {
+    const type = field.type || 'text';
     const fieldId = String(field.customId || '').trim();
     const label = String(field.label || '').trim();
     if (!fieldId || fieldId.length > 100) return `Enter a custom ID for field ${index + 1} (100 characters maximum).`;
     if (ids.has(fieldId)) return `Field custom ID “${fieldId}” is used more than once.`;
     ids.add(fieldId);
     if (!label || label.length > 45) return `Enter a label for field ${index + 1} (45 characters maximum).`;
-    if (field.type === 'string_select' && !(field.options || []).length) return `Add at least one option to field ${index + 1}.`;
+    if (String(field.description || '').length > 100) return `Field ${index + 1} description must be 100 characters or fewer.`;
+    const placeholderLimit = type === 'text' ? 100 : ['string_select', 'user_select', 'role_select', 'mentionable_select', 'channel_select'].includes(type) ? 150 : 0;
+    if (String(field.placeholder || '').length > placeholderLimit && placeholderLimit) return `Field ${index + 1} placeholder must be ${placeholderLimit} characters or fewer.`;
+    if (type === 'text') {
+      const maximum = Number(field.maxLength ?? 4000);
+      const minimum = Number(field.minLength ?? 0);
+      if (!Number.isInteger(maximum) || maximum < 1 || maximum > 4000 || !Number.isInteger(minimum) || minimum < 0 || minimum > maximum) return `Field ${index + 1} text length must be between 1 and 4,000 characters.`;
+    }
+    if (['string_select', 'checkbox_group', 'radio_group'].includes(type)) {
+      const options = Array.isArray(field.options) ? field.options : [];
+      const maximum = type === 'string_select' ? 25 : 10;
+      const minimum = type === 'radio_group' ? 2 : 1;
+      if (options.length < minimum || options.length > maximum) return `Field ${index + 1} needs ${minimum}–${maximum} choices.`;
+      const values = new Set();
+      for (const option of options) {
+        const choiceLabel = String(option.label || '').trim();
+        const choiceValue = String(option.value || '').trim();
+        if (!choiceLabel || choiceLabel.length > 100 || !choiceValue || choiceValue.length > 100) return `Field ${index + 1} choice labels and values must be 1–100 characters.`;
+        if (values.has(choiceValue)) return `Field ${index + 1} choice values must be unique.`;
+        values.add(choiceValue);
+      }
+    }
+    if (type === 'file_upload') {
+      const fileTypes = Array.isArray(field.fileTypes) ? field.fileTypes.map((item) => String(item).trim().toLowerCase()).filter(Boolean) : [];
+      if (fileTypes.length > 10 || fileTypes.some((item) => !/^(image|video|audio|\.[a-z0-9]{1,16})$/.test(item))) return `Field ${index + 1} file filters must be image, video, audio, or an extension such as .pdf (up to 10).`;
+    }
   }
   return '';
 }
@@ -39,14 +65,16 @@ function PreviewControl({ field }) {
   return <div className="popup-modal-preview-select">{field.placeholder || selectLabel}<span>⌄</span></div>;
 }
 
-export function PopupModalStudioView({ graphName, nodeName, modal, onDraftChange, onApply, onClose }) {
+export function PopupModalStudioView({ graphName, nodeName, theme = 'dark', modal, onDraftChange, onApply, onClose }) {
   const initialDraft = useRef(JSON.stringify(modal));
   const [discardOpen, setDiscardOpen] = useState(false);
+  const [previewTheme, setPreviewTheme] = useState(theme === 'light' ? 'light' : 'dark');
   const fields = Array.isArray(modal?.components) ? modal.components : [];
   const issue = validateModal(modal);
   const hasChanges = JSON.stringify(modal) !== initialDraft.current;
   const requestClose = () => hasChanges ? setDiscardOpen(true) : onClose?.();
   useStudioEscape(requestClose);
+  useEffect(() => setPreviewTheme(theme === 'light' ? 'light' : 'dark'), [theme]);
 
   return <section className="popup-modal-studio" aria-label="Popup Modal Builder">
     <header className="popup-modal-studio-header">
@@ -57,10 +85,32 @@ export function PopupModalStudioView({ graphName, nodeName, modal, onDraftChange
     <div className="popup-modal-studio-body">
       <div className="popup-modal-studio-editor">
         <div className="popup-modal-studio-section-heading"><div><strong>Modal configuration</strong><span>Set the form and its submitted field IDs.</span></div><span>{fields.length}/5 fields</span></div>
-        <div className="popup-modal-studio-editor-scroll"><ModalNodeBuilder value={modal} onChange={onDraftChange} />{issue && <p className="popup-modal-studio-error" role="alert">{issue}</p>}</div>
+        <div className="popup-modal-studio-editor-scroll" onWheel={(event) => {
+          const scrollPane = event.currentTarget;
+          const delta = event.deltaMode === 1
+            ? event.deltaY * 16
+            : event.deltaMode === 2
+              ? event.deltaY * scrollPane.clientHeight
+              : event.deltaY;
+          const nextScrollTop = Math.max(0, Math.min(scrollPane.scrollHeight - scrollPane.clientHeight, scrollPane.scrollTop + delta));
+          if (nextScrollTop !== scrollPane.scrollTop) {
+            scrollPane.scrollTop = nextScrollTop;
+            event.preventDefault();
+          }
+          event.stopPropagation();
+        }} tabIndex={0} aria-label="Popup modal configuration fields"><ModalNodeBuilder value={modal} onChange={onDraftChange} />{issue && <p className="popup-modal-studio-error" role="alert">{issue}</p>}</div>
       </div>
-      <aside className="popup-modal-studio-preview" aria-label="Live Discord modal preview">
-        <div className="popup-modal-studio-preview-heading"><span>Discord preview</span><span>Modal</span></div>
+      <aside className={`popup-modal-studio-preview ${previewTheme === 'light' ? 'is-discord-light' : ''}`} aria-label="Live modal preview">
+        <div className="popup-modal-studio-preview-heading">
+          <span>PREVIEW</span>
+          <div className="popup-modal-preview-heading-controls">
+            <div className="preview-theme-toggle" role="group" aria-label="Preview theme">
+              <button type="button" className={`preview-theme-btn ${previewTheme === 'dark' ? 'is-active' : ''}`} onClick={() => setPreviewTheme('dark')} title="Dark mode preview"><Moon size={11} /><span>Dark</span></button>
+              <button type="button" className={`preview-theme-btn ${previewTheme === 'light' ? 'is-active' : ''}`} onClick={() => setPreviewTheme('light')} title="Light mode preview"><Sun size={11} /><span>Light</span></button>
+            </div>
+            <span>Modal</span>
+          </div>
+        </div>
         <div className="popup-modal-preview-stage">
           <div className="popup-modal-preview-card">
             <header><strong>{modal?.title || 'Modal title'}</strong><button type="button" aria-label="Preview close button" tabIndex={-1}><X size={17} /></button></header>
