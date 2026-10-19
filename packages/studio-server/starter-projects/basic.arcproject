@@ -1,0 +1,2444 @@
+{
+  "format": "arc-project",
+  "version": 1,
+  "project": {
+    "name": "Community Bot",
+    "createdWithVersion": "2026.1.1-alpha.6",
+    "starter": {
+      "id": "basic",
+      "name": "Community Bot",
+      "description": "Welcome messages, member tools, reports, and feedback.",
+      "icon": "Bot",
+      "highlights": [
+        "Welcome card with an interactive checklist",
+        "Member join and leave messages",
+        "Report, feedback, and suggestion forms",
+        "Slash commands with live member data",
+        "Six rotating bot activities, updated every ten minutes"
+      ],
+      "setup": [
+        "Set welcome-channel-id and community-log-channel-id in Project Variables.",
+        "Set each report, feedback, and suggestion channel ID before using its matching form.",
+        "Enable the Server Members Intent in Discord and ARC Studio to receive join/leave events.",
+        "Edit Bot Presence to change the activity messages and timing."
+      ],
+      "order": 1
+    }
+  },
+  "files": {
+    "graphs.json": {
+      "graphs": [
+        {
+          "id": "community_help",
+          "name": "Slash: /help",
+          "description": "Handles /help.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_help_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "help",
+                "description": "Browse member commands.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_help_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_help_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "community_help_embed_title",
+                    "type": "title",
+                    "value": "Community guide"
+                  },
+                  {
+                    "id": "community_help_embed_description",
+                    "type": "description",
+                    "value": "**Getting started:** /welcome, /rules, /links\n**Member tools:** /whoami, /roll\n**Contact staff:** /report, /feedback, /suggest\nUse /about for the bot information."
+                  },
+                  {
+                    "id": "community_help_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "community_help_embed_footer",
+                    "type": "footer",
+                    "value": "If you need help, use /report to contact moderators."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_help_event_exec_community_help_reply_exec",
+              "sourceNodeId": "community_help_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_help_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_help_event_application_id_community_help_reply_application_id",
+              "sourceNodeId": "community_help_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_help_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_help_event_interaction_id_community_help_reply_interaction_id",
+              "sourceNodeId": "community_help_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_help_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_help_event_interaction_token_community_help_reply_interaction_token",
+              "sourceNodeId": "community_help_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_help_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_help_embed_embed_community_help_reply_embed",
+              "sourceNodeId": "community_help_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "community_help_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "community_rules",
+          "name": "Slash: /rules",
+          "description": "Handles /rules.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_rules_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "rules",
+                "description": "Read the community guidelines.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_rules_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_rules_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "community_rules_embed_title",
+                    "type": "title",
+                    "value": "Community guidelines"
+                  },
+                  {
+                    "id": "community_rules_embed_description",
+                    "type": "description",
+                    "value": "1. Treat people with respect.\n2. Keep posts in the right channels.\n3. Do not spam, harass, or share private information.\n4. Follow Discord’s Terms and Community Guidelines.\n5. Contact the moderation team with /report if you need help."
+                  },
+                  {
+                    "id": "community_rules_embed_color",
+                    "type": "color",
+                    "value": "#2EAF83"
+                  },
+                  {
+                    "id": "community_rules_embed_footer",
+                    "type": "footer",
+                    "value": "Community moderators may remove content that puts members at risk."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_rules_event_exec_community_rules_reply_exec",
+              "sourceNodeId": "community_rules_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_rules_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_rules_event_application_id_community_rules_reply_application_id",
+              "sourceNodeId": "community_rules_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_rules_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_rules_event_interaction_id_community_rules_reply_interaction_id",
+              "sourceNodeId": "community_rules_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_rules_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_rules_event_interaction_token_community_rules_reply_interaction_token",
+              "sourceNodeId": "community_rules_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_rules_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_rules_embed_embed_community_rules_reply_embed",
+              "sourceNodeId": "community_rules_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "community_rules_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "community_about",
+          "name": "Slash: /about",
+          "description": "Handles /about.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_about_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "about",
+                "description": "About this community bot.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_about_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_about_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "community_about_embed_title",
+                    "type": "title",
+                    "value": "Community Hub"
+                  },
+                  {
+                    "id": "community_about_embed_description",
+                    "type": "description",
+                    "value": "Handles member welcome messages, feedback, suggestions, and support requests. Reports and forms are routed to channels configured by the project owner."
+                  },
+                  {
+                    "id": "community_about_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "community_about_embed_footer",
+                    "type": "footer",
+                    "value": "Built with ARC Studio."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_about_event_exec_community_about_reply_exec",
+              "sourceNodeId": "community_about_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_about_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_about_event_application_id_community_about_reply_application_id",
+              "sourceNodeId": "community_about_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_about_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_about_event_interaction_id_community_about_reply_interaction_id",
+              "sourceNodeId": "community_about_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_about_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_about_event_interaction_token_community_about_reply_interaction_token",
+              "sourceNodeId": "community_about_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_about_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_about_embed_embed_community_about_reply_embed",
+              "sourceNodeId": "community_about_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "community_about_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "community_whoami",
+          "name": "Slash: /whoami",
+          "description": "Handles /whoami.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_whoami_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "whoami",
+                "description": "Show your Discord account details.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_whoami_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_whoami_format",
+              "type": "format_text",
+              "x": 400,
+              "y": 320,
+              "data": {
+                "template": "Signed in as **{{arg1}}**\nDiscord ID: `{{arg2}}`"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_whoami_event_exec_community_whoami_reply_exec",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_whoami_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_whoami_event_application_id_community_whoami_reply_application_id",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_whoami_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_whoami_event_interaction_id_community_whoami_reply_interaction_id",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_whoami_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_whoami_event_interaction_token_community_whoami_reply_interaction_token",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_whoami_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_whoami_event_username_community_whoami_format_arg_1",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "username",
+              "targetNodeId": "community_whoami_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_whoami_event_user_id_community_whoami_format_arg_2",
+              "sourceNodeId": "community_whoami_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_whoami_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "community_whoami_format_text_community_whoami_reply_content",
+              "sourceNodeId": "community_whoami_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_whoami_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "community_roll",
+          "name": "Slash: /roll",
+          "description": "Handles /roll.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_roll_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "roll",
+                "description": "Roll an integer within a range.",
+                "options": [
+                  {
+                    "name": "minimum",
+                    "description": "Lowest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 1000000
+                  },
+                  {
+                    "name": "maximum",
+                    "description": "Highest possible result.",
+                    "type": 4,
+                    "required": true,
+                    "min_value": 1,
+                    "max_value": 1000000
+                  }
+                ]
+              }
+            },
+            {
+              "id": "community_roll_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_roll_random",
+              "type": "math_random",
+              "x": 380,
+              "y": 360,
+              "data": {}
+            },
+            {
+              "id": "community_roll_format",
+              "type": "format_text",
+              "x": 720,
+              "y": 360,
+              "data": {
+                "template": "🎲 <@{{arg1}}> rolled **{{arg2}}**."
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_roll_event_exec_community_roll_reply_exec",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_roll_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_roll_event_application_id_community_roll_reply_application_id",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_roll_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_roll_event_interaction_id_community_roll_reply_interaction_id",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_roll_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_roll_event_interaction_token_community_roll_reply_interaction_token",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_roll_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_roll_event_option_minimum_community_roll_random_min",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "option_minimum",
+              "targetNodeId": "community_roll_random",
+              "targetPinId": "min"
+            },
+            {
+              "id": "community_roll_event_option_maximum_community_roll_random_max",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "option_maximum",
+              "targetNodeId": "community_roll_random",
+              "targetPinId": "max"
+            },
+            {
+              "id": "community_roll_event_user_id_community_roll_format_arg_1",
+              "sourceNodeId": "community_roll_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_roll_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_roll_random_result_community_roll_format_arg_2",
+              "sourceNodeId": "community_roll_random",
+              "sourcePinId": "result",
+              "targetNodeId": "community_roll_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "community_roll_format_text_community_roll_reply_content",
+              "sourceNodeId": "community_roll_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_roll_reply",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "community_welcome",
+          "name": "Slash: /welcome",
+          "description": "Handles /welcome.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_welcome_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "welcome",
+                "description": "Show the welcome card and member guide.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_welcome_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_welcome_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "community_welcome_embed_title",
+                    "type": "title",
+                    "value": "Welcome to the community"
+                  },
+                  {
+                    "id": "community_welcome_embed_description",
+                    "type": "description",
+                    "value": "Read /rules, browse /links, and ask the team for help with /report. Use the button for a quick start checklist."
+                  },
+                  {
+                    "id": "community_welcome_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  }
+                ],
+                "components": [
+                  {
+                    "components": [
+                      {
+                        "type": "button",
+                        "style": "primary",
+                        "label": "Quick start",
+                        "customId": "community_welcome_start"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_welcome_event_exec_community_welcome_reply_exec",
+              "sourceNodeId": "community_welcome_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_welcome_event_application_id_community_welcome_reply_application_id",
+              "sourceNodeId": "community_welcome_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_welcome_event_interaction_id_community_welcome_reply_interaction_id",
+              "sourceNodeId": "community_welcome_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_welcome_event_interaction_token_community_welcome_reply_interaction_token",
+              "sourceNodeId": "community_welcome_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_welcome_embed_embed_community_welcome_reply_embed",
+              "sourceNodeId": "community_welcome_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "embed"
+            },
+            {
+              "id": "community_welcome_embed_components_community_welcome_reply_components",
+              "sourceNodeId": "community_welcome_embed",
+              "sourcePinId": "components",
+              "targetNodeId": "community_welcome_reply",
+              "targetPinId": "components"
+            }
+          ]
+        },
+        {
+          "id": "community_welcome_button",
+          "name": "On Button Click · Quick start",
+          "description": "Handles the community_welcome_start button.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_welcome_button_event",
+              "type": "event_button_click",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_welcome_button_compare",
+              "type": "compare_text",
+              "x": 340,
+              "y": 340,
+              "data": {
+                "text_b": "community_welcome_start",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_welcome_button_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_welcome_button_defer",
+              "type": "action_defer_reply",
+              "x": 850,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_welcome_button_action",
+              "type": "action_reply_interaction",
+              "x": 1120,
+              "y": 120,
+              "data": {
+                "content": "You are ready to go. Read /rules, introduce yourself in the right channel, and use /report if you need moderator help.",
+                "ephemeral": true
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_welcome_button_event_exec_community_welcome_button_branch_exec",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_welcome_button_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_welcome_button_event_custom_id_community_welcome_button_compare_text_a",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "community_welcome_button_compare",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_welcome_button_compare_result_community_welcome_button_branch_condition",
+              "sourceNodeId": "community_welcome_button_compare",
+              "sourcePinId": "result",
+              "targetNodeId": "community_welcome_button_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_welcome_button_branch_true_exec_community_welcome_button_defer_exec",
+              "sourceNodeId": "community_welcome_button_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_welcome_button_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_welcome_button_event_interaction_id_community_welcome_button_defer_interaction_id",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_welcome_button_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_welcome_button_event_interaction_token_community_welcome_button_defer_interaction_token",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_welcome_button_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_welcome_button_defer_exec_community_welcome_button_action_exec",
+              "sourceNodeId": "community_welcome_button_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_welcome_button_action",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_welcome_button_event_application_id_community_welcome_button_action_application_id",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_welcome_button_action",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_welcome_button_event_interaction_id_community_welcome_button_action_interaction_id",
+              "sourceNodeId": "community_welcome_button_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_welcome_button_action",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_welcome_button_defer_interaction_token_community_welcome_button_action_interaction_token",
+              "sourceNodeId": "community_welcome_button_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_welcome_button_action",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "community_report",
+          "name": "Slash: /report",
+          "description": "Handles /report.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_report_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "report",
+                "description": "Open a private report form.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_report_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 350,
+              "data": {
+                "modal": {
+                  "customId": "community_report_form",
+                  "title": "Community Report",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "report_subject",
+                      "label": "What happened?",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 5,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "report_details",
+                      "label": "Details",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "community_report_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_report_event_exec_community_report_form_show_exec",
+              "sourceNodeId": "community_report_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_report_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_event_interaction_id_community_report_form_show_interaction_id",
+              "sourceNodeId": "community_report_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_report_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_report_event_interaction_token_community_report_form_show_interaction_token",
+              "sourceNodeId": "community_report_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_report_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_report_form_builder_modal_community_report_form_show_modal",
+              "sourceNodeId": "community_report_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "community_report_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "community_report_submit",
+          "name": "On Report Submitted",
+          "description": "Routes community report to the configured channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_report_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_report_submit_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "community_report_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_report_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_report_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_report_submit_get_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 410,
+              "data": {
+                "variableId": "project_var_community_report_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "community_report_submit_channel_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 390,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_report_submit_config_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_report_submit_missing_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 1740,
+              "y": 420,
+              "data": {
+                "content": "This form is not configured yet. Set COMMUNITY REPORT CHANNEL ID in Project Variables, then try again."
+              }
+            },
+            {
+              "id": "community_report_submit_format",
+              "type": "format_text",
+              "x": 1460,
+              "y": 620,
+              "data": {
+                "template": "Community report from <@{{arg1}}>\nSummary: {{arg2}}\nDetails: {{arg3}}"
+              }
+            },
+            {
+              "id": "community_report_submit_send",
+              "type": "action_send_message",
+              "x": 1780,
+              "y": 120,
+              "data": {
+                "content": ""
+              }
+            },
+            {
+              "id": "community_report_submit_done_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Community report has been sent to the staff team."
+              }
+            },
+            {
+              "id": "community_report_submit_get_report_subject",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 650,
+              "data": {
+                "custom_id": "report_subject"
+              }
+            },
+            {
+              "id": "community_report_submit_get_report_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 800,
+              "data": {
+                "custom_id": "report_details"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_report_submit_event_exec_community_report_submit_filter_branch_exec",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_report_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_event_custom_id_community_report_submit_filter_text_a",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "community_report_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_report_submit_filter_result_community_report_submit_filter_branch_condition",
+              "sourceNodeId": "community_report_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "community_report_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_report_submit_filter_branch_true_exec_community_report_submit_defer_exec",
+              "sourceNodeId": "community_report_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_report_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_event_interaction_id_community_report_submit_defer_interaction_id",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_report_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_report_submit_event_interaction_token_community_report_submit_defer_interaction_token",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_report_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_report_submit_defer_exec_community_report_submit_config_branch_exec",
+              "sourceNodeId": "community_report_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_report_submit_config_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_get_channel_value_community_report_submit_channel_configured_text_a",
+              "sourceNodeId": "community_report_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_report_submit_channel_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_report_submit_channel_configured_result_community_report_submit_config_branch_condition",
+              "sourceNodeId": "community_report_submit_channel_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "community_report_submit_config_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_report_submit_config_branch_true_exec_community_report_submit_missing_reply_exec",
+              "sourceNodeId": "community_report_submit_config_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_report_submit_missing_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_config_branch_false_exec_community_report_submit_send_exec",
+              "sourceNodeId": "community_report_submit_config_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "community_report_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_event_application_id_community_report_submit_missing_reply_application_id",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_report_submit_missing_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_report_submit_defer_interaction_token_community_report_submit_missing_reply_interaction_token",
+              "sourceNodeId": "community_report_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_report_submit_missing_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_report_submit_get_channel_value_community_report_submit_send_channel_id",
+              "sourceNodeId": "community_report_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_report_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "community_report_submit_event_user_id_community_report_submit_format_arg_1",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_report_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_report_submit_event_submitted_values_community_report_submit_get_report_subject_submitted_values",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_report_submit_get_report_subject",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_report_submit_get_report_subject_value_community_report_submit_format_arg_2",
+              "sourceNodeId": "community_report_submit_get_report_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "community_report_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "community_report_submit_event_submitted_values_community_report_submit_get_report_details_submitted_values",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_report_submit_get_report_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_report_submit_get_report_details_value_community_report_submit_format_arg_3",
+              "sourceNodeId": "community_report_submit_get_report_details",
+              "sourcePinId": "value",
+              "targetNodeId": "community_report_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "community_report_submit_format_text_community_report_submit_send_content",
+              "sourceNodeId": "community_report_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_report_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "community_report_submit_send_exec_community_report_submit_done_reply_exec",
+              "sourceNodeId": "community_report_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_report_submit_done_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_report_submit_event_application_id_community_report_submit_done_reply_application_id",
+              "sourceNodeId": "community_report_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_report_submit_done_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_report_submit_defer_interaction_token_community_report_submit_done_reply_interaction_token",
+              "sourceNodeId": "community_report_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_report_submit_done_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "community_feedback",
+          "name": "Slash: /feedback",
+          "description": "Handles /feedback.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_feedback_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "feedback",
+                "description": "Open a private feedback form.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_feedback_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 350,
+              "data": {
+                "modal": {
+                  "customId": "community_feedback_form",
+                  "title": "Community Feedback",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "feedback_subject",
+                      "label": "Subject",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 3,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "feedback_details",
+                      "label": "Feedback",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "community_feedback_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_feedback_event_exec_community_feedback_form_show_exec",
+              "sourceNodeId": "community_feedback_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_feedback_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_event_interaction_id_community_feedback_form_show_interaction_id",
+              "sourceNodeId": "community_feedback_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_feedback_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_feedback_event_interaction_token_community_feedback_form_show_interaction_token",
+              "sourceNodeId": "community_feedback_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_feedback_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_feedback_form_builder_modal_community_feedback_form_show_modal",
+              "sourceNodeId": "community_feedback_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "community_feedback_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "community_feedback_submit",
+          "name": "On Feedback Submitted",
+          "description": "Routes community feedback to the configured channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_feedback_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_feedback_submit_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "community_feedback_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_feedback_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_feedback_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_feedback_submit_get_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 410,
+              "data": {
+                "variableId": "project_var_community_feedback_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "community_feedback_submit_channel_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 390,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_feedback_submit_config_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_feedback_submit_missing_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 1740,
+              "y": 420,
+              "data": {
+                "content": "This form is not configured yet. Set COMMUNITY FEEDBACK CHANNEL ID in Project Variables, then try again."
+              }
+            },
+            {
+              "id": "community_feedback_submit_format",
+              "type": "format_text",
+              "x": 1460,
+              "y": 620,
+              "data": {
+                "template": "Community feedback from <@{{arg1}}>\nSubject: {{arg2}}\nFeedback: {{arg3}}"
+              }
+            },
+            {
+              "id": "community_feedback_submit_send",
+              "type": "action_send_message",
+              "x": 1780,
+              "y": 120,
+              "data": {
+                "content": ""
+              }
+            },
+            {
+              "id": "community_feedback_submit_done_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Community feedback has been sent to the staff team."
+              }
+            },
+            {
+              "id": "community_feedback_submit_get_feedback_subject",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 650,
+              "data": {
+                "custom_id": "feedback_subject"
+              }
+            },
+            {
+              "id": "community_feedback_submit_get_feedback_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 800,
+              "data": {
+                "custom_id": "feedback_details"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_feedback_submit_event_exec_community_feedback_submit_filter_branch_exec",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_feedback_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_event_custom_id_community_feedback_submit_filter_text_a",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "community_feedback_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_feedback_submit_filter_result_community_feedback_submit_filter_branch_condition",
+              "sourceNodeId": "community_feedback_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "community_feedback_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_feedback_submit_filter_branch_true_exec_community_feedback_submit_defer_exec",
+              "sourceNodeId": "community_feedback_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_feedback_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_event_interaction_id_community_feedback_submit_defer_interaction_id",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_feedback_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_feedback_submit_event_interaction_token_community_feedback_submit_defer_interaction_token",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_feedback_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_feedback_submit_defer_exec_community_feedback_submit_config_branch_exec",
+              "sourceNodeId": "community_feedback_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_feedback_submit_config_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_get_channel_value_community_feedback_submit_channel_configured_text_a",
+              "sourceNodeId": "community_feedback_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_feedback_submit_channel_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_feedback_submit_channel_configured_result_community_feedback_submit_config_branch_condition",
+              "sourceNodeId": "community_feedback_submit_channel_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "community_feedback_submit_config_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_feedback_submit_config_branch_true_exec_community_feedback_submit_missing_reply_exec",
+              "sourceNodeId": "community_feedback_submit_config_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_feedback_submit_missing_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_config_branch_false_exec_community_feedback_submit_send_exec",
+              "sourceNodeId": "community_feedback_submit_config_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "community_feedback_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_event_application_id_community_feedback_submit_missing_reply_application_id",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_feedback_submit_missing_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_feedback_submit_defer_interaction_token_community_feedback_submit_missing_reply_interaction_token",
+              "sourceNodeId": "community_feedback_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_feedback_submit_missing_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_feedback_submit_get_channel_value_community_feedback_submit_send_channel_id",
+              "sourceNodeId": "community_feedback_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_feedback_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "community_feedback_submit_event_user_id_community_feedback_submit_format_arg_1",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_feedback_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_feedback_submit_event_submitted_values_community_feedback_submit_get_feedback_subject_submitted_values",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_feedback_submit_get_feedback_subject",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_feedback_submit_get_feedback_subject_value_community_feedback_submit_format_arg_2",
+              "sourceNodeId": "community_feedback_submit_get_feedback_subject",
+              "sourcePinId": "value",
+              "targetNodeId": "community_feedback_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "community_feedback_submit_event_submitted_values_community_feedback_submit_get_feedback_details_submitted_values",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_feedback_submit_get_feedback_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_feedback_submit_get_feedback_details_value_community_feedback_submit_format_arg_3",
+              "sourceNodeId": "community_feedback_submit_get_feedback_details",
+              "sourcePinId": "value",
+              "targetNodeId": "community_feedback_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "community_feedback_submit_format_text_community_feedback_submit_send_content",
+              "sourceNodeId": "community_feedback_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_feedback_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "community_feedback_submit_send_exec_community_feedback_submit_done_reply_exec",
+              "sourceNodeId": "community_feedback_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_feedback_submit_done_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_feedback_submit_event_application_id_community_feedback_submit_done_reply_application_id",
+              "sourceNodeId": "community_feedback_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_feedback_submit_done_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_feedback_submit_defer_interaction_token_community_feedback_submit_done_reply_interaction_token",
+              "sourceNodeId": "community_feedback_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_feedback_submit_done_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "community_suggest",
+          "name": "Slash: /suggest",
+          "description": "Handles /suggest.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_suggest_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "suggest",
+                "description": "Open a private suggestion form.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_suggest_form_builder",
+              "type": "build_modal",
+              "x": 380,
+              "y": 350,
+              "data": {
+                "modal": {
+                  "customId": "community_suggestion_form",
+                  "title": "Community Suggestion",
+                  "components": [
+                    {
+                      "type": "text",
+                      "customId": "suggestion_title",
+                      "label": "Suggestion",
+                      "style": 1,
+                      "required": true,
+                      "minLength": 5,
+                      "maxLength": 100
+                    },
+                    {
+                      "type": "text",
+                      "customId": "suggestion_details",
+                      "label": "How would it help?",
+                      "style": 2,
+                      "required": true,
+                      "minLength": 10,
+                      "maxLength": 1500
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "community_suggest_form_show",
+              "type": "action_show_modal",
+              "x": 720,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_suggest_event_exec_community_suggest_form_show_exec",
+              "sourceNodeId": "community_suggest_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_suggest_form_show",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_event_interaction_id_community_suggest_form_show_interaction_id",
+              "sourceNodeId": "community_suggest_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_suggest_form_show",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_suggest_event_interaction_token_community_suggest_form_show_interaction_token",
+              "sourceNodeId": "community_suggest_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_suggest_form_show",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_suggest_form_builder_modal_community_suggest_form_show_modal",
+              "sourceNodeId": "community_suggest_form_builder",
+              "sourcePinId": "modal",
+              "targetNodeId": "community_suggest_form_show",
+              "targetPinId": "modal"
+            }
+          ]
+        },
+        {
+          "id": "community_suggest_submit",
+          "name": "On Suggestion Submitted",
+          "description": "Routes community suggestion to the configured channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_suggest_submit_event",
+              "type": "event_modal_submit",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_suggest_submit_filter",
+              "type": "compare_text",
+              "x": 340,
+              "y": 360,
+              "data": {
+                "text_b": "community_suggestion_form",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_suggest_submit_filter_branch",
+              "type": "branch_if",
+              "x": 620,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_suggest_submit_defer",
+              "type": "action_defer_reply",
+              "x": 900,
+              "y": 120,
+              "data": {
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_suggest_submit_get_channel",
+              "type": "variable_get",
+              "x": 900,
+              "y": 410,
+              "data": {
+                "variableId": "project_var_community_suggestion_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "community_suggest_submit_channel_configured",
+              "type": "compare_text",
+              "x": 1180,
+              "y": 390,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_suggest_submit_config_branch",
+              "type": "branch_if",
+              "x": 1450,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_suggest_submit_missing_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 1740,
+              "y": 420,
+              "data": {
+                "content": "This form is not configured yet. Set COMMUNITY SUGGESTION CHANNEL ID in Project Variables, then try again."
+              }
+            },
+            {
+              "id": "community_suggest_submit_format",
+              "type": "format_text",
+              "x": 1460,
+              "y": 620,
+              "data": {
+                "template": "Community suggestion from <@{{arg1}}>\nSuggestion: {{arg2}}\nDetails: {{arg3}}"
+              }
+            },
+            {
+              "id": "community_suggest_submit_send",
+              "type": "action_send_message",
+              "x": 1780,
+              "y": 120,
+              "data": {
+                "content": ""
+              }
+            },
+            {
+              "id": "community_suggest_submit_done_reply",
+              "type": "action_edit_interaction_reply",
+              "x": 2100,
+              "y": 120,
+              "data": {
+                "content": "Community suggestion has been sent to the staff team."
+              }
+            },
+            {
+              "id": "community_suggest_submit_get_suggestion_title",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 650,
+              "data": {
+                "custom_id": "suggestion_title"
+              }
+            },
+            {
+              "id": "community_suggest_submit_get_suggestion_details",
+              "type": "data_get_modal_value",
+              "x": 1180,
+              "y": 800,
+              "data": {
+                "custom_id": "suggestion_details"
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_suggest_submit_event_exec_community_suggest_submit_filter_branch_exec",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_suggest_submit_filter_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_event_custom_id_community_suggest_submit_filter_text_a",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "custom_id",
+              "targetNodeId": "community_suggest_submit_filter",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_suggest_submit_filter_result_community_suggest_submit_filter_branch_condition",
+              "sourceNodeId": "community_suggest_submit_filter",
+              "sourcePinId": "result",
+              "targetNodeId": "community_suggest_submit_filter_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_suggest_submit_filter_branch_true_exec_community_suggest_submit_defer_exec",
+              "sourceNodeId": "community_suggest_submit_filter_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_suggest_submit_defer",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_event_interaction_id_community_suggest_submit_defer_interaction_id",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_suggest_submit_defer",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_suggest_submit_event_interaction_token_community_suggest_submit_defer_interaction_token",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_suggest_submit_defer",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_suggest_submit_defer_exec_community_suggest_submit_config_branch_exec",
+              "sourceNodeId": "community_suggest_submit_defer",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_suggest_submit_config_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_get_channel_value_community_suggest_submit_channel_configured_text_a",
+              "sourceNodeId": "community_suggest_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_suggest_submit_channel_configured",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_suggest_submit_channel_configured_result_community_suggest_submit_config_branch_condition",
+              "sourceNodeId": "community_suggest_submit_channel_configured",
+              "sourcePinId": "result",
+              "targetNodeId": "community_suggest_submit_config_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_suggest_submit_config_branch_true_exec_community_suggest_submit_missing_reply_exec",
+              "sourceNodeId": "community_suggest_submit_config_branch",
+              "sourcePinId": "true_exec",
+              "targetNodeId": "community_suggest_submit_missing_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_config_branch_false_exec_community_suggest_submit_send_exec",
+              "sourceNodeId": "community_suggest_submit_config_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "community_suggest_submit_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_event_application_id_community_suggest_submit_missing_reply_application_id",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_suggest_submit_missing_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_suggest_submit_defer_interaction_token_community_suggest_submit_missing_reply_interaction_token",
+              "sourceNodeId": "community_suggest_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_suggest_submit_missing_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_suggest_submit_get_channel_value_community_suggest_submit_send_channel_id",
+              "sourceNodeId": "community_suggest_submit_get_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_suggest_submit_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "community_suggest_submit_event_user_id_community_suggest_submit_format_arg_1",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_suggest_submit_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_suggest_submit_event_submitted_values_community_suggest_submit_get_suggestion_title_submitted_values",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_suggest_submit_get_suggestion_title",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_suggest_submit_get_suggestion_title_value_community_suggest_submit_format_arg_2",
+              "sourceNodeId": "community_suggest_submit_get_suggestion_title",
+              "sourcePinId": "value",
+              "targetNodeId": "community_suggest_submit_format",
+              "targetPinId": "arg_2"
+            },
+            {
+              "id": "community_suggest_submit_event_submitted_values_community_suggest_submit_get_suggestion_details_submitted_values",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "submitted_values",
+              "targetNodeId": "community_suggest_submit_get_suggestion_details",
+              "targetPinId": "submitted_values"
+            },
+            {
+              "id": "community_suggest_submit_get_suggestion_details_value_community_suggest_submit_format_arg_3",
+              "sourceNodeId": "community_suggest_submit_get_suggestion_details",
+              "sourcePinId": "value",
+              "targetNodeId": "community_suggest_submit_format",
+              "targetPinId": "arg_3"
+            },
+            {
+              "id": "community_suggest_submit_format_text_community_suggest_submit_send_content",
+              "sourceNodeId": "community_suggest_submit_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_suggest_submit_send",
+              "targetPinId": "content"
+            },
+            {
+              "id": "community_suggest_submit_send_exec_community_suggest_submit_done_reply_exec",
+              "sourceNodeId": "community_suggest_submit_send",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_suggest_submit_done_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_suggest_submit_event_application_id_community_suggest_submit_done_reply_application_id",
+              "sourceNodeId": "community_suggest_submit_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_suggest_submit_done_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_suggest_submit_defer_interaction_token_community_suggest_submit_done_reply_interaction_token",
+              "sourceNodeId": "community_suggest_submit_defer",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_suggest_submit_done_reply",
+              "targetPinId": "interaction_token"
+            }
+          ]
+        },
+        {
+          "id": "community_links",
+          "name": "Slash: /links",
+          "description": "Handles /links.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_links_event",
+              "type": "event_slash_command",
+              "x": 60,
+              "y": 120,
+              "data": {
+                "commandName": "links",
+                "description": "Find the server’s key resources.",
+                "options": []
+              }
+            },
+            {
+              "id": "community_links_reply",
+              "type": "action_reply_interaction",
+              "x": 720,
+              "y": 120,
+              "data": {
+                "content": "",
+                "ephemeral": true
+              }
+            },
+            {
+              "id": "community_links_embed",
+              "type": "build_embed",
+              "x": 390,
+              "y": 350,
+              "data": {
+                "blocks": [
+                  {
+                    "id": "community_links_embed_title",
+                    "type": "title",
+                    "value": "Community resources"
+                  },
+                  {
+                    "id": "community_links_embed_description",
+                    "type": "description",
+                    "value": "Check the pinned messages in the server’s information channels for current links and event details. Use /rules before posting and /report to contact moderators."
+                  },
+                  {
+                    "id": "community_links_embed_color",
+                    "type": "color",
+                    "value": "#5865F2"
+                  },
+                  {
+                    "id": "community_links_embed_footer",
+                    "type": "footer",
+                    "value": "Server moderators maintain the official links."
+                  }
+                ],
+                "components": []
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_links_event_exec_community_links_reply_exec",
+              "sourceNodeId": "community_links_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_links_reply",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_links_event_application_id_community_links_reply_application_id",
+              "sourceNodeId": "community_links_event",
+              "sourcePinId": "application_id",
+              "targetNodeId": "community_links_reply",
+              "targetPinId": "application_id"
+            },
+            {
+              "id": "community_links_event_interaction_id_community_links_reply_interaction_id",
+              "sourceNodeId": "community_links_event",
+              "sourcePinId": "interaction_id",
+              "targetNodeId": "community_links_reply",
+              "targetPinId": "interaction_id"
+            },
+            {
+              "id": "community_links_event_interaction_token_community_links_reply_interaction_token",
+              "sourceNodeId": "community_links_event",
+              "sourcePinId": "interaction_token",
+              "targetNodeId": "community_links_reply",
+              "targetPinId": "interaction_token"
+            },
+            {
+              "id": "community_links_embed_embed_community_links_reply_embed",
+              "sourceNodeId": "community_links_embed",
+              "sourcePinId": "embed",
+              "targetNodeId": "community_links_reply",
+              "targetPinId": "embed"
+            }
+          ]
+        },
+        {
+          "id": "community_member_join",
+          "name": "On Member Joined",
+          "description": "Posts a welcome in the configured channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_join_event",
+              "type": "event_member_join",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_join_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_welcome_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "community_join_check",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_join_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_join_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 400,
+              "data": {
+                "template": "Welcome <@{{arg1}}>! Read /rules and use /help to get started."
+              }
+            },
+            {
+              "id": "community_join_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_join_event_exec_community_join_branch_exec",
+              "sourceNodeId": "community_join_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_join_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_join_event_user_id_community_join_format_arg_1",
+              "sourceNodeId": "community_join_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_join_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_join_channel_value_community_join_check_text_a",
+              "sourceNodeId": "community_join_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_join_check",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_join_check_result_community_join_branch_condition",
+              "sourceNodeId": "community_join_check",
+              "sourcePinId": "result",
+              "targetNodeId": "community_join_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_join_branch_false_exec_community_join_send_exec",
+              "sourceNodeId": "community_join_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "community_join_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_join_channel_value_community_join_send_channel_id",
+              "sourceNodeId": "community_join_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_join_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "community_join_format_text_community_join_send_content",
+              "sourceNodeId": "community_join_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_join_send",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "community_member_leave",
+          "name": "On Member Left",
+          "description": "Logs member departures in the configured community log channel.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "community_leave_event",
+              "type": "event_member_remove",
+              "x": 60,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_leave_channel",
+              "type": "variable_get",
+              "x": 350,
+              "y": 360,
+              "data": {
+                "variableId": "project_var_community_log_channel_id",
+                "scope": "project"
+              }
+            },
+            {
+              "id": "community_leave_check",
+              "type": "compare_text",
+              "x": 620,
+              "y": 360,
+              "data": {
+                "text_b": "",
+                "operator": "equals"
+              }
+            },
+            {
+              "id": "community_leave_branch",
+              "type": "branch_if",
+              "x": 900,
+              "y": 120,
+              "data": {}
+            },
+            {
+              "id": "community_leave_format",
+              "type": "format_text",
+              "x": 900,
+              "y": 400,
+              "data": {
+                "template": "Member <@{{arg1}}> left the server."
+              }
+            },
+            {
+              "id": "community_leave_send",
+              "type": "action_send_message",
+              "x": 1240,
+              "y": 120,
+              "data": {}
+            }
+          ],
+          "connections": [
+            {
+              "id": "community_leave_event_exec_community_leave_branch_exec",
+              "sourceNodeId": "community_leave_event",
+              "sourcePinId": "exec",
+              "targetNodeId": "community_leave_branch",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_leave_event_user_id_community_leave_format_arg_1",
+              "sourceNodeId": "community_leave_event",
+              "sourcePinId": "user_id",
+              "targetNodeId": "community_leave_format",
+              "targetPinId": "arg_1"
+            },
+            {
+              "id": "community_leave_channel_value_community_leave_check_text_a",
+              "sourceNodeId": "community_leave_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_leave_check",
+              "targetPinId": "text_a"
+            },
+            {
+              "id": "community_leave_check_result_community_leave_branch_condition",
+              "sourceNodeId": "community_leave_check",
+              "sourcePinId": "result",
+              "targetNodeId": "community_leave_branch",
+              "targetPinId": "condition"
+            },
+            {
+              "id": "community_leave_branch_false_exec_community_leave_send_exec",
+              "sourceNodeId": "community_leave_branch",
+              "sourcePinId": "false_exec",
+              "targetNodeId": "community_leave_send",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "community_leave_channel_value_community_leave_send_channel_id",
+              "sourceNodeId": "community_leave_channel",
+              "sourcePinId": "value",
+              "targetNodeId": "community_leave_send",
+              "targetPinId": "channel_id"
+            },
+            {
+              "id": "community_leave_format_text_community_leave_send_content",
+              "sourceNodeId": "community_leave_format",
+              "sourcePinId": "text",
+              "targetNodeId": "community_leave_send",
+              "targetPinId": "content"
+            }
+          ]
+        },
+        {
+          "id": "basic_presence_rotation",
+          "name": "Bot Presence",
+          "description": "Changes activity every ten minutes.",
+          "graphType": "event",
+          "variables": [],
+          "nodes": [
+            {
+              "id": "basic_presence_schedule_1",
+              "type": "event_cron",
+              "x": 60,
+              "y": 80,
+              "data": {
+                "cronExpression": "0 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_1",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 80,
+              "data": {
+                "status": "online",
+                "activity_text": "Welcoming new members",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "basic_presence_schedule_2",
+              "type": "event_cron",
+              "x": 60,
+              "y": 260,
+              "data": {
+                "cronExpression": "10 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_2",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 260,
+              "data": {
+                "status": "online",
+                "activity_text": "Community conversations",
+                "activity_type": 3
+              }
+            },
+            {
+              "id": "basic_presence_schedule_3",
+              "type": "event_cron",
+              "x": 60,
+              "y": 440,
+              "data": {
+                "cronExpression": "20 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_3",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 440,
+              "data": {
+                "status": "online",
+                "activity_text": "Member feedback",
+                "activity_type": 2
+              }
+            },
+            {
+              "id": "basic_presence_schedule_4",
+              "type": "event_cron",
+              "x": 60,
+              "y": 620,
+              "data": {
+                "cronExpression": "30 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_4",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 620,
+              "data": {
+                "status": "online",
+                "activity_text": "Community events",
+                "activity_type": 5
+              }
+            },
+            {
+              "id": "basic_presence_schedule_5",
+              "type": "event_cron",
+              "x": 60,
+              "y": 800,
+              "data": {
+                "cronExpression": "40 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_5",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 800,
+              "data": {
+                "status": "online",
+                "activity_text": "Helping members",
+                "activity_type": 0
+              }
+            },
+            {
+              "id": "basic_presence_schedule_6",
+              "type": "event_cron",
+              "x": 60,
+              "y": 980,
+              "data": {
+                "cronExpression": "50 * * * *",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "id": "basic_presence_activity_6",
+              "type": "action_set_presence",
+              "x": 520,
+              "y": 980,
+              "data": {
+                "status": "online",
+                "activity_text": "New messages",
+                "activity_type": 3
+              }
+            }
+          ],
+          "connections": [
+            {
+              "id": "basic_presence_schedule_1_exec_basic_presence_activity_1_exec",
+              "sourceNodeId": "basic_presence_schedule_1",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_1",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "basic_presence_schedule_2_exec_basic_presence_activity_2_exec",
+              "sourceNodeId": "basic_presence_schedule_2",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_2",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "basic_presence_schedule_3_exec_basic_presence_activity_3_exec",
+              "sourceNodeId": "basic_presence_schedule_3",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_3",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "basic_presence_schedule_4_exec_basic_presence_activity_4_exec",
+              "sourceNodeId": "basic_presence_schedule_4",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_4",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "basic_presence_schedule_5_exec_basic_presence_activity_5_exec",
+              "sourceNodeId": "basic_presence_schedule_5",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_5",
+              "targetPinId": "exec"
+            },
+            {
+              "id": "basic_presence_schedule_6_exec_basic_presence_activity_6_exec",
+              "sourceNodeId": "basic_presence_schedule_6",
+              "sourcePinId": "exec",
+              "targetNodeId": "basic_presence_activity_6",
+              "targetPinId": "exec"
+            }
+          ]
+        }
+      ],
+      "deletedIds": []
+    },
+    "graph-library.json": {
+      "defaultGraphId": "community_help",
+      "templates": [],
+      "snapshots": []
+    },
+    "bot-config.json": {},
+    "statistics.json": {},
+    "embeds.json": [],
+    "project-variables.json": [
+      {
+        "id": "project_var_community_report_channel_id",
+        "name": "community-report-channel-id",
+        "type": "string",
+        "initialValue": ""
+      },
+      {
+        "id": "project_var_community_feedback_channel_id",
+        "name": "community-feedback-channel-id",
+        "type": "string",
+        "initialValue": ""
+      },
+      {
+        "id": "project_var_community_suggestion_channel_id",
+        "name": "community-suggestion-channel-id",
+        "type": "string",
+        "initialValue": ""
+      },
+      {
+        "id": "project_var_welcome_channel_id",
+        "name": "welcome-channel-id",
+        "type": "string",
+        "initialValue": ""
+      },
+      {
+        "id": "project_var_community_log_channel_id",
+        "name": "community-log-channel-id",
+        "type": "string",
+        "initialValue": ""
+      }
+    ]
+  }
+}
