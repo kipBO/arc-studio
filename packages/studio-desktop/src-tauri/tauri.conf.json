@@ -1,0 +1,90 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ARC Studio",
+  "version": "2026.1.1-alpha.6",
+  "identifier": "studio.arc.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:desktop:services --prefix ../..",
+    "beforeBuildCommand": "npm run prepare:desktop --prefix ../..",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../../studio-client/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "create": false,
+        "title": "ARC Studio",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 17,
+          "y": 20
+        },
+        "decorations": true,
+        "width": 1440,
+        "height": 900,
+        "minWidth": 980,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost https://cdn.discordapp.com data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost http://localhost:5173 ws://localhost:5173 http://localhost:* ws://localhost:* http://127.0.0.1:5173 ws://127.0.0.1:5173 http://127.0.0.1:* ws://127.0.0.1:* https: wss: https://cdn.discordapp.com;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "licenseFile": "../../../LICENSE",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "resources/runtime/**/*"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "arcproject"
+        ],
+        "name": "ARC Studio Project",
+        "description": "ARC Studio project file",
+        "mimeType": "application/vnd.arc-studio.project+json",
+        "role": "Editor",
+        "rank": "Owner",
+        "exportedType": {
+          "identifier": "studio.arc.desktop.project",
+          "conformsTo": [
+            "public.json"
+          ]
+        }
+      }
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": {
+          "width": 760,
+          "height": 460
+        },
+        "windowPosition": {
+          "x": 120,
+          "y": 100
+        },
+        "appPosition": {
+          "x": 190,
+          "y": 260
+        },
+        "applicationFolderPosition": {
+          "x": 570,
+          "y": 260
+        }
+      }
+    }
+  }
+}
