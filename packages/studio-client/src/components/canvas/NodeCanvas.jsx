@@ -538,19 +538,6 @@ export function NodeCanvas({
     }
     return withArgumentPins(definition);
   }, [definitionsByType, callableGraphs, graphVariables, connections, nodes]);
-  const templateSocketSuggestions = useMemo(() => {
-    const suggestions = [];
-    const seenNames = new Set();
-    for (const sourceNode of nodes) {
-      const definition = getNodeDefinition(sourceNode);
-      for (const pin of definition?.outputs || []) {
-        if (pin.type === 'exec' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(pin.id) || seenNames.has(pin.id.toLowerCase())) continue;
-        seenNames.add(pin.id.toLowerCase());
-        suggestions.push({ name: pin.id, nodeId: sourceNode.id, label: `${sourceNode.label || definition.label} · ${pin.label || pin.id}` });
-      }
-    }
-    return suggestions;
-  }, [nodes, getNodeDefinition]);
   const breadcrumbNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const breadcrumbNodeLabel = breadcrumbNode?.label || (breadcrumbNode ? getNodeDefinition(breadcrumbNode)?.label || breadcrumbNode.type : '');
 
@@ -1550,7 +1537,6 @@ export function NodeCanvas({
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 graphVariables={graphVariables}
-                templateSocketSuggestions={templateSocketSuggestions}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
                 functionGraphs={functionGraphs}
