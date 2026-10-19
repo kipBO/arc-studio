@@ -1,0 +1,131 @@
+import React, { useRef, useState } from 'react';
+import { Braces, FileCode2, Plus, Search, Trash2, X } from 'lucide-react';
+import { Modal } from '../ui/Modal.jsx';
+import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
+import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
+//
+const VARIABLE_TYPES = [
+  { value: 'string', label: 'Text' },
+  { value: 'number', label: 'Number' },
+  { value: 'boolean', label: 'Boolean' },
+  { value: 'array', label: 'Array' },
+  { value: 'object', label: 'Object' }
+];
+
+export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit }) {
+  const [activeScope, setActiveScope] = useState('project');
+  const [name, setName] = useState('');
+  const [type, setType] = useState('string');
+  const [jsonDrafts, setJsonDrafts] = useState({});
+  const [invalidJsonIds, setInvalidJsonIds] = useState(() => new Set());
+  const [nameError, setNameError] = useState('');
+  const [nameDrafts, setNameDrafts] = useState({});
+  const [numberDrafts, setNumberDrafts] = useState({});
+  const [expandedValueIds, setExpandedValueIds] = useState(() => new Set());
+  const [searchByScope, setSearchByScope] = useState({ project: '', graph: '' });
+  const createRowRef = useRef(null);
+
+  const currentVariables = activeScope === 'project' ? projectVariables : variables;
+  const currentSearch = searchByScope[activeScope];
+  const filteredVariables = currentVariables.filter((variable) => `${variable.name || ''} ${variable.type || ''}`.toLowerCase().includes(currentSearch.trim().toLowerCase()));
+  const changeVariables = activeScope === 'project' ? onProjectChange : onChange;
+  const currentCanEdit = activeScope === 'project' ? canEditProject : canEditGraph;
+  const updateVariable = (id, changes) => changeVariables?.(currentVariables.map((variable) => variable.id === id ? { ...variable, ...changes } : variable));
+  const valueSummaries = new Map(filteredVariables.map((variable) => {
+    const value = variable.type === 'string'
+      ? String(variable.initialValue ?? '')
+      : jsonDrafts[variable.id] ?? JSON.stringify(variable.initialValue ?? defaultForType(variable.type), null, 2);
+    const lines = value.split(/\r\n|\r|\n/).length;
+    return [variable.id, { lines, characters: value.length, isLarge: presentation === 'sidebar' && ['string', 'array', 'object'].includes(variable.type) && (value.length > 140 || lines > 4) }];
+  }));
+  const setValueExpanded = (id, expanded) => setExpandedValueIds((current) => {
+    const next = new Set(current);
+    if (expanded) next.add(id); else next.delete(id);
+    return next;
+  });
+  const addVariable = (event) => {
+    event.preventDefault();
+    if (!currentCanEdit) return;
+    if (currentVariables.length >= 100) { setNameError('This scope can have at most 100 variables.'); return; }
+    const cleanName = name.trim();
+    if (!cleanName) {
+      setNameError('Enter a variable name.');
+      const row = createRowRef.current;
+      row?.classList.remove('field-shake');
+      if (row) { void row.offsetWidth; row.classList.add('field-shake'); }
+      window.setTimeout(() => row?.classList.remove('field-shake'), 360);
+      return;
+    }
+    if (!isValidVariableName(cleanName)) {
+      setNameError('Use 1–64 letters or numbers, with single hyphens between them. No leading, trailing, or repeated hyphens.');
+      return;
+    }
+    if (currentVariables.some((variable) => variable.name?.toLowerCase() === cleanName.toLowerCase())) {
+      setNameError('A variable with this name already exists in this scope.');
+      return;
+    }
+    const variable = {
+      id: `${activeScope === 'project' ? 'project_var' : 'var'}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`}`,
+      name: cleanName,
+      type,
+      initialValue: defaultForType(type),
+      ...(activeScope === 'graph' ? { persist: true } : {})
+    };
+    changeVariables?.([...currentVariables, variable]);
+    setName('');
+    setNameError('');
+  };
+
+  const content = <>
+    {presentation === 'sidebar' && currentVariables.length > 15 && <label className="graph-variable-search"><Search size={13} /><input value={currentSearch} onChange={(event) => setSearchByScope((current) => ({ ...current, [activeScope]: event.target.value }))} placeholder={`Filter ${activeScope} variables`} aria-label={`Filter ${activeScope} variables`} /></label>}
+    <div className="variable-list">
+      {filteredVariables.length ? filteredVariables.map((variable) => <div className={`variable-row ${activeScope === 'graph' ? 'is-graph-variable' : ''}`} key={variable.id}>
+        <input className={`variable-name ${nameDrafts[variable.id] !== undefined && !isValidVariableName(nameDrafts[variable.id]) ? 'is-invalid' : ''}`} value={nameDrafts[variable.id] ?? variable.name} maxLength={64} pattern="[A-Za-z0-9]+(-[A-Za-z0-9]+)*" disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { const nextName = event.target.value.replace(/[^A-Za-z0-9-]/g, '').slice(0, 64); setNameDrafts((current) => ({ ...current, [variable.id]: nextName })); const duplicate = currentVariables.some((item) => item.id !== variable.id && item.name?.toLowerCase() === nextName.toLowerCase()); if (isValidVariableName(nextName) && !duplicate) { updateVariable(variable.id, { name: nextName }); setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); } }} onBlur={() => setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; })} aria-label={`${variable.name} variable name`} title="Use 1–64 letters or numbers, with single hyphens between them." />
+        <AnimatedDropdown value={variable.type} disabled={!currentCanEdit} onChange={(nextType) => { setJsonDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); setNumberDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); setExpandedValueIds((current) => { const next = new Set(current); next.delete(variable.id); return next; }); setInvalidJsonIds((current) => { const next = new Set(current); next.delete(variable.id); return next; }); updateVariable(variable.id, { type: nextType, initialValue: defaultForType(nextType) }); }} ariaLabel={`${variable.name} variable type`} options={VARIABLE_TYPES} className="variable-type-dropdown" />
+        {variable.type === 'boolean'
+          ? <div className="variable-boolean"><AnimatedCheckbox disabled={!currentCanEdit} checked={Boolean(variable.initialValue)} onChange={(checked) => updateVariable(variable.id, { initialValue: checked })} label={`${variable.name} initial value`} /> <span>True</span></div>
+          : valueSummaries.get(variable.id)?.isLarge && !expandedValueIds.has(variable.id) && !invalidJsonIds.has(variable.id)
+            ? <div className="variable-large-summary" title={`${valueSummaries.get(variable.id).lines} lines · ${valueSummaries.get(variable.id).characters.toLocaleString()} characters`} aria-label={`${variable.name}: ${valueSummaries.get(variable.id).lines} lines, ${valueSummaries.get(variable.id).characters} characters. Open in Text Editor for the full value.`}><span>{valueSummaries.get(variable.id).lines} lines</span><span>{valueSummaries.get(variable.id).characters.toLocaleString()} chars</span></div>
+            : ['array', 'object'].includes(variable.type)
+              ? <textarea className={`variable-value variable-json-value ${invalidJsonIds.has(variable.id) ? 'is-invalid' : ''}`} rows={2} maxLength={12000} spellCheck="false" value={jsonDrafts[variable.id] ?? JSON.stringify(variable.initialValue ?? defaultForType(variable.type), null, 2)} disabled={!currentCanEdit} onFocus={() => setValueExpanded(variable.id, true)} onChange={(event) => { const draft = event.target.value; setJsonDrafts((current) => ({ ...current, [variable.id]: draft })); try { const parsed = JSON.parse(draft); const rightShape = variable.type === 'array' ? Array.isArray(parsed) : parsed && typeof parsed === 'object' && !Array.isArray(parsed); if (rightShape && JSON.stringify(parsed).length <= 10000) { updateVariable(variable.id, { initialValue: parsed }); setInvalidJsonIds((current) => { const next = new Set(current); next.delete(variable.id); return next; }); } else setInvalidJsonIds((current) => new Set(current).add(variable.id)); } catch { setInvalidJsonIds((current) => new Set(current).add(variable.id)); } }} onBlur={() => { setValueExpanded(variable.id, false); if (!invalidJsonIds.has(variable.id)) setJsonDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); }} aria-label={`${variable.name} initial JSON value`} />
+              : <input className={`variable-value ${variable.type === 'number' && numberDrafts[variable.id] === '' ? 'is-empty-number' : ''}`} type={variable.type === 'number' ? 'number' : 'text'} maxLength={variable.type === 'string' ? 10000 : undefined} value={variable.type === 'number' && numberDrafts[variable.id] !== undefined ? numberDrafts[variable.id] : variable.initialValue ?? ''} disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onFocus={() => setValueExpanded(variable.id, true)} onBlur={() => setValueExpanded(variable.id, false)} onChange={(event) => { if (variable.type === 'number') { const draft = event.target.value; setNumberDrafts((current) => ({ ...current, [variable.id]: draft })); if (draft !== '') { updateVariable(variable.id, { initialValue: Number(draft) }); setNumberDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); } } else updateVariable(variable.id, { initialValue: event.target.value.slice(0, 10000) }); }} aria-label={`${variable.name} initial value`} aria-invalid={variable.type === 'number' && numberDrafts[variable.id] === '' || undefined} />}
+        {invalidJsonIds.has(variable.id) && <small className="variable-form-error">Enter a valid JSON {variable.type === 'array' ? 'array' : 'object'} under 10,000 characters.</small>}
+        {activeScope === 'graph' && <div className="variable-persistence" title="When off, this variable starts at its initial value for each graph run and resets when that run ends."><AnimatedCheckbox disabled={!currentCanEdit} checked={variable.persist !== false} onChange={(persist) => updateVariable(variable.id, { persist })} label={`Persist ${variable.name}`} /><span>Persist</span></div>}
+        {['string', 'array', 'object'].includes(variable.type) && <button className="variable-open-editor" type="button" disabled={!currentCanEdit} title={`Open ${variable.name} in Text Editor`} aria-label={`Open ${variable.name} in Text Editor`} onClick={() => onOpenTextEditor?.(variable, activeScope)}><FileCode2 size={14} /></button>}
+        <button className="variable-delete" disabled={!currentCanEdit} onClick={() => changeVariables?.(currentVariables.filter((item) => item.id !== variable.id))} title={`Delete ${variable.name}`} aria-label={`Delete ${variable.name}`}><Trash2 size={15} /></button>
+      </div>) : <div className="variable-empty">{currentVariables.length ? 'No matching variables' : `No ${activeScope === 'project' ? 'project' : 'graph'} variables`}</div>}
+    </div>
+    {!currentCanEdit && <div className="variable-empty">{activeScope === 'graph' ? 'Open an editable graph to add graph variables.' : 'You do not have permission to edit project variables.'}</div>}
+    <form ref={createRowRef} className={`variable-create-row ${!currentCanEdit ? 'is-disabled' : ''}`} noValidate onSubmit={addVariable}>
+      <input value={name} maxLength={64} pattern="[A-Za-z0-9]+(-[A-Za-z0-9]+)*" disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setName(event.target.value.replace(/[^A-Za-z0-9-]/g, '').slice(0, 64)); setNameError(''); }} placeholder="Variable name" aria-label="New variable name" aria-invalid={Boolean(nameError)} title="Use 1–64 letters or numbers, with single hyphens between them." />
+      <AnimatedDropdown value={type} disabled={!currentCanEdit} onChange={setType} ariaLabel="New variable type" options={VARIABLE_TYPES} className="variable-type-dropdown" />
+      <button className="variable-add" disabled={!currentCanEdit || currentVariables.length >= 100} type="submit" title={currentVariables.length >= 100 ? 'Maximum 100 variables per scope' : 'Create variable'} aria-label="Create variable"><Plus size={15} /></button>
+      {nameError && <small className="variable-form-error" role="alert">{nameError}</small>}
+    </form>
+  </>;
+  const scopeTabs = <><div className="graph-variable-tabs" role="tablist" aria-label="Variable scope"><button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => { setActiveScope('project'); setNameError(''); }}>Project <span>{projectVariables.length}</span></button><button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => { setActiveScope('graph'); setNameError(''); }}>Graph <span>{variables.length}</span></button></div><small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small></>;
+  if (presentation === 'sidebar') return isOpen ? <aside className="graph-variables-sidebar" aria-label="Variables" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
+    <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
+    <header className="graph-library-header">
+      <span><Braces size={14} />Variables<small>{projectVariables.length + variables.length}</small></span>
+      <button className="icon-button compact" type="button" aria-label="Close graph variables" onClick={onClose}><X size={14} /></button>
+    </header>
+    <div className={`graph-variables-sidebar-content ${isSaving ? 'is-saving' : ''}`}>
+      {isSaving && <div className="variable-save-progress" role="status" aria-label="Saving variables"><i /></div>}
+      {scopeTabs}{content}
+    </div>
+  </aside> : null;
+  return <Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project-wide and graph-specific values" icon={Braces} maxWidth="lg">{scopeTabs}{content}</Modal>;
+}
+
+function defaultForType(type) {
+  if (type === 'number') return 0;
+  if (type === 'boolean') return false;
+  if (type === 'array') return [];
+  if (type === 'object') return {};
+  return '';
+}
+
+function isValidVariableName(name) {
+  return /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(String(name || ''));
+}
