@@ -76,6 +76,10 @@ export function ControlDock({
   const [mockChannelId, setMockChannelId] = useState('120000000000000002');
   const [mockCommand, setMockCommand] = useState('help');
   const [mockCustomId, setMockCustomId] = useState('mock_button_click');
+  const [mockModalFieldId, setMockModalFieldId] = useState('sample-input');
+  const [mockModalValues, setMockModalValues] = useState({});
+  const [selectedModalNodeId, setSelectedModalNodeId] = useState('');
+  const [modalSubmissionSnapshot, setModalSubmissionSnapshot] = useState([]);
   const [simulating, setSimulating] = useState(false);
   const [simResult, setSimResult] = useState(null);
   const [tracePathExpanded, setTracePathExpanded] = useState(false);
@@ -94,6 +98,19 @@ export function ControlDock({
   const [selectedFixtureId, setSelectedFixtureId] = useState('');
   const traceGraph = graphs.find((graph) => graph.id === (simResult?.tabId || activeTabId));
   const traceNodeById = useMemo(() => new Map((traceGraph?.nodes || (simResult?.tabId === activeTabId ? graphNodes : [])).map((node) => [node.id, node])), [traceGraph, simResult?.tabId, activeTabId, graphNodes]);
+  const simulationModals = useMemo(() => graphNodes.filter((node) => node.type === 'build_modal' && Array.isArray(node.data?.modal?.components)).map((node) => ({ node, modal: node.data.modal })), [graphNodes]);
+  const selectedSimulationModal = simulationModals.find(({ node }) => node.id === selectedModalNodeId) || null;
+  const selectedModalFields = selectedSimulationModal?.modal?.components || [];
+  useEffect(() => {
+    if (!simulationModals.some(({ node }) => node.id === selectedModalNodeId)) {
+      const first = simulationModals[0] || null;
+      setSelectedModalNodeId(first?.node.id || '');
+      if (first) {
+        setMockCustomId(String(first.modal.customId || ''));
+        setMockModalValues(Object.fromEntries(first.modal.components.map((field) => [field.customId, mockModalDefault(field)])));
+      }
+    }
+  }, [simulationModals, selectedModalNodeId]);
   const nodeDefinitionByType = useMemo(() => new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition])), []);
   useEffect(() => {
     setTracePathExpanded(false);
@@ -416,7 +433,8 @@ export function ControlDock({
     setSimulating(true);
     setSimResult(null);
     const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, cronNodeId });
+    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, modal: selectedSimulationModal?.modal, cronNodeId });
+    if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/inject'), {
         method: 'POST',
@@ -443,7 +461,8 @@ export function ControlDock({
     setSimResult(null);
     setSimulating(true);
     const cronNodeId = graphLookup.get(activeTabId)?.nodes?.find((node) => node.type === 'event_cron')?.id;
-    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, cronNodeId });
+    const payload = createSimulationPayload(selectedEvent, { mockContent, mockCommand, mockAuthor, mockChannelId, mockCustomId, mockModalFieldId, mockModalValues, modal: selectedSimulationModal?.modal, cronNodeId });
+    if (selectedEvent === 'MODAL_SUBMIT') setModalSubmissionSnapshot(createModalSubmissionRows(selectedSimulationModal?.modal, mockModalValues, mockModalFieldId));
     try {
       const response = await fetch(apiUrl('/api/mock/debug/start'), {
         method: 'POST',
@@ -759,7 +778,7 @@ export function ControlDock({
         {activeTab === 'simulator' && <div className="simulator-panel">
           <div className="dock-panel-sidebar">
             <div className="panel-section-heading">Event</div>
-            <AnimatedDropdown value={selectedEvent} onChange={(eventName) => { setSelectedEvent(eventName); setMockCustomId(defaultMockCustomId(eventName)); }} options={[
+          <AnimatedDropdown value={selectedEvent} onChange={(eventName) => { setSelectedEvent(eventName); setMockCustomId(eventName === 'MODAL_SUBMIT' ? String(selectedSimulationModal?.modal?.customId || defaultMockCustomId(eventName)) : defaultMockCustomId(eventName)); }} options={[
               { value: 'MESSAGE_CREATE', label: 'Message created' }, { value: 'SLASH_COMMAND', label: 'Slash command' },
               { value: 'BUTTON_CLICK', label: 'Button clicked' }, { value: 'SELECT_MENU', label: 'Select menu used' },
               { value: 'MODAL_SUBMIT', label: 'Modal submitted' }, { value: 'GUILD_MEMBER_ADD', label: 'Member joined' },
@@ -771,7 +790,20 @@ export function ControlDock({
             ]} ariaLabel="Simulation event" className="simulator-event-dropdown" />
             {selectedEvent === 'MESSAGE_CREATE' ? <label className="dock-field-label">Message<input className="studio-field" value={mockContent} onChange={(event) => setMockContent(event.target.value)} placeholder="!ping" /></label> : selectedEvent === 'SLASH_COMMAND' ? <label className="dock-field-label">Command<input className="studio-field" value={mockCommand} onChange={(event) => setMockCommand(event.target.value)} placeholder="help" /></label> : null}
             {selectedEvent === 'CRON_TICK' ? <div className="simulator-sample-note">Runs the first On Schedule node in this graph once, without waiting for its cron expression.</div> : <div className="simulator-sample-note">{simulationEventHint(selectedEvent)}</div>}
-            {['BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(selectedEvent) && <label className="dock-field-label">Custom ID<input className="studio-field" value={mockCustomId} onChange={(event) => setMockCustomId(event.target.value)} placeholder="component_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>}
+            {['BUTTON_CLICK', 'SELECT_MENU'].includes(selectedEvent) && <label className="dock-field-label">Custom ID<input className="studio-field" value={mockCustomId} onChange={(event) => setMockCustomId(event.target.value)} placeholder="component_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>}
+            {selectedEvent === 'MODAL_SUBMIT' && <div className="simulation-modal-fields">
+              {simulationModals.length > 0 && <label className="dock-field-label">Modal<AnimatedDropdown value={selectedModalNodeId} onChange={(nodeId) => {
+                const selected = simulationModals.find(({ node }) => node.id === nodeId);
+                setSelectedModalNodeId(nodeId);
+                setMockCustomId(String(selected?.modal.customId || ''));
+                setMockModalValues(Object.fromEntries((selected?.modal.components || []).map((field) => [field.customId, mockModalDefault(field)])));
+              }} options={simulationModals.map(({ node, modal }) => ({ value: node.id, label: `${node.label || 'Popup Modal'} · ${modal.title || modal.customId || 'Untitled'}` }))} ariaLabel="Modal to submit" className="simulator-event-dropdown" /></label>}
+              <label className="dock-field-label">Modal Custom ID<input className="studio-field" value={mockCustomId} onChange={(event) => setMockCustomId(event.target.value)} placeholder="modal_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
+              {selectedModalFields.length ? selectedModalFields.map((field) => <ModalSimulationField key={field.customId} field={field} value={mockModalValues[field.customId] ?? mockModalDefault(field)} onChange={(value) => setMockModalValues((previous) => ({ ...previous, [field.customId]: value }))} />) : <>
+                <label className="dock-field-label">Field Custom ID<input className="studio-field" value={mockModalFieldId} onChange={(event) => setMockModalFieldId(event.target.value)} placeholder="field_custom_id" autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label>
+                <label className="dock-field-label">Submitted value<input className="studio-field" value={mockModalValues[mockModalFieldId] ?? ''} onChange={(event) => setMockModalValues((previous) => ({ ...previous, [mockModalFieldId]: event.target.value }))} placeholder="Sample response" /></label>
+              </>}
+            </div>}
             <label className="dock-field-label">Author<input className="studio-field" value={mockAuthor} onChange={(event) => setMockAuthor(event.target.value)} /></label>
             <label className="dock-field-label">Channel ID<input className="studio-field" value={mockChannelId} onChange={(event) => setMockChannelId(event.target.value)} /></label>
             <div className="simulator-run-actions"><button className="studio-button studio-button-primary simulate-button" onClick={runSimulation} disabled={simulating || Boolean(debugRunId) || !activeTabId}><Play size={14} fill="currentColor" />{simulating ? 'Running…' : 'Run'}</button><button className="studio-button debug-run-button" onClick={beginDebugRun} disabled={simulating || Boolean(debugRunId) || !activeTabId}><StepForward size={14} />Debug</button></div>
@@ -792,6 +824,7 @@ export function ControlDock({
               <p className="debug-canvas-hint">Step and Continue are available on the canvas.</p>
             </> : <div className="dock-empty simulation-empty"><Cpu size={18} /><span>Starting debug run…</span></div> : !simResult ? <div className="dock-empty simulation-empty"><Cpu size={18} /><span>Results will appear here</span></div> : <>
               <div className="simulation-summary"><CircleCheck size={16} /><span>Completed</span><small>{simResult.elapsedMs} ms</small></div>
+              {selectedEvent === 'MODAL_SUBMIT' && modalSubmissionSnapshot.length > 0 && <section className="modal-submission-preview" aria-label="Submitted modal fields"><strong>Submitted fields</strong>{modalSubmissionSnapshot.map((field) => <div className="modal-submission-row" key={field.customId}><div><span>{field.label}</span><code>{field.customId}</code></div><pre>{field.displayValue}</pre></div>)}</section>}
               <div className={`simulation-path-scroll ${tracePathExpanded ? 'is-expanded' : ''}`} aria-label="Executed nodes"><div className="simulation-path">{(tracePathExpanded ? simResult.executedNodeIds || [] : (simResult.executedNodeIds || []).slice(0, 16)).map((id, index, visibleNodes) => {
                 const node = traceNodeById.get(id);
                 const label = node?.label || nodeDefinitionByType.get(node?.type)?.label || 'Unknown node';
@@ -947,7 +980,7 @@ function simulationEventHint(eventName) {
     SLASH_COMMAND: 'Uses your command, author, and channel fields with generated interaction data and sample options.',
     BUTTON_CLICK: 'Uses your custom ID, author, and channel fields with generated interaction data.',
     SELECT_MENU: 'Uses your custom ID and author/channel fields; the selected option is sample data.',
-    MODAL_SUBMIT: 'Uses your custom ID and author/channel fields; the submitted field value is sample data.',
+    MODAL_SUBMIT: 'Submits the selected modal’s fields with the values shown below.',
     GUILD_MEMBER_ADD: 'Uses the author field as the joining member; remaining member details are generated.',
     GUILD_MEMBER_REMOVE: 'Uses the author field as the departing member; remaining member details are generated.',
     MESSAGE_UPDATE: 'Uses your message, author, and channel fields; IDs and remaining Discord metadata are generated.',
@@ -967,10 +1000,21 @@ function createSimulationPayload(eventName, values) {
   if (eventName === 'CRON_TICK') return { ...base, cronNodeId: values.cronNodeId, scheduledAt: new Date(timestamp).toISOString(), timeZone: 'UTC', cronExpression: 'manual-debug' };
   if (eventName === 'MESSAGE_CREATE') return { ...base, content: values.mockContent, author };
   if (eventName === 'SLASH_COMMAND') return { ...base, type: 2, token: `mock_tok_${timestamp}`, member: { user: author }, data: { type: 1, name: values.mockCommand, options: [] } };
-  if (['BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName)) {
-    const type = eventName === 'MODAL_SUBMIT' ? 5 : 3;
+  if (eventName === 'MODAL_SUBMIT') {
+    const fields = values.modal?.components?.length ? values.modal.components : [{ customId: values.mockModalFieldId || 'sample-input', type: 'text' }];
+    const submittedFields = fields.map((field) => {
+      const value = values.mockModalValues?.[field.customId] ?? mockModalDefault(field);
+      const isScalar = field.type === 'text' || field.type === 'checkbox';
+      return {
+        custom_id: field.customId || 'sample-input',
+        ...(isScalar ? { value: field.type === 'checkbox' ? Boolean(value) : String(value ?? '') } : { values: Array.isArray(value) ? value : value === '' || value == null ? [] : [value] })
+      };
+    });
+    return { ...base, type: 5, token: `mock_tok_${timestamp}`, member: { user: author }, data: { custom_id: values.mockCustomId || values.modal?.customId || defaultMockCustomId(eventName), components: [{ type: 1, components: submittedFields }] } };
+  }
+  if (['BUTTON_CLICK', 'SELECT_MENU'].includes(eventName)) {
     const componentType = eventName === 'BUTTON_CLICK' ? 2 : 3;
-    return { ...base, type, token: `mock_tok_${timestamp}`, member: { user: author }, data: { component_type: componentType, custom_id: values.mockCustomId ?? defaultMockCustomId(eventName), values: eventName === 'SELECT_MENU' ? ['sample-option'] : undefined, components: eventName === 'MODAL_SUBMIT' ? [{ components: [{ custom_id: 'sample-input', value: 'Sample response' }] }] : [] } };
+    return { ...base, type: 3, token: `mock_tok_${timestamp}`, member: { user: author }, data: { component_type: componentType, custom_id: values.mockCustomId ?? defaultMockCustomId(eventName), values: eventName === 'SELECT_MENU' ? ['sample-option'] : undefined, components: [] } };
   }
   if (eventName === 'GUILD_MEMBER_ADD' || eventName === 'GUILD_MEMBER_REMOVE') return { ...base, user: author, joined_at: new Date(timestamp).toISOString() };
   if (eventName === 'MESSAGE_UPDATE') return { ...base, content: values.mockContent, author, edited_timestamp: new Date(timestamp).toISOString() };
@@ -979,6 +1023,33 @@ function createSimulationPayload(eventName, values) {
   if (eventName === 'CHANNEL_CREATE') return { ...base, name: 'sample-channel', type: 0, parent_id: null };
   if (eventName === 'VOICE_STATE_UPDATE') return { ...base, user_id: author.id, session_id: `session_${timestamp}`, self_mute: false, self_deaf: false };
   return base;
+}
+
+function mockModalDefault(field = {}) {
+  const options = Array.isArray(field.options) ? field.options : [];
+  const firstOption = options[0]?.value ?? options[0]?.label ?? '';
+  if (field.type === 'checkbox') return Boolean(field.defaultChecked);
+  if (['checkbox_group', 'user_select', 'role_select', 'mentionable_select', 'channel_select', 'file_upload'].includes(field.type) || Number(field.maxValues) > 1) return firstOption ? [String(firstOption)] : [];
+  if (field.type === 'string_select' || field.type === 'radio_group') return String(firstOption);
+  return field.type === 'text' ? '' : 'Sample response';
+}
+
+function createModalSubmissionRows(modal, values, fallbackId) {
+  const fields = modal?.components?.length ? modal.components : [{ customId: fallbackId || 'sample-input', label: 'Submitted value', type: 'text' }];
+  return fields.map((field) => {
+    const value = values?.[field.customId] ?? mockModalDefault(field);
+    return { label: field.label || field.customId || 'Field', customId: field.customId || 'sample-input', displayValue: Array.isArray(value) ? JSON.stringify(value) : typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '') };
+  });
+}
+
+function ModalSimulationField({ field, value, onChange }) {
+  const multiple = ['checkbox_group', 'user_select', 'role_select', 'mentionable_select', 'channel_select', 'file_upload'].includes(field.type) || Number(field.maxValues) > 1;
+  const options = (Array.isArray(field.options) ? field.options : []).map((option) => ({ value: String(option.value ?? option.label), label: String(option.label ?? option.value) }));
+  return <label className="dock-field-label modal-simulation-field"><span>{field.label || 'Modal field'} <code>{field.customId}</code></span>
+    {field.type === 'checkbox' ? <span className="modal-simulation-checkbox"><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /> Checked</span>
+      : options.length ? <select className="studio-field" multiple={multiple} value={multiple ? (Array.isArray(value) ? value.map(String) : []) : String(value ?? '')} onChange={(event) => onChange(multiple ? [...event.target.selectedOptions].map((option) => option.value) : event.target.value)}>{!multiple && <option value="">Choose a value</option>}{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+        : <input className="studio-field" value={Array.isArray(value) ? value.join(', ') : String(value ?? '')} onChange={(event) => onChange(multiple ? event.target.value.split(',').map((item) => item.trim()).filter(Boolean) : event.target.value)} placeholder={multiple ? 'Enter values separated by commas' : 'Sample response'} />}
+  </label>;
 }
 
 function defaultMockCustomId(eventName) {
