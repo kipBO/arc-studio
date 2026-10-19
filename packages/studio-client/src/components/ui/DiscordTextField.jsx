@@ -142,10 +142,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       }
     }
     if (!discordAutocomplete) return setMatch(null);
-    const found = textBeforeCaret.match(/(:[a-z\d_+-]*)$/i);
+    const found = textBeforeCaret.match(/(?:^|\s)(:[a-z\d_+-]*)$/i);
     if (!found) return setMatch(null);
-    const start = textBeforeCaret.length - found[1].length;
-    const query = found[1].slice(1);
+    const token = found[1];
+    const start = textBeforeCaret.length - token.length;
+    const query = token.slice(1);
     setMatch({ start, end: event.target.selectionStart ?? event.target.value.length, query });
   };
 
