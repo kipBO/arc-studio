@@ -2728,7 +2728,7 @@ export function App() {
       localDraft: initialText,
       maxLength,
       templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables),
-      templateSuggestions: getTemplateSocketSuggestions(activeGraph, node),
+      templateSuggestions: getTemplateSocketSuggestions(activeGraph, node).filter((item) => !availableVariables.some((variable) => variable.name?.toLowerCase() === item.name.toLowerCase())),
       applyValue,
       parentBlockContext
     });
@@ -4924,11 +4924,12 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     }
     if (source.type === 'format_text' && pinId === 'text') {
       return renderTextTemplate(source.data?.template, (name) => {
+        const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase()) || projectVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
+        if (variable) return initialVariableValue(variable);
         const slotWire = findInputWire(source.id, `slot_${name}`);
         const linked = slotWire ? resolveKnownStringOutput(slotWire.sourceNodeId, slotWire.sourcePinId, nextSeen) : undefined;
         if (linked !== undefined) return linked;
-        const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase()) || projectVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
-        return variable ? initialVariableValue(variable) : undefined;
+        return undefined;
       }, []);
     }
     return undefined;
@@ -5373,7 +5374,10 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
   }
   let pins = definition[direction] || [];
   if (node.type === 'format_text' && direction === 'inputs') {
-    const slots = getTextTemplateSlots(node.data?.template).map((name) => ({ id: `slot_${name}`, type: variablePinType([...variables.values()].find((variable) => variable.name?.toLowerCase() === name.toLowerCase())) }));
+    const slots = getTextTemplateSlots(node.data?.template).flatMap((name) => {
+      if ([...variables.values()].some((variable) => variable.name?.toLowerCase() === name.toLowerCase())) return [];
+      return [{ id: `slot_${name}`, type: 'string' }];
+    });
     pins = slots;
   }
   if (node.type === 'build_embed' && direction === 'inputs') {
