@@ -19,19 +19,28 @@ jobs:
           - name: macOS Universal
             runner: macos-latest
             target: universal-apple-darwin
-            artifact: packages/studio-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg*
+            artifact: |
+              packages/studio-desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg*
+              packages/studio-desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz*
+              packages/studio-desktop/src-tauri/target/universal-apple-darwin/release/bundle/arc-build-info.json
           - name: Windows 10 and 11 x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: packages/studio-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe*
+            artifact: |
+              packages/studio-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe*
+              packages/studio-desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/arc-build-info.json
           - name: Linux x86_64 AppImage
             runner: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact: packages/studio-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+            artifact: |
+              packages/studio-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+              packages/studio-desktop/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/arc-build-info.json
           - name: Linux ARM64 AppImage
             runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact: packages/studio-desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+            artifact: |
+              packages/studio-desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
+              packages/studio-desktop/src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/arc-build-info.json
 
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +48,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Check release tag, version, and channel
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/check-desktop-release-preflight.mjs "$GITHUB_REF_NAME"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -53,10 +65,20 @@ jobs:
             rustup target add "${{ matrix.target }}"
           fi
       - run: npm ci
+      - name: Require updater signing key for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: test -n "$TAURI_SIGNING_PRIVATE_KEY"
       - name: Build desktop installer
         shell: bash
         env:
           ARC_DESKTOP_TARGET: ${{ matrix.target }}
+          ARC_RELEASE_CHANNEL: ${{ contains(github.ref_name, '-') && 'nightly' || 'stable' }}
+          ARC_UPDATE_ENDPOINT: ${{ contains(github.ref_name, '-') && 'https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json' || 'https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npm run build:desktop
       - uses: actions/upload-artifact@v4
         with:
@@ -71,11 +93,24 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
-          merge-multiple: true
+      - name: Create signed update manifest
+        run: node scripts/create-desktop-update-manifest.mjs "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" release-assets
       - uses: softprops/action-gh-release@v2
         with:
-          files: release-assets/*
+          files: release-assets/**
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ !contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
+      - name: Publish rolling nightly manifest
+        if: contains(github.ref_name, '-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view nightly >/dev/null 2>&1; then
+            gh release create nightly --prerelease --title "ARC Studio Nightly Updates" --notes "Rolling update metadata for prerelease builds."
+          fi
+          gh release upload nightly release-assets/latest.json --clobber
