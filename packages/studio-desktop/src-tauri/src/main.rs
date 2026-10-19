@@ -11,7 +11,371 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use tauri::{Manager, RunEvent, State, WebviewWindowBuilder, WindowEvent};
+use tauri::{Manager, RunEvent, State, Webview, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_updater::UpdaterExt;
+
+const STABLE_UPDATE_ENDPOINT: &str = "https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json";
+const NIGHTLY_UPDATE_ENDPOINT: &str = "https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json";
+
+fn build_release_channel() -> &'static str {
+    option_env!("ARC_RELEASE_CHANNEL")
+        .filter(|channel| *channel == "nightly" || *channel == "stable")
+        .unwrap_or_else(|| {
+            if option_env!("CARGO_PKG_VERSION").is_some_and(|version| version.contains('-')) {
+                "nightly"
+            } else {
+                "stable"
+            }
+        })
+}
+
+fn updater_endpoint(channel: &str) -> Result<url::Url, String> {
+    if channel != build_release_channel() {
+        return Err(format!("This ARC Studio build is locked to the {} update channel.", build_release_channel()));
+    }
+    let endpoint = match channel {
+        "stable" => STABLE_UPDATE_ENDPOINT,
+        "nightly" => NIGHTLY_UPDATE_ENDPOINT,
+        _ => return Err("Choose the stable or nightly update channel.".to_string()),
+    };
+    endpoint.parse().map_err(|error| format!("Invalid updater endpoint: {error}"))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelUpdateMetadata {
+    rid: tauri::ResourceId,
+    current_version: String,
+    version: String,
+    body: Option<String>,
+    raw_json: serde_json::Value,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedUpdateStatus {
+    version: String,
+    body: Option<String>,
+    staged: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedUpdateMetadata {
+    channel: String,
+    version: String,
+    raw_json: serde_json::Value,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateRollbackMetadata {
+    source: PathBuf,
+    backup: PathBuf,
+    launch_relative_path: PathBuf,
+    backup_launch_path: PathBuf,
+    startup_marker: PathBuf,
+    health_marker: PathBuf,
+    unit_kind: String,
+}
+
+fn rollback_metadata_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let directory = app.path().app_local_data_dir().map_err(|error| format!("Could not access ARC Studio local data: {error}"))?.join("updates");
+    Ok(directory.join("rollback.json"))
+}
+
+fn update_install_unit() -> Result<(PathBuf, PathBuf, String), String> {
+    let executable = std::env::current_exe().map_err(|error| format!("Could not locate the installed ARC Studio app: {error}"))?;
+    #[cfg(target_os = "macos")]
+    {
+        let app_bundle = executable.ancestors().find(|path| path.extension().is_some_and(|extension| extension == "app"))
+            .ok_or_else(|| "Could not locate the ARC Studio app bundle for update recovery.".to_string())?.to_path_buf();
+        let relative = executable.strip_prefix(&app_bundle).map_err(|_| "Could not locate the ARC Studio executable inside its app bundle.".to_string())?.to_path_buf();
+        return Ok((app_bundle, relative, "directory".to_string()));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let directory = executable.parent().ok_or_else(|| "Could not locate the ARC Studio install folder.".to_string())?.to_path_buf();
+        let relative = executable.strip_prefix(&directory).map_err(|_| "Could not locate ARC Studio inside its install folder.".to_string())?.to_path_buf();
+        return Ok((directory, relative, "directory".to_string()));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|path| !path.is_empty()) {
+            let image = PathBuf::from(appimage);
+            return Ok((image.clone(), image.file_name().map(PathBuf::from).unwrap_or_default(), "file".to_string()));
+        }
+        return Ok((executable.clone(), executable.file_name().map(PathBuf::from).unwrap_or_default(), "file".to_string()));
+    }
+    #[allow(unreachable_code)]
+    Err("Update recovery is not supported on this platform.".to_string())
+}
+
+fn copy_install_unit(source: &Path, destination: &Path, unit_kind: &str) -> Result<(), String> {
+    if unit_kind == "file" {
+        fs::copy(source, destination).map_err(|error| format!("Could not copy the current ARC Studio app for recovery: {error}"))?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    let result = Command::new("/usr/bin/ditto").arg(source).arg(destination).status();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("robocopy").arg(source).arg(destination).arg("/MIR").arg("/NFL").arg("/NDL").arg("/NJH").arg("/NJS").arg("/NP").status();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("cp").arg("-a").arg(source).arg(destination).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let result: io::Result<std::process::ExitStatus> = Err(io::Error::new(io::ErrorKind::Unsupported, "unsupported platform"));
+    let status = result.map_err(|error| format!("Could not copy the ARC Studio install for recovery: {error}"))?;
+    #[cfg(target_os = "windows")]
+    let succeeded = status.code().is_some_and(|code| code <= 7);
+    #[cfg(not(target_os = "windows"))]
+    let succeeded = status.success();
+    if !succeeded { return Err(format!("Could not copy the ARC Studio install for recovery (copy tool exited with {}).", status)); }
+    Ok(())
+}
+
+fn cleanup_rollback_copy(metadata: &UpdateRollbackMetadata) {
+    #[cfg(target_os = "windows")]
+    {
+        let escaped_path = metadata.backup.to_string_lossy().replace('\'', "''");
+        let script = format!("Start-Sleep -Seconds 2; Remove-Item -LiteralPath '{escaped_path}' -Recurse -Force -ErrorAction SilentlyContinue");
+        let mut command = Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", &script]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000 | 0x00000008);
+        let _ = command.spawn();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = if metadata.backup.is_dir() { fs::remove_dir_all(&metadata.backup) } else { fs::remove_file(&metadata.backup) };
+    }
+}
+
+fn prepare_update_rollback<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    let (source, launch_relative_path, unit_kind) = update_install_unit()?;
+    if !source.exists() { return Err("The installed ARC Studio app could not be found for update recovery.".to_string()); }
+    let metadata_path = rollback_metadata_path(app)?;
+    let update_directory = metadata_path.parent().ok_or_else(|| "Could not prepare update recovery storage.".to_string())?;
+    fs::create_dir_all(update_directory).map_err(|error| format!("Could not prepare update recovery storage: {error}"))?;
+    let backup = update_directory.join("rollback-previous");
+    if backup.exists() {
+        if backup.is_dir() { fs::remove_dir_all(&backup) } else { fs::remove_file(&backup) }
+            .map_err(|error| format!("Could not clear an old update recovery copy: {error}"))?;
+    }
+    copy_install_unit(&source, &backup, &unit_kind)?;
+    let startup_marker = update_directory.join("rollback-startup-heartbeat");
+    let health_marker = update_directory.join("rollback-launched");
+    let _ = fs::remove_file(&startup_marker);
+    let _ = fs::remove_file(&health_marker);
+    let backup_launch_path = if unit_kind == "file" { backup.clone() } else { backup.join(&launch_relative_path) };
+    let metadata = UpdateRollbackMetadata { source, backup, launch_relative_path, backup_launch_path, startup_marker, health_marker, unit_kind };
+    fs::write(&metadata_path, serde_json::to_vec(&metadata).map_err(|error| format!("Could not save update recovery details: {error}"))?)
+        .map_err(|error| format!("Could not save update recovery details: {error}"))?;
+    Ok(metadata_path)
+}
+
+fn arm_update_rollback(metadata_path: &Path) -> Result<(), String> {
+    let metadata: UpdateRollbackMetadata = serde_json::from_slice(&fs::read(metadata_path).map_err(|error| format!("Could not read update recovery details: {error}"))?)
+        .map_err(|error| format!("Update recovery details are invalid: {error}"))?;
+    if !metadata.backup_launch_path.is_file() { return Err("The previous ARC Studio build is missing; update recovery could not be armed.".to_string()); }
+    let mut command = Command::new(&metadata.backup_launch_path);
+    command.arg("--arc-update-watchdog").arg(metadata_path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000 | 0x00000008);
+    }
+    command.spawn().map_err(|error| format!("Could not start the update recovery monitor: {error}"))?;
+    Ok(())
+}
+
+fn restore_previous_update(metadata_path: &Path, metadata: UpdateRollbackMetadata) {
+    eprintln!("ARC Studio did not finish launching after an update. Restoring the previous build.");
+    if metadata.source.exists() {
+        let removed = if metadata.source.is_dir() { fs::remove_dir_all(&metadata.source) } else { fs::remove_file(&metadata.source) };
+        if let Err(error) = removed { eprintln!("Could not remove the failed ARC Studio update: {error}"); return; }
+    }
+    if let Some(parent) = metadata.source.parent() {
+        if fs::create_dir_all(parent).is_err() { return; }
+    }
+    if let Err(error) = copy_install_unit(&metadata.backup, &metadata.source, &metadata.unit_kind) {
+        eprintln!("Could not restore the previous ARC Studio build: {error}");
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let launch = Command::new("/usr/bin/open").arg(&metadata.source).spawn();
+    #[cfg(target_os = "windows")]
+    let launch = Command::new(metadata.source.join(&metadata.launch_relative_path)).spawn();
+    #[cfg(target_os = "linux")]
+    let launch = Command::new(&metadata.source).spawn();
+    if let Err(error) = launch { eprintln!("Previous ARC Studio build restored. Reopen it manually: {error}"); }
+    cleanup_rollback_copy(&metadata);
+    let _ = fs::remove_file(&metadata.startup_marker);
+    let _ = fs::remove_file(&metadata.health_marker);
+    let _ = fs::remove_file(metadata_path);
+}
+
+fn run_update_watchdog(metadata_path: &Path) {
+    let Ok(bytes) = fs::read(metadata_path) else { return; };
+    let Ok(metadata) = serde_json::from_slice::<UpdateRollbackMetadata>(&bytes) else { return; };
+    let startup_deadline = Instant::now() + Duration::from_secs(45);
+    let mut healthy_ui_deadline = None;
+    loop {
+        if metadata.health_marker.exists() {
+            thread::sleep(Duration::from_secs(300));
+            cleanup_rollback_copy(&metadata);
+            let _ = fs::remove_file(&metadata.startup_marker);
+            let _ = fs::remove_file(&metadata.health_marker);
+            let _ = fs::remove_file(metadata_path);
+            return;
+        }
+        if let Ok(heartbeat) = fs::read_to_string(&metadata.startup_marker) {
+            let ui_deadline = *healthy_ui_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(90));
+            let heartbeat_at = heartbeat.trim().parse::<u128>().unwrap_or(0);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or(0);
+            if heartbeat_at == 0 || now.saturating_sub(heartbeat_at) > 4_000 || Instant::now() >= ui_deadline {
+                restore_previous_update(metadata_path, metadata);
+                return;
+            }
+        } else if Instant::now() >= startup_deadline {
+            restore_previous_update(metadata_path, metadata);
+            return;
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn mark_update_starting<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Ok(metadata_path) = rollback_metadata_path(app) else { return; };
+    let Ok(bytes) = fs::read(&metadata_path) else { return; };
+    let Ok(metadata) = serde_json::from_slice::<UpdateRollbackMetadata>(&bytes) else { return; };
+    let heartbeat_path = metadata.startup_marker;
+    let health_path = metadata.health_marker;
+    let heartbeat = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|duration| duration.as_millis()).unwrap_or(0).to_string();
+    let _ = fs::write(&heartbeat_path, heartbeat());
+    thread::spawn(move || {
+        while !health_path.exists() {
+            if fs::write(&heartbeat_path, heartbeat()).is_err() { break; }
+            thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+#[tauri::command]
+fn mark_update_healthy(app: tauri::AppHandle) -> Result<(), String> {
+    let metadata_path = rollback_metadata_path(&app)?;
+    if !metadata_path.is_file() { return Ok(()); }
+    let metadata: UpdateRollbackMetadata = serde_json::from_slice(&fs::read(&metadata_path).map_err(|error| format!("Could not read update recovery details: {error}"))?)
+        .map_err(|error| format!("Update recovery details are invalid: {error}"))?;
+    fs::write(metadata.health_marker, b"launched").map_err(|error| format!("Could not confirm ARC Studio launched: {error}"))
+}
+
+fn staged_update_paths<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, PathBuf), String> {
+    let directory = app.path().app_config_dir().map_err(|error| format!("Could not access ARC Studio settings: {error}"))?.join("updates");
+    Ok((directory.join("pending-update.json"), directory.join("pending-update.bin")))
+}
+
+#[tauri::command]
+async fn check_channel_update(webview: Webview, channel: String) -> Result<Option<ChannelUpdateMetadata>, String> {
+    let endpoint = updater_endpoint(&channel)?;
+    let updater = webview.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Could not configure update check: {error}"))?
+        .build()
+        .map_err(|error| format!("Could not start update check: {error}"))?;
+    let Some(update) = updater.check().await.map_err(|error| format!("Update check failed: {error}"))? else { return Ok(None); };
+    let metadata = ChannelUpdateMetadata {
+        rid: webview.resources_table().add(update.clone()),
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
+        body: update.body.clone(),
+        raw_json: update.raw_json.clone(),
+    };
+    Ok(Some(metadata))
+}
+
+#[tauri::command]
+async fn install_channel_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, webview: Webview<R>, rid: tauri::ResourceId, channel: String) -> Result<(), String> {
+    let _ = updater_endpoint(&channel)?;
+    let update = webview.resources_table().get::<tauri_plugin_updater::Update>(rid)
+        .map_err(|error| format!("The selected update is no longer available: {error}"))?;
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| format!("Could not download the ARC Studio update: {error}"))?;
+    update.verify(&bytes).map_err(|error| format!("The ARC Studio update signature could not be verified: {error}"))?;
+    let metadata_path = prepare_update_rollback(&app)?;
+    arm_update_rollback(&metadata_path)?;
+    update.install(&bytes).map_err(|error| format!("Could not install the ARC Studio update: {error}"))?;
+    app.restart();
+}
+
+#[tauri::command]
+async fn stage_stable_update<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> Result<Option<StagedUpdateStatus>, String> {
+    let endpoint = updater_endpoint("stable")?;
+    let updater = app.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Could not configure update check: {error}"))?
+        .build()
+        .map_err(|error| format!("Could not start update check: {error}"))?;
+    let Some(update) = updater.check().await.map_err(|error| format!("Update check failed: {error}"))? else { return Ok(None); };
+    let version = update.version.clone();
+    let body = update.body.clone();
+    let raw_json = update.raw_json.clone();
+    let (metadata_path, package_path) = staged_update_paths(&app)?;
+    let directory = metadata_path.parent().ok_or_else(|| "Could not prepare update storage.".to_string())?;
+    fs::create_dir_all(directory).map_err(|error| format!("Could not prepare update storage: {error}"))?;
+    if package_path.is_file() {
+        if let Ok(existing) = fs::read(&metadata_path).and_then(|bytes| serde_json::from_slice::<StagedUpdateMetadata>(&bytes).map_err(io::Error::other)) {
+            if existing.channel == "stable" && existing.version == version {
+                return Ok(Some(StagedUpdateStatus { version, body, staged: true }));
+            }
+        }
+    }
+    let bytes = update.download(|_, _| {}, || {}).await.map_err(|error| format!("Could not download ARC Studio update: {error}"))?;
+    let metadata = StagedUpdateMetadata { channel: "stable".to_string(), version: version.clone(), raw_json };
+    let metadata_temp = metadata_path.with_extension("json.tmp");
+    let package_temp = package_path.with_extension("bin.tmp");
+    fs::write(&package_temp, bytes).map_err(|error| format!("Could not save the downloaded update: {error}"))?;
+    fs::write(&metadata_temp, serde_json::to_vec(&metadata).map_err(|error| format!("Could not save update details: {error}"))?)
+        .map_err(|error| format!("Could not save update details: {error}"))?;
+    fs::rename(&package_temp, &package_path).map_err(|error| format!("Could not stage the update package: {error}"))?;
+    fs::rename(&metadata_temp, &metadata_path).map_err(|error| format!("Could not stage update details: {error}"))?;
+    Ok(Some(StagedUpdateStatus { version, body, staged: true }))
+}
+
+#[tauri::command]
+fn install_staged_update<R: tauri::Runtime>(app: tauri::AppHandle<R>, channel: String) -> Result<bool, String> {
+    let (metadata_path, package_path) = staged_update_paths(&app)?;
+    if !metadata_path.is_file() || !package_path.is_file() { return Ok(false); }
+    let metadata: StagedUpdateMetadata = serde_json::from_slice(&fs::read(&metadata_path).map_err(|error| format!("Could not read staged update details: {error}"))?)
+        .map_err(|error| format!("Staged update details are invalid: {error}"))?;
+    if metadata.channel != channel {
+        let _ = fs::remove_file(metadata_path);
+        let _ = fs::remove_file(package_path);
+        return Ok(false);
+    }
+    let endpoint = updater_endpoint(&channel)?;
+    let updater = app.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| format!("Could not configure update installation: {error}"))?
+        .build()
+        .map_err(|error| format!("Could not prepare update installation: {error}"))?;
+    let Some(update) = updater.restore_update(metadata.raw_json).map_err(|error| format!("Could not verify staged update: {error}"))? else {
+        let _ = fs::remove_file(metadata_path);
+        let _ = fs::remove_file(package_path);
+        return Ok(false);
+    };
+    if update.version != metadata.version {
+        let _ = fs::remove_file(metadata_path);
+        let _ = fs::remove_file(package_path);
+        return Ok(false);
+    }
+    let bytes = fs::read(&package_path).map_err(|error| format!("Could not read staged update package: {error}"))?;
+    update.verify(&bytes).map_err(|error| format!("The ARC Studio update signature could not be verified: {error}"))?;
+    let rollback_path = prepare_update_rollback(&app)?;
+    arm_update_rollback(&rollback_path)?;
+    update.install(&bytes).map_err(|error| format!("Could not install ARC Studio update: {error}"))?;
+    let _ = fs::remove_file(metadata_path);
+    let _ = fs::remove_file(package_path);
+    app.restart();
+}
 
 #[tauri::command]
 fn read_arc_project_file(path: String) -> Result<String, String> {
@@ -142,6 +506,37 @@ fn delete_workspace_password(origin: String) -> Result<(), String> {
     }
 }
 
+fn local_session_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new("studio.arc.desktop", "local-workspace-session")
+        .map_err(|error| format!("Could not access the system credential store: {error}"))
+}
+
+#[tauri::command]
+fn get_local_session_token() -> Result<Option<String>, String> {
+    match local_session_entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("Could not read the saved Local Workspace session: {error}")),
+    }
+}
+
+#[tauri::command]
+fn save_local_session_token(token: String) -> Result<(), String> {
+    if token.is_empty() || token.len() > 4096 {
+        return Err("The Local Workspace session token is invalid.".to_string());
+    }
+    local_session_entry()?.set_password(&token)
+        .map_err(|error| format!("Could not save the Local Workspace session: {error}"))
+}
+
+#[tauri::command]
+fn delete_local_session_token() -> Result<(), String> {
+    match local_session_entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("Could not remove the saved Local Workspace session: {error}")),
+    }
+}
+
 fn bot_token_encryption_key() -> Result<String, String> {
     let entry = keyring::Entry::new("studio.arc.desktop", "bot-token-encryption-key")
         .map_err(|_| "Could not access the system credential store for bot-token encryption.".to_string())?;
@@ -217,7 +612,7 @@ unsafe fn set_macos_dock_icon(icon_png: &[u8]) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn reset_local_data<R: tauri::Runtime>(app: tauri::AppHandle<R>, server: State<'_, StudioServer>, username: String, password: String, server_port: Option<u16>, saved_remote_origins: Vec<String>) -> Result<(), String> {
+fn reset_local_data<R: tauri::Runtime>(app: tauri::AppHandle<R>, server: State<'_, StudioServer>, username: String, password: String, server_port: Option<u16>) -> Result<(), String> {
     let is_dev = cfg!(debug_assertions);
     let managed_port = *server.port.lock().map_err(|_| "ARC Studio server state is unavailable.".to_string())?;
     let port = match (managed_port, server_port) {
@@ -227,23 +622,34 @@ fn reset_local_data<R: tauri::Runtime>(app: tauri::AppHandle<R>, server: State<'
         (None, _) => return Err("The local workspace server is unavailable. Restart ARC Studio and try again.".to_string()),
     };
     verify_local_reset_password(port, &username, &password)?;
-
-    for origin in saved_remote_origins {
-        delete_workspace_password(origin)?;
-    }
+    let _ = delete_local_session_token();
 
     if is_dev { reset_local_workspace_in_dev(port, &username, &password)?; }
 
     if !is_dev { stop_studio_server(&app); }
     let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     let config_dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
-    if data_dir.exists() { fs::remove_dir_all(&data_dir).map_err(|error| format!("Could not remove local workspace data: {error}"))?; }
-    if config_dir != data_dir && config_dir.exists() { fs::remove_dir_all(&config_dir).map_err(|error| format!("Could not remove local app settings: {error}"))?; }
+    clear_local_directory(&data_dir).map_err(|error| format!("Could not remove local workspace data: {error}"))?;
+    if config_dir != data_dir {
+        clear_local_directory(&config_dir).map_err(|error| format!("Could not remove local app settings: {error}"))?;
+    }
 
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(if is_dev { 1800 } else { 500 }));
         app.request_restart();
     });
+    Ok(())
+}
+
+fn clear_local_directory(directory: &Path) -> io::Result<()> {
+    if !directory.exists() { return Ok(()); }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_name() == "updates" && entry.file_type()?.is_dir() { continue; }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() { fs::remove_dir_all(entry.path())?; }
+        else { fs::remove_file(entry.path())?; }
+    }
     Ok(())
 }
 
@@ -285,7 +691,12 @@ fn verify_local_reset_password(port: u16, username: &str, password: &str) -> Res
     let response = String::from_utf8_lossy(&response);
     if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") { Ok(()) }
     else if response.starts_with("HTTP/1.1 401") || response.starts_with("HTTP/1.0 401") { Err("The ARC Studio password is incorrect.".to_string()) }
-    else { Err("Could not verify your ARC Studio password.".to_string()) }
+    else {
+        let status = response.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or("unknown");
+        if status == "429" { Err("Too many password checks. Wait a few minutes and try again.".to_string()) }
+        else if status == "404" { Err("This ARC Studio server does not support local data reset. Update ARC Studio and try again.".to_string()) }
+        else { Err(format!("Could not verify your ARC Studio password (local server returned HTTP {status}).")) }
+    }
 }
 
 fn workspace_credential_entry(origin: &str) -> Result<keyring::Entry, String> {
@@ -319,9 +730,10 @@ struct DiscordPresence {
 }
 struct WindowSizeState(Arc<Mutex<WindowDimensions>>);
 #[derive(Clone, Copy)]
-struct WindowDimensions { width: f64, height: f64 }
+struct WindowDimensions { width: f64, height: f64, maximized: bool }
 const DISCORD_APPLICATION_ID: &str = "1559947417699360821";
 const ARC_GITHUB_URL: &str = "https://github.com/relentiousdragon/arc-studio";
+const NIGHTLY_RPC_ICON_URL: &str = "https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-desktop/src-tauri/icons/nightly-icon.png";
 
 #[tauri::command]
 fn update_discord_presence(
@@ -355,13 +767,20 @@ fn update_discord_presence(
         *connection = Some(client);
     }
     let client = connection.as_mut().expect("connection was initialized");
-    let activity = activity::Activity::new()
-        .name("ARC Studio")
+    let mut activity = activity::Activity::new()
+        .name(if build_release_channel() == "nightly" { "ARC Studio Nightly" } else { "ARC Studio" })
         .activity_type(activity_type)
         .details(details)
         .state(state_text)
         .timestamps(activity::Timestamps::new().start(started_at_ms))
         .buttons(vec![activity::Button::new("GitHub", ARC_GITHUB_URL)]);
+    if build_release_channel() == "nightly" {
+        activity = activity.assets(
+            activity::Assets::new()
+                .large_image(NIGHTLY_RPC_ICON_URL)
+                .large_text("ARC Studio Nightly"),
+        );
+    }
     if client.set_activity(activity).is_err() {
         if let Some(mut client) = connection.take() {
             let _ = client.close();
@@ -374,6 +793,11 @@ fn update_discord_presence(
 #[tauri::command]
 fn clear_discord_presence(presence: State<'_, DiscordPresence>) {
     clear_discord_presence_inner(&presence);
+}
+
+#[tauri::command]
+fn restart_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    app.restart()
 }
 
 #[tauri::command]
@@ -420,24 +844,39 @@ fn presence_text(value: &str) -> String {
 }
 
 fn main() {
+    let startup_args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if startup_args.first().is_some_and(|arg| arg == "--arc-update-watchdog") {
+        if let Some(metadata_path) = startup_args.get(1) { run_update_watchdog(Path::new(metadata_path)); }
+        return;
+    }
     #[cfg(target_os = "windows")]
     if !windows_10_or_newer() {
         show_windows_10_required_message();
         return;
     }
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_workspace_password,
             save_workspace_password,
             delete_workspace_password,
+            get_local_session_token,
+            save_local_session_token,
+            delete_local_session_token,
             set_release_channel_icon,
             read_arc_project_file,
             save_project_export,
             open_project_window,
             reset_local_data,
             open_external_url,
+            check_channel_update,
+            install_channel_update,
+            stage_stable_update,
+            install_staged_update,
+            mark_update_healthy,
             update_discord_presence,
-            clear_discord_presence
+            clear_discord_presence,
+            restart_app
         ])
         .manage(StudioServer { child: Mutex::new(None), port: Mutex::new(None) })
         .manage(DiscordPresence {
@@ -445,6 +884,7 @@ fn main() {
             started_at_ms: Mutex::new(None),
         })
         .setup(|app| {
+            mark_update_starting(app.handle());
             let window_config = app
                 .config()
                 .app
@@ -482,6 +922,7 @@ fn main() {
             let desktop_target = option_env!("ARC_DESKTOP_TARGET")
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
+            let release_channel = build_release_channel();
             let startup_project_files = std::env::args_os().skip(1)
                 .map(PathBuf::from)
                 .filter(|path| is_arc_project_path(path))
@@ -496,9 +937,10 @@ fn main() {
                 .map(js_string_literal)
                 .unwrap_or_else(|| "null".to_string());
             let init_script = format!(
-                "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_PROJECT_FILES__ = [{}];",
+                "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_PROJECT_FILES__ = [{}];",
                 js_string_literal(platform),
                 js_string_literal(&desktop_target),
+                js_string_literal(release_channel),
                 js_string_literal(&local_username),
                 api_base_url,
                 startup_error,
@@ -508,6 +950,7 @@ fn main() {
             window = window.initialization_script(init_script);
 
             let window = window.build()?;
+            if window_size.maximized { let _ = window.maximize(); }
             let window_dimensions = Arc::new(Mutex::new(window_size));
             app.manage(WindowSizeState(window_dimensions.clone()));
             let app_handle = app.handle().clone();
@@ -518,6 +961,11 @@ fn main() {
                     WindowEvent::Resized(size) => Some((size.width, size.height, None)),
                     WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size, .. } => Some((new_inner_size.width, new_inner_size.height, Some(*scale_factor))),
                     WindowEvent::CloseRequested { .. } => {
+                        if let Some(window) = app_handle.get_webview_window(&window_label) {
+                            if let Ok(mut dimensions) = window_dimensions.lock() {
+                                dimensions.maximized = window.is_maximized().unwrap_or(false);
+                            }
+                        }
                         save_window_dimensions(&save_path, &window_dimensions);
                         None
                     }
@@ -525,7 +973,14 @@ fn main() {
                 };
                 let Some((width, height, event_scale_factor)) = next_size else { return; };
                 let Some(window) = app_handle.get_webview_window(&window_label) else { return; };
-                if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) { return; }
+                let maximized = window.is_maximized().unwrap_or(false);
+                if maximized || window.is_fullscreen().unwrap_or(false) {
+                    if let Ok(mut dimensions) = window_dimensions.lock() {
+                        dimensions.maximized = maximized;
+                    }
+                    save_window_dimensions(&save_path, &window_dimensions);
+                    return;
+                }
                 let scale_factor = event_scale_factor.unwrap_or_else(|| window.scale_factor().unwrap_or(1.0));
                 let logical_width = width as f64 / scale_factor;
                 let logical_height = height as f64 / scale_factor;
@@ -539,6 +994,7 @@ fn main() {
                 if let Ok(mut dimensions) = window_dimensions.lock() {
                     dimensions.width = logical_width;
                     dimensions.height = logical_height;
+                    dimensions.maximized = false;
                 }
                 save_window_dimensions(&save_path, &window_dimensions);
             });
@@ -626,13 +1082,20 @@ fn restore_window_size<R: tauri::Runtime>(app: &tauri::App<R>, config: &tauri::u
         let mut values = contents.split_whitespace();
         let width = values.next()?.parse::<f64>().ok()?;
         let height = values.next()?.parse::<f64>().ok()?;
-        if values.next().is_some() || !width.is_finite() || !height.is_finite() { return None; }
-        Some(WindowDimensions { width, height })
+        if !width.is_finite() || !height.is_finite() { return None; }
+        let maximized = match values.next() {
+            None => false,
+            Some("maximized") => true,
+            Some(_) => return None,
+        };
+        if values.next().is_some() { return None; }
+        Some(WindowDimensions { width, height, maximized })
     });
-    let saved = saved.unwrap_or(WindowDimensions { width: config.width, height: config.height });
+    let saved = saved.unwrap_or(WindowDimensions { width: config.width, height: config.height, maximized: false });
     WindowDimensions {
         width: saved.width.clamp(minimum_width, maximum_width),
         height: saved.height.clamp(minimum_height, maximum_height),
+        maximized: saved.maximized,
     }
 }
 
@@ -640,7 +1103,7 @@ fn save_window_dimensions(path: &Path, dimensions: &Arc<Mutex<WindowDimensions>>
     let Some(parent) = path.parent() else { return; };
     if fs::create_dir_all(parent).is_err() { return; }
     if let Ok(dimensions) = dimensions.lock() {
-        let _ = fs::write(path, format!("{:.0} {:.0}", dimensions.width, dimensions.height));
+        let _ = fs::write(path, format!("{:.0} {:.0}{}", dimensions.width, dimensions.height, if dimensions.maximized { " maximized" } else { "" }));
     }
 }
 
