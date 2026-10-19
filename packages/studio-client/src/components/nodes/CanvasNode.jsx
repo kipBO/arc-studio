@@ -2,10 +2,10 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FileCode2, Plus, X } from 'lucide-react';
 import { PinColors } from './nodeDefinitions.js';
+import { DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { EmbedNodeBuilder } from './EmbedNodeBuilder.jsx';
-import { ModalNodeBuilder } from './ModalNodeBuilder.jsx';
 import { JsonSchemaEditor } from './JsonSchemaEditor.jsx';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
@@ -15,12 +15,29 @@ import { onPageBlur } from '../../core/pageFocus.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
 const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'object' ? {} : '';
+const slashCommandPermissionOptions = [
+  { value: '', label: 'Everyone' },
+  ...DISCORD_PERMISSIONS.map((permission) => ({
+    value: String(1n << BigInt(permission.bit)),
+    label: permission.label
+  }))
+];
 const channelPermissionOptions = [
   ['ViewChannel', 'View channel'], ['SendMessages', 'Send messages'], ['ReadMessageHistory', 'Read message history'],
   ['AttachFiles', 'Attach files'], ['EmbedLinks', 'Embed links'], ['AddReactions', 'Add reactions'],
   ['ManageMessages', 'Manage messages'], ['ManageChannels', 'Manage channels'], ['UseApplicationCommands', 'Use app commands'],
   ['Connect', 'Connect to voice'], ['Speak', 'Speak in voice']
 ];
+function variableValuePaths(value, root, depth = 0, output = []) {
+  if (depth >= 4 || value == null || typeof value !== 'object') return output;
+  const entries = Array.isArray(value) ? value.slice(0, 10).map((_item, index) => [index, value[index]]) : Object.entries(value).slice(0, 40).filter(([key]) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key));
+  for (const [key, child] of entries) {
+    const path = Array.isArray(value) ? `${root}[${key}]` : `${root}.${key}`;
+    output.push({ path, label: path });
+    variableValuePaths(child, path, depth + 1, output);
+  }
+  return output;
+}
 
 function getSlashCommandNameIssue(value) {
   const name = String(value ?? '');
@@ -49,14 +66,14 @@ function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', 
 
 export function CanvasNode({
   node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, selected = false, illuminated = false, isLocked = false,
-  snappedPin = null, appEmojis = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenFunctionGraph
+  snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
   const inputs = execFirst(nodeDef.inputs);
   const outputs = execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
-  const update = (key, value) => onNodeDataChange?.(node.id, typeof key === 'object' ? { ...node.data, ...key } : { ...node.data, [key]: value });
+  const update = (key, value) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value });
   const selectedVariable = graphVariables.find((variable) => variable.id === node.data?.variableId && (variable.scope || 'graph') === (node.data?.scope || 'graph'));
   const configureTextFields = (element) => {
     if (!element) return;
@@ -79,6 +96,7 @@ export function CanvasNode({
         data-pin-index={index}
         data-direction={direction}
         data-pin-type={pin.type}
+        data-tooltip={`${pin.label} · ${pin.type}`}
         data-pin-description={`${pin.description || (pin.type === 'exec' ? direction === 'input' ? 'Execution input · accepts multiple incoming paths; runs once for each active path' : 'Execution output · each connected path runs in order' : pin.label)} · ${pin.type}`}
         onPointerDown={(event) => {
           if (direction !== 'output') { event.stopPropagation(); return; }
@@ -102,6 +120,7 @@ export function CanvasNode({
     <article
       className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''}`}
       data-node-card-id={node.id}
+      tabIndex={-1}
       style={{ '--node-accent': nodeDef.color, '--node-rows': rows, transform: `translate3d(${node.x}px, ${node.y}px, 0)` }}
       ref={configureTextFields}
       onClick={(event) => { event.stopPropagation(); onSelect?.(node.id, event); }}
@@ -124,12 +143,12 @@ export function CanvasNode({
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, connectedInputIds, appEmojis, authToken)}
+      {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions)}
     </article>
   );
 }
 
-function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, connectedInputIds, appEmojis, authToken) {
+function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   const textEditor = (id, label, maxLength = 2000, placeholder = '', autocomplete = true) => {
     const value = String(node.data?.[id] ?? '');
@@ -138,6 +157,18 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
   };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
+  if (node.type === 'data_get_modal_value') {
+    const fieldId = String(node.data?.custom_id ?? '');
+    const fieldOptions = [...new Map(modalFieldOptions.map((item) => [item.value, item])).values()];
+    return <div className="node-config node-config-stack">
+      {!isConnected('submitted_values') && <span className="node-config-hint">Connect <strong>Submitted Values</strong> from On Modal Submitted.</span>}
+      {!isConnected('custom_id') && <>
+        {fieldOptions.length > 0 && <FallbackField label="Modal field"><AnimatedDropdown value={fieldId} options={fieldOptions} onChange={(value) => update('custom_id', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Popup modal field" placeholder="Choose a field" className="node-select" /></FallbackField>}
+        <FallbackField label="Field Custom ID"><input value={fieldId} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Enter the field's custom ID" aria-label="Field Custom ID" /></FallbackField>
+      </>}
+      <span className="node-config-hint">Returns the matching field value. Multi-select fields return an array; use <code>Get Modal Value → Value</code> for one field at a time.</span>
+    </div>;
+  }
   if (node.type === 'event_message_create') {
     return <div className="node-config node-config-stack">
       <FallbackField label="Prefix command (blank accepts every message)"><input value={node.data?.prefix ?? ''} maxLength={8} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('prefix', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="!" aria-label="Prefix command trigger" /></FallbackField>
@@ -156,25 +187,14 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     };
     const warning = (message) => message && <button type="button" className="slash-command-warning" data-tooltip={message} aria-label={message} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}><AlertTriangle size={11} /></button>;
     const options = Array.isArray(node.data?.options) ? node.data.options : [];
-    const patchOption = (index, patch) => update('options', options.map((option, optionIndex) => optionIndex === index ? { ...option, ...patch } : option));
-    const addOption = () => update('options', [...options, { name: `argument_${options.length + 1}`, description: 'Command argument', type: 3, required: false, choices: [] }]);
-    const optionTypes = [{ value: 3, label: 'Text' }, { value: 4, label: 'Integer' }, { value: 10, label: 'Number' }, { value: 5, label: 'Boolean' }, { value: 6, label: 'User' }, { value: 7, label: 'Channel' }, { value: 8, label: 'Role' }, { value: 9, label: 'Mentionable' }, { value: 11, label: 'Attachment' }];
     return <div className="node-config node-config-stack slash-command-config">
       <label><span className="slash-command-field-label"><span>Command</span>{warning(commandNameIssue, 'Command name issue')}</span><CharacterLimit className="is-flex" value={node.data?.commandName ?? ''} maxLength={32}><div><b>/</b><input value={node.data?.commandName ?? ''} maxLength={32} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('commandName', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="help" aria-label="Slash command name" /></div></CharacterLimit></label>
       <label><span className="slash-command-field-label"><span>Description</span>{warning(commandDescriptionIssue, 'Command description issue')}</span><CharacterLimit value={node.data?.description ?? ''} maxLength={100}><input value={node.data?.description ?? ''} maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('description', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="What this command does" aria-label="Slash command description" /></CharacterLimit></label>
-      <section className="slash-command-options">
-        <header><strong>Arguments</strong><button type="button" className="icon-button compact" disabled={options.length >= 25} onClick={addOption} aria-label="Add slash command argument" title="Add argument"><Plus size={14} /></button></header>
-        {options.map((option, index) => <div className="slash-command-option" key={`${option.name}-${index}`}>
-          <label>Name<input value={option.name || ''} maxLength={32} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => patchOption(index, { name: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32) })} placeholder="target" /></label>
-          <label>Type<AnimatedDropdown value={Number(option.type) || 3} options={optionTypes} onChange={(value) => patchOption(index, { type: Number(value), ...(Number(value) === 3 || Number(value) === 4 || Number(value) === 10 ? {} : { autocomplete: false })})} onPointerDown={(event) => event.stopPropagation()} ariaLabel={`Type for ${option.name || `argument ${index + 1}`}`} className="node-select" /></label>
-          <label className="slash-command-option-description">Description<input value={option.description || ''} maxLength={100} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => patchOption(index, { description: event.target.value })} placeholder="What this argument is for" /></label>
-          <div className="slash-command-option-flags"><AnimatedCheckbox checked={Boolean(option.required)} label={`Required ${option.name}`} onChange={(required) => patchOption(index, { required })} onPointerDown={(event) => event.stopPropagation()} /><span>Required</span>{[3, 4, 10].includes(Number(option.type)) && <><AnimatedCheckbox checked={Boolean(option.autocomplete)} label={`Autocomplete ${option.name}`} onChange={(autocomplete) => patchOption(index, { autocomplete, choices: option.choices || [] })} onPointerDown={(event) => event.stopPropagation()} /><span>Autocomplete</span></>}</div>
-          <label className="slash-command-option-choices">{option.autocomplete ? 'Autocomplete suggestions' : 'Choices'}<textarea rows={2} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={(option.choices || []).map((choice) => `${choice.name} | ${choice.value}`).join('\n')} onChange={(event) => patchOption(index, { choices: event.target.value.split('\n').filter(Boolean).slice(0, 25).map((line) => { const [label, ...value] = line.split('|'); return { name: label.trim().slice(0, 100), value: value.join('|').trim().slice(0, 100) }; }) })} placeholder="Label | value" /></label>
-          <button type="button" className="icon-button compact is-danger" onClick={() => update('options', options.filter((_item, itemIndex) => itemIndex !== index))} aria-label={`Remove ${option.name || 'argument'}`} title="Remove argument"><X size={13} /></button>
-        </div>)}
-        {!options.length && <span className="node-config-hint">Add typed arguments and optional static choices or autocomplete suggestions.</span>}
+      <section className="slash-command-options-compact">
+        <div><strong>Arguments</strong><span>{options.length}/25</span></div>
+        <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenSlashCommandStudio?.(node); }}><Plus size={12} /> Edit arguments</button>
       </section>
-      <label><span className="slash-command-field-label"><span>Who can use this command</span></span><AnimatedDropdown value={String(node.data?.defaultMemberPermissions ?? '')} options={[{ value: '', label: 'Everyone' }, { value: '16', label: 'Manage Channels' }, { value: '8', label: 'Administrator' }]} onChange={(value) => update('defaultMemberPermissions', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Required permission for slash command" className="node-select" /></label>
+      <label><span className="slash-command-field-label"><span>Who can use this command</span></span><AnimatedDropdown value={String(node.data?.defaultMemberPermissions ?? '')} options={slashCommandPermissionOptions} onChange={(value) => update('defaultMemberPermissions', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Required permission for slash command" className="node-select" /></label>
       <details className="slash-command-availability">
         <summary>Installation and context</summary>
         <label className="slash-command-choice"><AnimatedCheckbox checked={usesAppDefaults} label="Use application defaults" onChange={(value) => update({ integrationTypes: value ? undefined : [0], contexts: value ? undefined : [0] })} onPointerDown={(event) => event.stopPropagation()} /><span>Use application defaults</span></label>
@@ -288,7 +308,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'format_text') {
     const value = String(node.data?.template ?? '');
     const openTextEditor = () => onOpenTextStudio?.(node, 'template', 'Text template', value);
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} /></div>;
+    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} templateAutocomplete templateValuePaths={valuePaths} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} /></div>;
   }
   if (node.type === 'data_permission_overwrites') {
     return <div className="node-config node-config-stack">
@@ -298,7 +319,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'build_embed') {
     return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue)} />;
   }
-  if (node.type === 'build_modal') return <div className="node-config node-config-stack"><ModalNodeBuilder value={node.data?.modal} onChange={(modal) => update('modal', modal)} /></div>;
+  if (node.type === 'build_modal') return <div className="node-config node-config-stack"><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenModalStudio?.(node); }}><Plus size={12} /> Edit popup modal{node.data?.modal?.components?.length ? ` · ${node.data.modal.components.length} fields` : ''}</button></div>;
   if (node.type === 'action_send_message') {
     const componentsConnected = isConnected('components');
     return <div className="node-config node-config-stack">
