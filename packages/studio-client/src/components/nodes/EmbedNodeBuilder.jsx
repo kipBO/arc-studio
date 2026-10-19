@@ -108,6 +108,7 @@ export function EmbedNodeBuilder({
   onOpenTextStudio,
   validation = {},
   connectedInputIds = new Set(),
+  wiredFields = {},
   appEmojis = [],
   graphVariables = []
 }) {
@@ -236,6 +237,14 @@ export function EmbedNodeBuilder({
   const stringInput = (block, key, label, maxLength = 2048, multiline = false, url = false, allowEmoji = false) => {
     if (mode !== 'studio' && connectedInputIds.has(`block_${block.id}_${key}`)) return null;
     const message = validation?.[block.id]?.[key];
+    const wire = mode === 'studio' ? wiredFields?.[`block_${block.id}_${key}`] : null;
+    if (wire) return (
+      <label className="embed-block-field is-wire-connected">
+        <div className="embed-field-label-row"><span>{label}</span><span className="embed-field-char-count">Wire connected</span></div>
+        {multiline ? <textarea value="" disabled placeholder={wire.token} rows={3} aria-label={`${label} supplied by wire`} /> : <input value="" disabled placeholder={wire.token} aria-label={`${label} supplied by wire`} />}
+        <small className="embed-wire-field-note">Connected to {wire.source || wire.label}. The wire value is used.</small>
+      </label>
+    );
     const Field = DiscordTextField;
     const openTextEditor = (value) => onOpenTextStudio?.(label, value, maxLength, (next) => patchBlock(block.id, { [key]: next }), { blockId: block.id, blockKey: key });
     return (
@@ -295,9 +304,11 @@ export function EmbedNodeBuilder({
     if (block.type === 'timestamp') {
       const dateValue = toLocalDateTime(block.value);
       const now = block.now ?? false;
+      const wire = mode === 'studio' ? wiredFields?.[`block_${block.id}_value`] : null;
       return (
         <div className="embed-timestamp-settings">
-          {(mode === 'studio' || !connectedInputIds.has(`block_${block.id}_value`)) && (
+          {wire && <label className="embed-block-field is-wire-connected"><div className="embed-field-label-row"><span>Timestamp Value</span><span className="embed-field-char-count">Wire connected</span></div><input value="" disabled placeholder={wire.token} aria-label="Timestamp supplied by wire" /><small className="embed-wire-field-note">Connected to {wire.source || wire.label}. The wire value is used.</small></label>}
+          {!wire && (mode === 'studio' || !connectedInputIds.has(`block_${block.id}_value`)) && (
             <label className="embed-block-field">
               <div className="embed-field-label-row">
                 <span>Timestamp Value</span>
@@ -314,13 +325,15 @@ export function EmbedNodeBuilder({
             </label>
           )}
           <div className="embed-block-inline">
-            <AnimatedCheckbox checked={now} onChange={(checked) => patchBlock(block.id, { now: checked })} label="Use current time when sent" />
+            <AnimatedCheckbox checked={now} disabled={Boolean(wire)} onChange={(checked) => patchBlock(block.id, { now: checked })} label="Use current time when sent" />
             <span>Use current time when message is sent</span>
           </div>
         </div>
       );
     }
     if (block.type === 'color') {
+      const wire = mode === 'studio' ? wiredFields?.[`block_${block.id}_value`] : null;
+      if (wire) return <div className="embed-color-editor"><label className="embed-block-field is-wire-connected"><div className="embed-field-label-row"><span>Accent Color</span><span className="embed-field-char-count">Wire connected</span></div><input value="" disabled placeholder={wire.token} aria-label="Accent color supplied by wire" /><small className="embed-wire-field-note">Connected to {wire.source || wire.label}. The wire value is used.</small></label></div>;
       return (
         <div className="embed-color-editor">
           <div className="embed-field-label-row">
@@ -498,6 +511,7 @@ export function EmbedNodeBuilder({
           const Icon = descriptor?.icon || Type;
           const dropClass = dropTarget === index ? 'is-drop-before' : '';
           const isCollapsed = collapsedBlockIds.has(block.id);
+          const hasConnectedWire = [...connectedInputIds].some((pinId) => pinId.startsWith(`block_${block.id}_`)) || Object.keys(wiredFields || {}).some((pinId) => pinId.startsWith(`block_${block.id}_`));
 
           return (
             <section
@@ -551,10 +565,11 @@ export function EmbedNodeBuilder({
                   </button>
                   <button
                     type="button"
+                    disabled={hasConnectedWire}
                     className="is-danger"
                     onClick={() => removeBlock(block.id)}
                     aria-label={`Remove ${descriptor?.label || 'block'}`}
-                    title="Remove block"
+                    title={hasConnectedWire ? 'Disconnect its wires before removing this block' : 'Remove block'}
                   >
                     <Trash2 size={12} />
                   </button>
