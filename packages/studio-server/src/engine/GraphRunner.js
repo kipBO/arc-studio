@@ -659,7 +659,49 @@ export class GraphRunner {
       if (executedNodeIds.length > 500) executedNodeIds.shift();
     };
     const dataCache = new Map(); // `${nodeId}:${pinId}` -> value
-    const graphVariables = Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable && typeof variable.id === 'string') : [];
+    const declaredGraphVariables = Array.isArray(graph.variables) ? graph.variables.filter((variable) => variable && typeof variable.id === 'string') : [];
+    const inferReferencedVariableType = (node, seen = new Set()) => {
+      if (!node || seen.has(node.id)) return null;
+      const nextSeen = new Set(seen).add(node.id);
+      if (node.type === 'variable_create') return inferCreatedVariableType(node, nextSeen);
+      const referenceWire = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'variable');
+      if (referenceWire) {
+        const source = nodes.find((item) => item.id === referenceWire.sourceNodeId);
+        if (source && ['variable_create', 'variable_get', 'variable_set'].includes(source.type)) return inferReferencedVariableType(source, nextSeen);
+      }
+      const variableId = node.data?.variableId;
+      const created = nodes.find((item) => item.type === 'variable_create' && `nodevar_${item.id}` === variableId);
+      if (created) return inferCreatedVariableType(created, nextSeen);
+      return declaredGraphVariables.find((variable) => variable.id === variableId)?.type || null;
+    };
+    const inferCreatedVariableType = (node, seen = new Set()) => {
+      const key = node?.id;
+      if (!node || seen.has(key)) return null;
+      const nextSeen = new Set(seen).add(key);
+      const valueWire = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value');
+      if (!valueWire) return ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
+      const source = nodes.find((item) => item.id === valueWire.sourceNodeId);
+      if (!source) return null;
+      if (source.type === 'variable_create' && valueWire.sourcePinId === 'value') return inferCreatedVariableType(source, nextSeen);
+      if (source.type === 'variable_get' && valueWire.sourcePinId === 'value') {
+        return inferReferencedVariableType(source, nextSeen);
+      }
+      const sourcePin = NodeDefinitions[source.type]?.outputs?.find((pin) => pin.id === valueWire.sourcePinId);
+      let type = sourcePin?.type || null;
+      if (type === 'object' && ['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type)) type = 'array';
+      if (source.type === 'data_parse_json' && !connections.some((wire) => wire.targetNodeId === source.id && wire.targetPinId === 'json')) {
+        try { type = Array.isArray(JSON.parse(source.data?.json || '')) ? 'array' : 'object'; } catch {}
+      }
+      return ['string', 'number', 'boolean', 'array', 'object'].includes(type) ? type : null;
+    };
+    const createdGraphVariables = nodes.filter((node) => node.type === 'variable_create').flatMap((node) => {
+      const name = String(node.data?.name || '').trim();
+      if (!name || (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name))) return [];
+      const type = inferCreatedVariableType(node) || 'string';
+      const initialValue = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value') ? defaultValueForType(type) : node.data?.value ?? defaultValueForType(type);
+      return [{ id: `nodevar_${node.id}`, name, type, valueType: type, initialValue, persist: true, nodeOwned: true, sourceNodeId: node.id }];
+    });
+    const graphVariables = [...declaredGraphVariables, ...createdGraphVariables.filter((created) => !declaredGraphVariables.some((variable) => variable.id === created.id))];
     const projectVariables = Array.isArray(context.projectVariables) ? context.projectVariables.filter((variable) => variable && typeof variable.id === 'string') : [];
     const localVariableDefinitions = new Map(graphVariables.map((variable) => [variable.id, variable]));
     const projectVariableDefinitions = new Map(projectVariables.map((variable) => [variable.id, variable]));
@@ -685,6 +727,19 @@ export class GraphRunner {
       if (scope === 'project') return projectVariableValues.get(variableId);
       const definition = localVariableDefinitions.get(variableId);
       return (definition?.persist === false ? runVariableValues : persistentVariableValues).get(variableId);
+    };
+    const variableReference = (variableId, scope = 'graph') => variableId
+      ? { __arcVariableRef: true, variableId, scope: scope === 'project' ? 'project' : 'graph' }
+      : null;
+    const resolveVariableReference = (node, seen = new Set()) => {
+      if (seen.has(node.id)) return variableReference(node.data?.variableId, node.data?.scope);
+      const nextSeen = new Set(seen).add(node.id);
+      const wire = findInputConnection(node.id, 'variable');
+      if (wire) {
+        const connected = resolveOutput(nodes.find((item) => item.id === wire.sourceNodeId), wire.sourcePinId, nextSeen);
+        if (connected?.__arcVariableRef && typeof connected.variableId === 'string') return connected;
+      }
+      return variableReference(node.data?.variableId, node.data?.scope);
     };
     const setVariableValue = (variableId, scope, value, definition) => {
       const values = scope === 'project' ? projectVariableValues : definition?.persist === false ? runVariableValues : persistentVariableValues;
@@ -774,8 +829,16 @@ export class GraphRunner {
       if (sourceNode.type === 'loop_count' && pinId === 'index') return dataCache.get(`${sourceNode.id}:index`);
       if (sourceNode.type === 'repeat_while' && pinId === 'iteration') return dataCache.get(`${sourceNode.id}:iteration`);
       if (sourceNode.type === 'variable_get') {
-        return getVariableValue(sourceNode.data?.variableId, sourceNode.data?.scope);
+        if (pinId === 'variable') return resolveVariableReference(sourceNode, seen);
+        const reference = resolveVariableReference(sourceNode, seen);
+        return reference ? getVariableValue(reference.variableId, reference.scope) : undefined;
       }
+      if (sourceNode.type === 'variable_create' && pinId === 'variable') return variableReference(`nodevar_${sourceNode.id}`, 'graph');
+      if (sourceNode.type === 'variable_create' && pinId === 'value') {
+        const variableId = `nodevar_${sourceNode.id}`;
+        return dataCache.has(`${sourceNode.id}:value`) ? dataCache.get(`${sourceNode.id}:value`) : getVariableValue(variableId, 'graph');
+      }
+      if (sourceNode.type === 'variable_set' && pinId === 'variable') return resolveVariableReference(sourceNode, seen);
       if (sourceNode.type === 'function_input') {
         return sourceNode.data?.defaultValue ?? defaultValueForType(sourceNode.data?.valueType);
       }
@@ -1207,6 +1270,8 @@ export class GraphRunner {
     } else if (eventNodeType === 'event_button_click') {
       dataCache.set(`${startNode.id}:custom_id`, eventPayload.data?.custom_id || '');
       dataCache.set(`${startNode.id}:user_id`, eventPayload.member?.user?.id || '');
+      dataCache.set(`${startNode.id}:guild_id`, eventPayload.guild_id || '');
+      dataCache.set(`${startNode.id}:channel_id`, eventPayload.channel_id || '');
       dataCache.set(`${startNode.id}:application_id`, eventPayload.application_id || '');
       dataCache.set(`${startNode.id}:interaction_id`, eventPayload.id || '');
       dataCache.set(`${startNode.id}:interaction_token`, eventPayload.token || '');
@@ -1258,9 +1323,28 @@ export class GraphRunner {
         })) : [];
         if (targetNode.type === 'utility_wire_extender') {
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec_out'));
+        } else if (targetNode.type === 'variable_create') {
+          const name = String(targetNode.data?.name || '').trim();
+          const variableId = `nodevar_${targetNode.id}`;
+          const definition = localVariableDefinitions.get(variableId);
+          if (!definition) {
+            log('[Variable] Create skipped: enter a valid variable name.');
+          } else {
+            const value = resolveDataInput(targetNode, 'value', definition.initialValue);
+            const inferredType = Array.isArray(value) ? 'array' : value !== null && typeof value === 'object' ? 'object' : typeof value;
+            if (['string', 'number', 'boolean', 'array', 'object'].includes(inferredType)) {
+              definition.type = inferredType;
+              definition.valueType = inferredType;
+            }
+            const createdValue = setVariableValue(variableId, 'graph', value, definition);
+            dataCache.set(`${targetNode.id}:value`, createdValue);
+            log(`[Variable] Created or updated ${name} (${definition.valueType}).`);
+          }
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'variable_set') {
-          const variableId = targetNode.data?.variableId;
-          const variableScope = targetNode.data?.scope === 'project' ? 'project' : 'graph';
+          const reference = resolveDataInput(targetNode, 'variable', variableReference(targetNode.data?.variableId, targetNode.data?.scope));
+          const variableId = reference?.__arcVariableRef ? reference.variableId : targetNode.data?.variableId;
+          const variableScope = reference?.__arcVariableRef ? reference.scope : targetNode.data?.scope === 'project' ? 'project' : 'graph';
           const definition = (variableScope === 'project' ? projectVariableDefinitions : localVariableDefinitions).get(variableId);
           if (!definition) {
             log('[Variable] Set skipped: no variable is selected');
@@ -1674,13 +1758,16 @@ export class GraphRunner {
           }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_set_presence') {
-          const status = resolveDataInput(targetNode, 'status', targetNode.data?.status || 'online');
-          const activityText = resolveDataInput(targetNode, 'activity_text', targetNode.data?.activity_text || 'Arc Bot');
-          log(`[Action Presence] Updating status: ${status}, Activity: ${activityText}`);
+          const requestedStatus = String(resolveDataInput(targetNode, 'status', targetNode.data?.status || 'online')).trim().toLowerCase();
+          const status = ['online', 'idle', 'dnd', 'invisible'].includes(requestedStatus) ? requestedStatus : 'online';
+          const activityText = String(resolveDataInput(targetNode, 'activity_text', targetNode.data?.activity_text || 'ARC Studio')).trim().slice(0, 128) || 'ARC Studio';
+          const requestedActivityType = Number(resolveDataInput(targetNode, 'activity_type', targetNode.data?.activity_type ?? 0));
+          const activityType = [0, 2, 3, 5].includes(requestedActivityType) ? requestedActivityType : 0;
+          log(`[Action Presence] Updating status: ${status}, Activity: ${activityText} (type ${activityType})`);
           if (context.client && typeof context.client.setPresence === 'function') {
             context.client.setPresence({
               status,
-              activities: [{ name: activityText, type: 0 }]
+              activities: [{ name: activityText, type: activityType }]
             });
           }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
@@ -1729,16 +1816,20 @@ export class GraphRunner {
             const targetInputs = Object.fromEntries(Object.keys(targetNode.data || {}).filter((key) => /^target_id_\d+$/.test(key)).map((key) => [key, resolveDataInput(targetNode, key, targetNode.data[key])]));
             body.permission_overwrites = evaluateDataNode('data_permission_overwrites', targetInputs, targetNode.data).overwrites;
           }
-          const setOptionalChannelField = (key, transform = (value) => value) => {
-            if (Object.prototype.hasOwnProperty.call(targetNode.data || {}, key) || findInputConnection(targetNode.id, key)) body[key] = transform(resolveDataInput(targetNode, key, targetNode.data?.[key]));
+          const setOptionalChannelField = (key, transform = (value) => value, { skipEmpty = false } = {}) => {
+            const connection = findInputConnection(targetNode.id, key);
+            if (!Object.prototype.hasOwnProperty.call(targetNode.data || {}, key) && !connection) return;
+            const value = resolveDataInput(targetNode, key, targetNode.data?.[key]);
+            if (skipEmpty && !connection && (value == null || value === '')) return;
+            body[key] = transform(value);
           };
-          setOptionalChannelField('rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))));
+          setOptionalChannelField('rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))), { skipEmpty: true });
           setOptionalChannelField('nsfw', Boolean);
-          setOptionalChannelField('bitrate', (value) => Math.max(8000, Math.min(384000, Math.trunc(Number(value) || 8000))));
-          setOptionalChannelField('user_limit', (value) => Math.max(0, Math.min(99, Math.trunc(Number(value) || 0))));
+          setOptionalChannelField('bitrate', (value) => Math.max(8000, Math.min(384000, Math.trunc(Number(value) || 8000))), { skipEmpty: true });
+          setOptionalChannelField('user_limit', (value) => Math.max(0, Math.min(10000, Math.trunc(Number(value) || 0))), { skipEmpty: true });
           setOptionalChannelField('rtc_region', (value) => value === '' ? null : String(value).slice(0, 100));
-          setOptionalChannelField('video_quality_mode', (value) => Number(value) === 2 ? 2 : 1);
-          setOptionalChannelField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440);
+          setOptionalChannelField('video_quality_mode', (value) => Number(value) === 2 ? 2 : 1, { skipEmpty: true });
+          setOptionalChannelField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440, { skipEmpty: true });
           if (!channelId) throw new Error('Edit Channel needs a channel ID.');
           if (!Object.keys(body).length) throw new Error('Connect or enter at least one channel field to change.');
           const result = await context.rest.modifyChannel(channelId, body, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
@@ -1993,7 +2084,16 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       const parameterId = node.data?.paramId || node.id;
       result = argumentValues.has(parameterId) ? argumentValues.get(parameterId) : node.data?.defaultValue ?? defaultValueForType(node.data?.valueType);
     } else if (node.type === 'variable_get') {
-      result = context.resolveFunctionVariable?.(node.data?.variableId, node.data?.scope, graph);
+      const wire = inputWire(node.id, 'variable');
+      const connected = wire ? resolveOutput(findNode(wire.sourceNodeId), wire.sourcePinId) : null;
+      const reference = connected?.__arcVariableRef ? connected : { __arcVariableRef: true, variableId: node.data?.variableId, scope: node.data?.scope || 'graph' };
+      result = pinId === 'variable' ? reference : context.resolveFunctionVariable?.(reference.variableId, reference.scope, graph);
+    } else if (node.type === 'variable_create' && pinId === 'variable') {
+      result = { __arcVariableRef: true, variableId: `nodevar_${node.id}`, scope: 'graph' };
+    } else if (node.type === 'variable_set' && pinId === 'variable') {
+      const wire = inputWire(node.id, 'variable');
+      const connected = wire ? resolveOutput(findNode(wire.sourceNodeId), wire.sourcePinId) : null;
+      result = connected?.__arcVariableRef ? connected : { __arcVariableRef: true, variableId: node.data?.variableId, scope: node.data?.scope || 'graph' };
     } else if (node.type.startsWith('data_')) {
       const inputs = Object.fromEntries(getNodeInputs(node, connections).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
       const values = evaluateDataNode(node.type, inputs, node.data || {});
@@ -2030,6 +2130,8 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       result = renderTextTemplate(node.data?.template, (name) => {
         const argumentMatch = /^arg(\d+)$/i.exec(name);
         if (argumentMatch && Number(argumentMatch[1]) >= 1 && Number(argumentMatch[1]) <= 50) return resolveInput(node, `arg_${Number(argumentMatch[1])}`, undefined);
+        const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase()) || projectVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
+        if (variable) return getVariableValue(variable.id, projectVariableDefinitions.has(variable.id) ? 'project' : 'graph');
         const argumentNode = nodes.find((item) => item.type === 'function_input' && item.data?.name?.toLowerCase() === name.toLowerCase());
         const fallback = argumentNode ? resolveOutput(argumentNode, 'value') : undefined;
         const value = resolveInput(node, `slot_${name}`, fallback);
