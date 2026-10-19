@@ -55,6 +55,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const [confirmTrust, setConfirmTrust] = useState(false);
   const [confirmAutoUpdate, setConfirmAutoUpdate] = useState(true);
   const [permissionSelection, setPermissionSelection] = useState([]);
+  const [hostRuntimeAcknowledged, setHostRuntimeAcknowledged] = useState(false);
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('installed');
   const [loading, setLoading] = useState(false);
@@ -162,7 +163,8 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const beginInstall = (plugin, permissionReviewOnly = false) => {
     setError('');
     setConfirmTrust(permissionReviewOnly);
-    setConfirmAutoUpdate(!plugin.builtIn && installedById.get(plugin.id)?.autoUpdate !== false);
+    setConfirmAutoUpdate(!['host-adapter', 'wasm-adapter'].includes(plugin.kind) && !plugin.builtIn && installedById.get(plugin.id)?.autoUpdate !== false);
+    setHostRuntimeAcknowledged(false);
     setPermissionSelection(Array.isArray(plugin.grantedPermissions) ? plugin.grantedPermissions : installedById.get(plugin.id)?.grantedPermissions || []);
     setConfirmAction({ kind: 'store', plugin, permissionReviewOnly });
   };
@@ -262,6 +264,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
 
   const confirmInstall = async () => {
     if (!confirmAction || (!confirmAction.permissionReviewOnly && !confirmTrust)) return;
+    if (!confirmAction.permissionReviewOnly && confirmAction.plugin?.kind === 'host-adapter' && !hostRuntimeAcknowledged) return;
     const pluginId = confirmAction.kind === 'store' ? confirmAction.plugin.id : confirmAction.pack.id;
     setBusyId(pluginId || 'local-import');
     setImportingLocal(confirmAction.kind === 'local');
@@ -282,7 +285,8 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           permissions: permissionSelection,
           expectedVersion: confirmAction.plugin.version,
           expectedSha256: confirmAction.plugin.sha256 || '',
-          expectedRepositoryUrl: confirmAction.plugin.repositoryUrl || ''
+          expectedRepositoryUrl: confirmAction.plugin.repositoryUrl || '',
+          hostCodeConfirmed: hostRuntimeAcknowledged
         };
       } else {
         endpoint = confirmAction.pack?.kind === 'wasm-adapter' ? '/api/plugins/import-adapter' : '/api/plugins/import-local';
@@ -338,9 +342,12 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const localImport = confirmAction?.kind === 'local' ? confirmAction : null;
   const confirmationSource = confirmationPlugin?.sourceUrl || (localImport ? 'Selected local folder' : '');
   const confirmationPermissions = confirmationPlugin?.permissions || [];
+  const confirmationNpmDependencies = confirmationPlugin?.npmDependencies || [];
+  const confirmationRuntimeDependencies = confirmationPlugin?.runtimeDependencies || [];
   const isBundledPlugin = confirmationPlugin?.builtIn || confirmationPlugin?.sourceTrust === 'bundled';
   const isUntrustedSource = Boolean(localImport || confirmationPlugin?.sourceTrust === 'custom');
   const requiredPermissionsGranted = confirmationPermissions.filter((permission) => permission.required).every((permission) => permissionSelection.includes(permission.id));
+  const hostRuntimeConfirmationRequired = confirmationPlugin?.kind === 'host-adapter' && !isBundledPlugin;
 
   return <>
     {isOpen && <aside className="plugin-store-sidebar" aria-label="Plugin store" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
@@ -371,12 +378,17 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
         {loading && !installed.length ? <div className="plugin-store-inline-empty">Loading installed plugins…</div>
           : installed.length ? <div className="plugin-store-installed-list">{installed.map((plugin) => {
             const available = catalogById.get(plugin.id);
-            const updateAvailable = available && (plugin.version !== available.version || plugin.repositoryUrl !== available.repositoryUrl);
+            const updateAvailable = available && (
+              plugin.version !== available.version
+              || plugin.repositoryUrl !== available.repositoryUrl
+              || available.kind === 'host-adapter' && (plugin.sha256 !== available.sha256 || plugin.runtimeSha256 !== available.runtimeSha256)
+              || available.kind === 'wasm-adapter' && (plugin.manifestSha256 !== available.sha256 || plugin.sha256 !== available.wasmSha256)
+            );
             return <article className="plugin-store-installed-card" key={plugin.id}>
               <div className="plugin-store-card-copy">
                 <div className="plugin-store-title"><strong>{plugin.name}</strong><span>v{plugin.version}</span></div>
                 <p>{plugin.description || available?.description || 'Installed plugin pack.'}</p>
-                <small className="plugin-store-installed">By {plugin.author || available?.author || 'Unknown author'} · {plugin.sourceType === 'builtin' ? 'Built-in integration' : plugin.sourceType === 'local' ? 'Local import' : `Installed · auto-update ${plugin.autoUpdate ? 'on' : 'off'}`}{updateAvailable ? ` · v${available.version} available` : ''}{plugin.installedBy ? ` · Installed by ${plugin.installedBy}` : ''}</small>
+                <small className="plugin-store-installed">By {plugin.author || available?.author || 'Unknown author'} · {['host-adapter', 'wasm-adapter'].includes(plugin.kind) ? `${plugin.kind === 'host-adapter' ? 'Server' : 'WebAssembly'} adapter · manual updates` : plugin.sourceType === 'builtin' ? 'Built-in integration' : plugin.sourceType === 'local' ? 'Local development adapter' : `Installed · auto-update ${plugin.autoUpdate ? 'on' : 'off'}`}{updateAvailable ? ` · v${available.version} available` : ''}{plugin.installedBy ? ` · Installed by ${plugin.installedBy}` : ''}</small>
                 {plugin.studioCompatible === false && <small className="plugin-store-origin is-untrusted">Requires ARC Studio {plugin.minArcStudioVersion} or newer · this workspace is {plugin.studioVersion || studioVersion}</small>}
                 {plugin.permissions?.length > 0 && <small className="plugin-store-origin">This project grants: {plugin.grantedPermissions?.length ? plugin.permissions.filter((permission) => plugin.grantedPermissions.includes(permission.id)).map((permission) => permission.name).join(' · ') : 'No elevated permissions'}</small>}
                 {noticesFor(plugin).length > 0 && <button type="button" className="plugin-store-license-link" onClick={() => setSelectedNotices({ name: plugin.name, notices: noticesFor(plugin) })}>Third-party licenses</button>}
@@ -392,7 +404,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
           })}</div>
           : <div className="plugin-store-inline-empty">No plugins installed yet.</div>}
       </section>
-      {!loading && !error && <p className="plugin-store-update-note">{canInstall ? 'Plugin updates are checked every 5 minutes.' : 'Plugin updates are managed by workspace admins.'}</p>}
+      {!loading && !error && <p className="plugin-store-update-note">{canInstall ? 'Data pack updates are checked every 5 minutes. Server adapters always require a manual review.' : 'Plugin updates are managed by workspace admins.'}</p>}
       {error && <p className="plugin-store-error">{error}</p>}
       </>}
       {activeTab === 'store' && <>
@@ -407,7 +419,12 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
         : !filteredCatalog.length ? <div className="plugin-store-empty">{catalog.length ? 'No plugins match this search.' : 'No plugins are published in this catalog yet.'}</div>
           : <div className="plugin-store-list">{filteredCatalog.map((plugin) => {
             const current = installedById.get(plugin.id);
-            const updateAvailable = current && (current.version !== plugin.version || current.repositoryUrl !== plugin.repositoryUrl);
+            const updateAvailable = current && (
+              current.version !== plugin.version
+              || current.repositoryUrl !== plugin.repositoryUrl
+              || plugin.kind === 'host-adapter' && (current.sha256 !== plugin.sha256 || current.runtimeSha256 !== plugin.runtimeSha256)
+              || plugin.kind === 'wasm-adapter' && (current.manifestSha256 !== plugin.sha256 || current.sha256 !== plugin.wasmSha256)
+            );
             return <article className="plugin-store-card" key={plugin.id}>
               <div className="plugin-store-card-copy">
                 <div className="plugin-store-title"><strong>{plugin.name}</strong><span>v{plugin.version}</span></div>
@@ -416,9 +433,10 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
                 {plugin.minArcStudioVersion !== '0.0.0' && <small className={`plugin-store-origin ${plugin.studioCompatible === false ? 'is-untrusted' : ''}`}>{plugin.studioCompatible === false ? `Requires ARC Studio ${plugin.minArcStudioVersion} or newer · this workspace is ${plugin.studioVersion || studioVersion}` : `Requires ARC Studio ${plugin.minArcStudioVersion} or newer`}</small>}
                 <small className={`plugin-store-origin ${plugin.sourceTrust === 'custom' ? 'is-untrusted' : ''}`}>{plugin.sourceTrust === 'default' ? 'Default source' : plugin.sourceTrust === 'bundled' ? 'Bundled with ARC Studio' : 'Outside default source'} · {plugin.repositoryUrl || repository.url}</small>
                 {plugin.permissions?.length > 0 && <small className="plugin-store-origin">Permissions: {plugin.permissions.map((permission) => permission.name).join(' · ')}</small>}
+                {plugin.kind === 'host-adapter' && <div className="plugin-trust-warning"><AlertTriangle size={13} /><span>This adapter runs JavaScript on the workspace server. Its declared permissions do not restrict filesystem or network access.</span></div>}
                 {plugin.sourceTrust === 'custom' && <div className="plugin-trust-warning"><AlertTriangle size={13} /><span>This plugin comes from a non-default catalogue. ARC does not verify its publisher or review its contents.</span></div>}
                 {noticesFor(plugin).length > 0 && <button type="button" className="plugin-store-license-link" onClick={() => setSelectedNotices({ name: plugin.name, notices: noticesFor(plugin) })}>Third-party licenses</button>}
-                {current && <small className="plugin-store-installed">{current.sourceType === 'builtin' ? 'Built-in integration' : current.sourceType === 'local' ? 'Local import' : `Installed v${current.version}`}{updateAvailable ? ` · ${current.version !== plugin.version ? `v${plugin.version} available` : 'source changed'}` : ''}{!['local', 'builtin'].includes(current.sourceType) ? (current.autoUpdate ? ' · auto-update on' : ' · auto-update off') : ''}</small>}
+                {current && <small className="plugin-store-installed">{['host-adapter', 'wasm-adapter'].includes(current.kind) ? `${current.kind === 'host-adapter' ? 'Server' : 'WebAssembly'} adapter · installed v${current.version} · manual updates` : current.sourceType === 'builtin' ? 'Built-in integration' : current.sourceType === 'local' ? 'Local import' : `Installed v${current.version}`}{updateAvailable ? ` · ${current.version !== plugin.version ? `v${plugin.version} available` : 'source changed'}` : ''}{!['local', 'builtin'].includes(current.sourceType) && !['host-adapter', 'wasm-adapter'].includes(current.kind) ? (current.autoUpdate ? ' · auto-update on' : ' · auto-update off') : ''}</small>}
               </div>
               <div className="plugin-store-card-actions">
                 <a className="plugin-store-source" href={plugin.sourceUrl} target="_blank" rel="noreferrer" aria-label={`View ${plugin.name} source`}><ExternalLink size={14} /></a>
@@ -495,16 +513,23 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
 
     <Modal isOpen={Boolean(confirmAction)} onClose={() => !busyId && setConfirmAction(null)} title={confirmAction?.permissionReviewOnly ? 'Plugin permissions' : 'Review plugin install'} subtitle={confirmAction?.permissionReviewOnly ? 'Choose the capabilities granted in this project' : 'Check the publisher before continuing'} icon={ShieldCheck}>
       {error && <p className="plugin-store-error">{error}</p>}
-      <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span><span>Requires ARC Studio {confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion} or newer</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
-      <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : 'The default catalogue is the recommended source, but ARC does not independently audit every publisher. Data packs contain graph data; WebAssembly adapters run in a restricted worker.'}</span></div>
+      <div className="plugin-trust-summary"><strong>{confirmationPlugin?.name || localImport?.name}</strong><span>{confirmationPlugin?.id || localImport?.pack?.id} · v{confirmationPlugin?.version || localImport?.version}</span><span>Requires ARC Studio {confirmationPlugin?.minArcStudioVersion || localImport?.pack?.minArcStudioVersion} or newer</span>{(confirmationPlugin?.author || localImport?.pack?.author) && <span>Publisher: {confirmationPlugin?.author || localImport?.pack?.author}</span>}<span>{localImport ? 'Local folder import · source is unverified' : confirmationPlugin?.sourceTrust === 'local' ? 'Local development checkout' : confirmationPlugin?.sourceTrust === 'default' ? 'Default ARC plugin source' : confirmationPlugin?.sourceTrust === 'bundled' || confirmationPlugin?.builtIn ? 'Bundled with ARC Studio' : 'Outside the default plugin source'}</span><a href={confirmationSource?.startsWith('http') ? confirmationSource : undefined} target="_blank" rel="noreferrer">{confirmationSource}</a></div>
+      <div className="plugin-trust-warning"><AlertTriangle size={15} /><span>{hostRuntimeConfirmationRequired ? 'This adapter and its dependencies run as server code with the workspace server account’s OS access. ARC does not sandbox them. npm install scripts are disabled. Only install code from a publisher you trust.' : isBundledPlugin ? 'This integration runs in the ARC server. Its host permissions are enforced per project and per database operation.' : localImport ? 'This local plugin has no verified publisher or source. Its WebAssembly module is isolated, but review its manifest, source and digest before installing.' : isUntrustedSource ? 'This plugin is from a non-default source. ARC has not reviewed or verified the publisher. Its pack digest only confirms that the downloaded file matches this catalogue entry.' : 'The default catalogue is the recommended source, but ARC does not independently audit every publisher. Data packs contain graph data, WebAssembly adapters run in a restricted worker.'}</span></div>
+      {!confirmAction?.permissionReviewOnly && (confirmationNpmDependencies.length > 0 || confirmationRuntimeDependencies.length > 0) && <section className="plugin-dependency-review" aria-label="Plugin runtime dependencies">
+        <strong>Runtime dependencies</strong>
+        <p>Installed with this adapter. Package install scripts are disabled.</p>
+        <ul>{confirmationNpmDependencies.map(({ name, version }) => <li key={name}><code title={`${name}@${version}`}>{name}</code><span>{version}</span></li>)}{confirmationRuntimeDependencies.map((name) => <li key={`arc-${name}`}><code title={name}>{name}</code><span>Included with ARC</span></li>)}</ul>
+        {confirmationNpmDependencies.length > 0 && <small>{confirmationPlugin?.dependencyPackageCount || confirmationNpmDependencies.length} locked npm packages including dependencies</small>}
+      </section>}
       {confirmationPermissions.length > 0 && <section className="plugin-permission-review" aria-label="Plugin permissions">
         <strong>Permissions for this project</strong>
         <p>Only the selected capabilities are enabled. The project owner or a workspace admin must grant access.</p>
         {confirmationPermissions.map((permission) => <Toggle key={permission.id} label={permission.name} description={permission.description} checked={permission.required || permissionSelection.includes(permission.id)} disabled={permission.required} onChange={(checked) => setPermissionSelection((current) => checked ? [...new Set([...current, permission.id])] : current.filter((id) => id !== permission.id))} />)}
       </section>}
-      {!confirmationPlugin?.builtIn && <Toggle label="Automatically install future catalog updates" description="Eligible updates are checked every 5 minutes. Local imports update only if a matching package is published by the selected source." checked={confirmAutoUpdate} onChange={setConfirmAutoUpdate} />}
+      {!confirmationPlugin?.builtIn && !['host-adapter', 'wasm-adapter'].includes(confirmationPlugin?.kind) && <Toggle label="Automatically install future catalog updates" description="Eligible data-pack updates are checked every 5 minutes. Adapter code updates always require manual review." checked={confirmAutoUpdate} onChange={setConfirmAutoUpdate} />}
+      {hostRuntimeConfirmationRequired && !confirmAction?.permissionReviewOnly && <Toggle label="I understand and trust this server runtime" description="This permission cannot be limited to the plugin’s declared capabilities. Code updates always require another manual install review." checked={hostRuntimeAcknowledged} onChange={setHostRuntimeAcknowledged} />}
       {!confirmAction?.permissionReviewOnly && <Toggle label="I trust this plugin and its source" checked={confirmTrust} onChange={setConfirmTrust} />}
-      <div className="plugin-confirm-actions"><Button variant="secondary" onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || !canInstall || !requiredPermissionsGranted} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></div>
+      <div className="plugin-confirm-actions"><Button variant="secondary" onClick={() => setConfirmAction(null)}>Cancel</Button><Button loading={Boolean(busyId)} disabled={(!confirmAction?.permissionReviewOnly && !confirmTrust) || (!confirmAction?.permissionReviewOnly && hostRuntimeConfirmationRequired && !hostRuntimeAcknowledged) || !canInstall || !requiredPermissionsGranted} onClick={confirmInstall}>{confirmAction?.permissionReviewOnly ? 'Save permissions' : localImport ? 'Import plugin' : 'Install plugin'}</Button></div>
     </Modal>
   </>;
 }
