@@ -89,7 +89,7 @@ function highlightMarkdown(line) {
   return <span className={lineClass}>{tokens.length ? tokens : line || ' '}</span>;
 }
 
-export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const editorRef = useRef(null);
@@ -275,7 +275,7 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
           const column = before.at(-1).length;
           return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
         })}</div>
-        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} />
+        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
       </div>
     </div>
     <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
