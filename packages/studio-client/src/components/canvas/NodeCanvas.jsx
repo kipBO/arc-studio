@@ -96,6 +96,8 @@ export function NodeCanvas({
   const [shakingNodeId, setShakingNodeId] = useState(null);
   const clipboardRef = useRef(null);
   const pointerPositionRef = useRef(null);
+  const touchPointersRef = useRef(new Map());
+  const touchPinchRef = useRef(null);
   const lastPastePositionRef = useRef(null);
   const pasteCascadeRef = useRef(0);
   const uiScale = getArcUiScale();
@@ -341,9 +343,11 @@ export function NodeCanvas({
     }));
   }), [nodes]);
 
-  const getNodeDefinition = useCallback((node) => {
+  const getNodeDefinition = useCallback((node, seen = new Set()) => {
     const definition = definitionsByType.get(node.type);
     if (!definition) return undefined;
+    if (seen.has(node.id)) return definition;
+    const nextSeen = new Set(seen).add(node.id);
     const withExecInputPins = (nextDefinition) => {
       const inputs = nextDefinition.inputs || [];
       const execPin = inputs.find((pin) => pin.type === 'exec');
@@ -404,7 +408,16 @@ export function NodeCanvas({
     const withArgumentPins = (nextDefinition) => {
       const argumentPins = getNodeArgumentPins(node, nextDefinition.inputs || [], connections);
       const existingIds = new Set((nextDefinition.inputs || []).map((pin) => pin.id));
-      const withArguments = argumentPins.length ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...argumentPins.filter((pin) => !existingIds.has(pin.id))] } : nextDefinition;
+      const typedArgumentPins = argumentPins.map((pin) => {
+        const wire = connections.find((connection) => connection.targetNodeId === node.id && connection.targetPinId === pin.id);
+        if (!wire) return pin;
+        const sourceNode = nodes.find((item) => item.id === wire.sourceNodeId);
+        const sourceDefinition = sourceNode && getNodeDefinition(sourceNode, nextSeen);
+        const sourcePin = sourceDefinition?.outputs?.find((item) => item.id === wire.sourcePinId);
+        const colorType = sourcePin?.colorType || sourcePin?.type;
+        return colorType && colorType !== 'arg' && colorType !== 'any' ? { ...pin, colorType } : pin;
+      });
+      const withArguments = typedArgumentPins.length ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...typedArgumentPins.filter((pin) => !existingIds.has(pin.id))] } : nextDefinition;
       return withExecInputPins(withArguments);
     };
     if (node.type === 'event_message_create') {
@@ -442,13 +455,45 @@ export function NodeCanvas({
       const inputs = Array.from({ length: count }, (_, index) => ({ id: `input_${index + 1}`, label: `Input ${index + 1}`, type: 'boolean', defaultValue: false }));
       return withExecInputPins({ ...definition, inputs });
     }
+    if (node.type === 'variable_create') {
+      const valueWire = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value');
+      const sourceNode = valueWire && nodes.find((item) => item.id === valueWire.sourceNodeId);
+      const sourceDefinition = sourceNode && definitionsByType.get(sourceNode.type);
+      const sourcePin = sourceDefinition?.outputs?.find((pin) => pin.id === valueWire?.sourcePinId);
+      const createdSource = sourceNode?.type === 'variable_create'
+        ? graphVariables.find((variable) => variable.id === `nodevar_${sourceNode.id}`)
+        : sourceNode?.type === 'variable_get'
+          ? graphVariables.find((variable) => variable.id === sourceNode.data?.variableId || variable.sourceNodeId === connections.find((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === 'variable')?.sourceNodeId)
+          : null;
+      let inferredType = createdSource?.type || sourcePin?.type || node.data?.valueType || 'string';
+      if (sourcePin?.type === 'object' && ['data_array_create', 'data_array_append', 'data_array_concat'].includes(sourceNode?.type)) inferredType = 'array';
+      if (sourceNode?.type === 'data_parse_json' && !connections.some((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === 'json')) {
+        try { inferredType = Array.isArray(JSON.parse(sourceNode.data?.json || '')) ? 'array' : 'object'; } catch {}
+      }
+      const socketType = ['array', 'object'].includes(inferredType) ? 'object' : inferredType;
+      const inputs = definition.inputs.map((pin) => pin.id === 'value' ? { ...pin, colorType: inferredType } : pin);
+      const outputs = definition.outputs.map((pin) => pin.id === 'value' ? { ...pin, type: socketType, colorType: inferredType } : pin);
+      return withExecInputPins({ ...definition, inputs, outputs });
+    }
     if (node.type === 'variable_get' || node.type === 'variable_set') {
-      const variable = graphVariables.find((item) => item.id === node.data?.variableId);
+      const resolveVariable = (targetNode, seen = new Set()) => {
+        if (!targetNode || seen.has(targetNode.id)) return null;
+        const nextSeen = new Set(seen).add(targetNode.id);
+        const referenceWire = connections.find((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === 'variable');
+        if (referenceWire) {
+          const sourceNode = nodes.find((item) => item.id === referenceWire.sourceNodeId);
+          const sourceVariable = graphVariables.find((item) => item.sourceNodeId === sourceNode?.id);
+          if (sourceVariable) return sourceVariable;
+          if (sourceNode && ['variable_get', 'variable_set'].includes(sourceNode.type)) return resolveVariable(sourceNode, nextSeen);
+        }
+        return graphVariables.find((item) => item.id === targetNode.data?.variableId) || null;
+      };
+      const variable = resolveVariable(node);
       const pinType = ['array', 'object'].includes(variable?.type) ? 'object' : variable?.type || 'string';
       const pinLabel = variable?.name || 'Value';
       return node.type === 'variable_get'
-        ? withArgumentPins({ ...definition, outputs: [{ id: 'value', label: pinLabel, type: pinType }] })
-        : withArgumentPins({ ...definition, inputs: [...definition.inputs.slice(0, 1), { id: 'value', label: pinLabel, type: pinType, defaultValue: variable?.initialValue ?? '' }] });
+        ? withArgumentPins({ ...definition, outputs: definition.outputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type || pinType } : pin) })
+        : withArgumentPins({ ...definition, inputs: definition.inputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type || pinType, defaultValue: variable?.initialValue ?? '' } : pin) });
     }
     if (node.type === 'build_embed' && Array.isArray(node.data?.blocks)) {
       return withArgumentPins({ ...definition, inputs: embedBlockPins(getEmbedBlocks(node.data)) });
@@ -491,6 +536,19 @@ export function NodeCanvas({
     }
     return withArgumentPins(definition);
   }, [definitionsByType, callableGraphs, graphVariables, connections, nodes]);
+  const templateSocketSuggestions = useMemo(() => {
+    const suggestions = [];
+    const seenNames = new Set();
+    for (const sourceNode of nodes) {
+      const definition = getNodeDefinition(sourceNode);
+      for (const pin of definition?.outputs || []) {
+        if (pin.type === 'exec' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(pin.id) || seenNames.has(pin.id.toLowerCase())) continue;
+        seenNames.add(pin.id.toLowerCase());
+        suggestions.push({ name: pin.id, nodeId: sourceNode.id, label: `${sourceNode.label || definition.label} · ${pin.label || pin.id}` });
+      }
+    }
+    return suggestions;
+  }, [nodes, getNodeDefinition]);
   const breadcrumbNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const breadcrumbNodeLabel = breadcrumbNode?.label || (breadcrumbNode ? getNodeDefinition(breadcrumbNode)?.label || breadcrumbNode.type : '');
 
@@ -799,6 +857,33 @@ export function NodeCanvas({
   const startPan = (event) => {
     if (contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) return;
     const isCanvasTarget = event.target === containerRef.current || event.target.classList?.contains('canvas-surface') || event.target.classList?.contains('canvas-world');
+    if (event.pointerType === 'touch' && isCanvasTarget) {
+      touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchPointersRef.current.size >= 2) {
+        const pointers = [...touchPointersRef.current.values()].slice(-2);
+        const midpoint = { x: (pointers[0].x + pointers[1].x) / 2, y: (pointers[0].y + pointers[1].y) / 2 };
+        const distance = Math.max(1, Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y));
+        const bounds = containerRef.current?.getBoundingClientRect();
+        const displayScale = getCanvasDisplayScale(containerRef.current);
+        if (bounds) {
+          const current = viewportRef.current;
+          const localMidpoint = { x: (midpoint.x - bounds.left) / displayScale, y: (midpoint.y - bounds.top) / displayScale };
+          touchPinchRef.current = {
+            distance,
+            zoom: current.zoom,
+            worldPoint: { x: (localMidpoint.x - current.pan.x) / current.zoom, y: (localMidpoint.y - current.pan.y) / current.zoom }
+          };
+        }
+        event.preventDefault();
+        setIsPanning(false);
+        setDraggingNode(null);
+        setDraggingNote(null);
+        selectionStartRef.current = null;
+        setSelectionBox(null);
+        for (const pointerId of touchPointersRef.current.keys()) containerRef.current?.setPointerCapture?.(pointerId);
+        return;
+      }
+    }
     const rightPan = event.button === 2;
     const spacePan = event.button === 0 && spaceDownRef.current;
     if (rightPan && !isCanvasTarget) return;
@@ -833,6 +918,27 @@ export function NodeCanvas({
 
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+    if (event.pointerType === 'touch' && touchPointersRef.current.has(event.pointerId)) {
+      touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touchPinchRef.current && touchPointersRef.current.size >= 2) {
+        const pointers = [...touchPointersRef.current.values()].slice(-2);
+        const midpoint = { x: (pointers[0].x + pointers[1].x) / 2, y: (pointers[0].y + pointers[1].y) / 2 };
+        const distance = Math.max(1, Math.hypot(pointers[0].x - pointers[1].x, pointers[0].y - pointers[1].y));
+        const bounds = containerRef.current?.getBoundingClientRect();
+        if (bounds) {
+          event.preventDefault();
+          const displayScale = getCanvasDisplayScale(containerRef.current);
+          const localMidpoint = { x: (midpoint.x - bounds.left) / displayScale, y: (midpoint.y - bounds.top) / displayScale };
+          const nextZoom = clamp(touchPinchRef.current.zoom * (distance / touchPinchRef.current.distance), 0.25, 2.5);
+          setZoom(nextZoom);
+          setPan({
+            x: localMidpoint.x - touchPinchRef.current.worldPoint.x * nextZoom,
+            y: localMidpoint.y - touchPinchRef.current.worldPoint.y * nextZoom
+          });
+        }
+        return;
+      }
+    }
     if ((contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) && isPanning) {
       setIsPanning(false);
       rightPanOriginRef.current = null;
@@ -1006,6 +1112,23 @@ export function NodeCanvas({
     else onCollaborationAction?.({ kind: 'idle' }, true);
   };
 
+  const finishCanvasPointer = (event) => {
+    const wasPinching = event.pointerType === 'touch' && Boolean(touchPinchRef.current);
+    if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
+    if (wasPinching) {
+      touchPinchRef.current = null;
+      selectionStartRef.current = null;
+      setSelectionBox(null);
+      setIsPanning(false);
+      setDraggingNode(null);
+      setDraggingNote(null);
+      onHistoryGroupEnd?.();
+      onCollaborationAction?.({ kind: 'idle' }, true);
+      return;
+    }
+    finishPointer(event);
+  };
+
   const startWire = (event, nodeId, pinId, direction, pinType) => {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -1054,8 +1177,9 @@ export function NodeCanvas({
     const segments = getWireCutSegments(pathElement, event);
     const sourceNode = nodeById.get(connection.sourceNodeId);
     const targetNode = nodeById.get(connection.targetNodeId);
-    const pinType = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId)?.type
-      || getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId)?.type;
+    const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
+    const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
+    const pinType = sourcePin?.colorType || sourcePin?.type || targetPin?.colorType || targetPin?.type;
     setWireCutAnimations((current) => [...current.filter((item) => item.id !== connection.id), { id: connection.id, segments, color: PinColors[pinType] || '#9299a6' }]);
     const timer = window.setTimeout(() => {
       wireCutTimersRef.current.delete(connection.id);
@@ -1281,8 +1405,10 @@ export function NodeCanvas({
       try { outputPreview = outputValue === undefined ? 'Preview unavailable · requires runtime data or an unsupported node' : `Value · ${typeof outputValue === 'string' ? outputValue : JSON.stringify(outputValue)}`; } catch { outputPreview = 'Preview unavailable'; }
       if (outputPreview.length > 180) outputPreview = `${outputPreview.slice(0, 177)}…`;
     }
-    const sourceType = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId)?.type;
-    const targetType = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId)?.type;
+    const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
+    const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
+    const sourceType = sourcePin?.colorType || sourcePin?.type;
+    const targetType = targetPin?.colorType || targetPin?.type;
     const pinColor = PinColors[sourceType || connection.type || targetType] || '#9299a6';
     const active = activePulseNodeSet.has(connection.sourceNodeId) && activePulseNodeSet.has(connection.targetNodeId);
     const fanoutKey = `${connection.sourceNodeId}:${connection.sourcePinId}`;
@@ -1342,8 +1468,8 @@ export function NodeCanvas({
         if (connectingWire || draggingNode || draggingNote || isPanning || selectionStartRef.current) return;
         onCollaborationAction?.({ kind: 'navigation', label: 'Navigating menus' }, true);
       }}
-      onPointerUp={finishPointer}
-      onPointerCancel={() => { setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onCollaborationAction?.({ kind: 'idle' }, true); onHistoryGroupEnd?.(); }}
+      onPointerUp={finishCanvasPointer}
+      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onCollaborationAction?.({ kind: 'idle' }, true); onHistoryGroupEnd?.(); }}
       onContextMenu={openContextMenu}
       onDragOver={updateLibraryDragPreview}
       onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setLibraryDragPreview(null); onCollaborationAction?.({ kind: 'idle' }, true); } }}
@@ -1422,6 +1548,7 @@ export function NodeCanvas({
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 graphVariables={graphVariables}
+                templateSocketSuggestions={templateSocketSuggestions}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
                 functionGraphs={functionGraphs}
