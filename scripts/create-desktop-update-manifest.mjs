@@ -1,0 +1,109 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import rootPackage from '../package.json' with { type: 'json' };
+import studioClient from '../packages/studio-client/package.json' with { type: 'json' };
+import studioServer from '../packages/studio-server/package.json' with { type: 'json' };
+import studioDesktop from '../packages/studio-desktop/package.json' with { type: 'json' };
+import tauriConfig from '../packages/studio-desktop/src-tauri/tauri.conf.json' with { type: 'json' };
+
+const [releaseTag = process.env.GITHUB_REF_NAME, repository = process.env.GITHUB_REPOSITORY, releaseDirectory = 'release-assets'] = process.argv.slice(2);
+if (!releaseTag || !/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseTag)) throw new Error('Pass the version tag, for example v2026.1.1-alpha.7.');
+if (!repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('GITHUB_REPOSITORY is missing or invalid.');
+if (!fs.existsSync(releaseDirectory)) throw new Error(`Release artifact folder not found: ${releaseDirectory}`);
+if (releaseTag.replace(/^v/, '') !== rootPackage.version) throw new Error(`Release tag ${releaseTag} does not match root package version ${rootPackage.version}.`);
+const channel = rootPackage.version.includes('-') ? 'nightly' : 'stable';
+const expectedChannel = releaseTag.includes('-') ? 'nightly' : 'stable';
+if (channel !== expectedChannel) throw new Error(`Release tag channel (${expectedChannel}) does not match root version channel (${channel}).`);
+const expectedUpdaterEndpoint = channel === 'nightly'
+  ? 'https://github.com/relentiousdragon/arc-studio/releases/download/nightly/latest.json'
+  : 'https://github.com/relentiousdragon/arc-studio/releases/latest/download/latest.json';
+if (tauriConfig.plugins?.updater?.requireSignedVersion !== true || !tauriConfig.plugins?.updater?.pubkey) {
+  throw new Error('Tauri updater signing must remain enabled with a configured public key.');
+}
+for (const [name, version] of Object.entries({ 'studio-client': studioClient.version, 'studio-server': studioServer.version, 'studio-desktop': studioDesktop.version })) {
+  if (version !== rootPackage.version) throw new Error(`${name} version ${version} does not match root version ${rootPackage.version}.`);
+}
+
+const files = [];
+function walk(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) walk(fullPath);
+    else if (entry.isFile()) files.push(fullPath);
+  }
+}
+walk(releaseDirectory);
+
+const expectedBuilds = new Map([
+  ['universal-apple-darwin', 'darwin'],
+  ['x86_64-pc-windows-msvc', 'win32'],
+  ['x86_64-unknown-linux-gnu', 'linux'],
+  ['aarch64-unknown-linux-gnu', 'linux']
+]);
+const buildInfoFiles = files.filter((file) => path.basename(file) === 'arc-build-info.json');
+if (buildInfoFiles.length !== expectedBuilds.size) throw new Error(`Expected ${expectedBuilds.size} platform build metadata files; found ${buildInfoFiles.length}.`);
+const seenTargets = new Set();
+for (const file of buildInfoFiles) {
+  const info = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (info.schemaVersion !== 1 || info.version !== rootPackage.version || info.channel !== channel || info.updaterEndpoint !== expectedUpdaterEndpoint) {
+    throw new Error(`${path.basename(path.dirname(file))}/arc-build-info.json does not match release version/channel (${rootPackage.version} · ${channel}).`);
+  }
+  if (!expectedBuilds.has(info.target) || expectedBuilds.get(info.target) !== info.platform || seenTargets.has(info.target)) {
+    throw new Error(`Unexpected, duplicate, or mismatched desktop build metadata: ${info.target} (${info.platform}).`);
+  }
+  if (!file.includes(info.target)) throw new Error(`Build metadata for ${info.target} was uploaded with the wrong platform artifact.`);
+  seenTargets.add(info.target);
+}
+for (const target of expectedBuilds.keys()) if (!seenTargets.has(target)) throw new Error(`Missing platform build metadata for ${target}.`);
+
+const installerMarkers = [...expectedBuilds.keys()];
+for (const marker of installerMarkers) {
+  const installers = files.filter((file) => file.includes(marker) && /(?:\.dmg|\.exe|\.AppImage)$/.test(file));
+  if (installers.length !== 1) throw new Error(`Expected one installer for ${marker}; found ${installers.length}.`);
+  const installerPath = installers[0];
+  const checksumPath = `${installerPath}.sha256`;
+  if (!files.includes(checksumPath)) throw new Error(`Missing SHA-256 checksum for ${path.basename(installerPath)}.`);
+  const expectedDigest = fs.readFileSync(checksumPath, 'utf8').trim().split(/\s+/)[0].toLowerCase();
+  const actualDigest = createHash('sha256').update(fs.readFileSync(installerPath)).digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(expectedDigest) || expectedDigest !== actualDigest) throw new Error(`SHA-256 checksum does not match ${path.basename(installerPath)}.`);
+}
+
+const artifactFor = (targetMarker, suffix) => {
+  const matches = files.filter((file) => file.includes(targetMarker) && path.basename(file).endsWith(suffix));
+  if (matches.length !== 1) throw new Error(`Expected one ${suffix} update artifact for ${targetMarker}; found ${matches.length}.`);
+  return matches[0];
+};
+const signedArtifact = (artifactPath) => {
+  const basename = path.basename(artifactPath);
+  const originalName = basename.replace(/-unsigned(?=\.(?:exe|AppImage)$)/, '');
+  const signaturePath = files.find((file) => path.dirname(file) === path.dirname(artifactPath) && path.basename(file) === `${originalName}.sig`);
+  if (!signaturePath) throw new Error(`Missing Tauri signature for ${basename}.`);
+  const signature = fs.readFileSync(signaturePath, 'utf8').trim();
+  if (!signature || signature.length < 80) throw new Error(`Tauri signature is empty or invalid for ${basename}.`);
+  return {
+    signature,
+    url: `https://github.com/${repository}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(basename)}`
+  };
+};
+
+const macBundle = artifactFor('universal-apple-darwin', '.app.tar.gz');
+const winBundle = artifactFor('x86_64-pc-windows-msvc', '.exe');
+const linuxX64Bundle = artifactFor('x86_64-unknown-linux-gnu', '.AppImage');
+const linuxArmBundle = artifactFor('aarch64-unknown-linux-gnu', '.AppImage');
+const platforms = {
+  'darwin-aarch64': signedArtifact(macBundle),
+  'darwin-x86_64': signedArtifact(macBundle),
+  'windows-x86_64': signedArtifact(winBundle),
+  'linux-x86_64': signedArtifact(linuxX64Bundle),
+  'linux-aarch64': signedArtifact(linuxArmBundle)
+};
+const version = rootPackage.version;
+const manifest = {
+  version,
+  notes: `ARC Studio ${version}`,
+  pub_date: new Date().toISOString(),
+  platforms
+};
+fs.writeFileSync(path.join(releaseDirectory, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+console.log(`Created updater manifest for ARC Studio ${version} (${Object.keys(platforms).length} targets).`);
