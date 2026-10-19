@@ -22,8 +22,8 @@ export class UserStore extends EventEmitter {
     this.workspaceName = serverConfig.desktopMode ? 'Local Workspace' : 'ARC Studio Workspace';
     this.sessions = new Map(); // token -> { userId, expiresAt }
     this.pendingSessionReplacements = new Map();
-    this.sessionDurationMs = 24 * 60 * 60 * 1000; // 24 hours
-    this.rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000; // 30 days
+    this.sessionDurationMs = 24 * 60 * 60 * 1000; // 24h
+    this.rememberedSessionDurationMs = 30 * 24 * 60 * 60 * 1000; // 30d
 
     this.ensureDataFile();
     this.loadState();
@@ -32,13 +32,19 @@ export class UserStore extends EventEmitter {
 
   invalidateSessionsOnStartup() {
     if (!this.users.length) return;
+    const now = Date.now();
+    let changed = false;
     for (const user of this.users) {
+      if (serverConfig.desktopMode && user.activeSessionRememberMe === true
+        && user.activeSessionId && Number(user.activeSessionExpiresAt) > now) continue;
       user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
       delete user.activeSessionId;
       delete user.activeSessionExpiresAt;
+      delete user.activeSessionRememberMe;
+      changed = true;
     }
     this.sessions.clear();
-    this.saveState();
+    if (changed) this.saveState();
   }
 
   ensureDataFile() {
@@ -60,7 +66,6 @@ export class UserStore extends EventEmitter {
       const content = fs.readFileSync(this.dataPath, 'utf8');
       const data = JSON.parse(content);
       if (Array.isArray(data)) {
-        // Migration from previous format
         this.users = data;
         this.setupCompleted = data.length > 0;
       } else {
@@ -130,6 +135,7 @@ export class UserStore extends EventEmitter {
     const sessionId = crypto.randomBytes(16).toString('hex');
     user.activeSessionId = sessionId;
     user.activeSessionExpiresAt = now + duration;
+    user.activeSessionRememberMe = rememberMe === true;
     for (const [token, session] of this.sessions) {
       if (session.userId === user.id) this.sessions.delete(token);
     }
@@ -158,6 +164,7 @@ export class UserStore extends EventEmitter {
     if (user && sessionId && user.activeSessionId === sessionId) {
       delete user.activeSessionId;
       delete user.activeSessionExpiresAt;
+      delete user.activeSessionRememberMe;
       this.saveState();
     }
   }
@@ -233,7 +240,7 @@ export class UserStore extends EventEmitter {
 
     const sessionToken = this.createSession(primaryAdmin, rememberMe);
 
-    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, ...publicProfile } = primaryAdmin;
+    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, activeSessionRememberMe: _____, ...publicProfile } = primaryAdmin;
     return { token: sessionToken, user: publicProfile };
   }
 
@@ -302,13 +309,14 @@ export class UserStore extends EventEmitter {
     }
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
 
     user.lastLoginAt = new Date().toISOString();
     this.saveState();
 
     const sessionToken = this.createSession(user, rememberMe);
 
-    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, ...profile } = user;
+    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, activeSessionRememberMe: _____, ...profile } = user;
     return { token: sessionToken, user: profile };
   }
 
@@ -322,6 +330,7 @@ export class UserStore extends EventEmitter {
     user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
     for (const [token, session] of this.sessions) if (session.userId === userId) this.sessions.delete(token);
     this.saveState();
     this.emit('sessionReplaced', { userId });
@@ -334,6 +343,7 @@ export class UserStore extends EventEmitter {
     user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
     for (const [token, session] of this.sessions) if (session.userId === userId) this.sessions.delete(token);
     this.saveState();
     this.emit('sessionExpired', { userId, reason });
@@ -369,7 +379,7 @@ export class UserStore extends EventEmitter {
       if (!userId || !nonce || !Number.isFinite(issuedAt) || issuedAt > Date.now() || Date.now() > expiresAt) return null;
       const tokenUser = this.users.find((user) => user.id === userId);
       if (!tokenUser || tokenAuthVersion !== (Number.isInteger(tokenUser.authVersion) ? tokenUser.authVersion : 0)) return null;
-      session = { userId, authVersion: tokenAuthVersion, sessionId: nonce, expiresAt };
+      session = { userId, authVersion: tokenAuthVersion, sessionId: nonce, expiresAt, rememberMe };
       this.sessions.set(token, session);
     }
     if (!session) return null;
@@ -388,16 +398,17 @@ export class UserStore extends EventEmitter {
     if (!user.activeSessionId && session.sessionId) {
       user.activeSessionId = session.sessionId;
       user.activeSessionExpiresAt = session.expiresAt;
+      user.activeSessionRememberMe = session.rememberMe === true;
       this.saveState();
     }
     if (!session.sessionId || user.activeSessionId !== session.sessionId) return null;
 
-    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, ...profile } = user;
+    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, activeSessionRememberMe: _____, ...profile } = user;
     return profile;
   }
 
   listUsers() {
-    return this.users.map(({ salt, passwordHash, activeSessionId, activeSessionExpiresAt, ...safe }) => ({
+    return this.users.map(({ salt, passwordHash, activeSessionId, activeSessionExpiresAt, activeSessionRememberMe, ...safe }) => ({
       ...safe,
       hasActiveSession: Boolean(activeSessionId && activeSessionExpiresAt > Date.now())
     }));
@@ -408,7 +419,7 @@ export class UserStore extends EventEmitter {
     if (!user) throw new Error('User not found.');
     user.activeProjectId = projectId;
     this.saveState();
-    const { salt, passwordHash, activeSessionId, activeSessionExpiresAt, ...profile } = user;
+    const { salt, passwordHash, activeSessionId, activeSessionExpiresAt, activeSessionRememberMe, ...profile } = user;
     return profile;
   }
 
@@ -422,6 +433,7 @@ export class UserStore extends EventEmitter {
     user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
     user.mustChangePassword = requireChange;
     this.saveState();
     const { salt: _salt, passwordHash: _passwordHash, ...profile } = user;
@@ -446,7 +458,7 @@ export class UserStore extends EventEmitter {
     user.permissions = normalized;
     user.role = matchesRole?.[0] || 'custom';
     this.saveState();
-    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, ...profile } = user;
+    const { salt: _, passwordHash: __, activeSessionId: ___, activeSessionExpiresAt: ____, activeSessionRememberMe: _____, ...profile } = user;
     profile.hasActiveSession = Boolean(user.activeSessionId && user.activeSessionExpiresAt > Date.now());
     this.emit('permissionsUpdated', { user: profile });
     return profile;
@@ -460,6 +472,7 @@ export class UserStore extends EventEmitter {
     user.authVersion = (Number.isInteger(user.authVersion) ? user.authVersion : 0) + 1;
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
     for (const [token, session] of this.sessions) if (session.userId === user.id) this.sessions.delete(token);
     this.saveState();
     this.emit('sessionRevoked', { userId: user.id });
@@ -477,6 +490,7 @@ export class UserStore extends EventEmitter {
     user.mustChangePassword = false;
     delete user.activeSessionId;
     delete user.activeSessionExpiresAt;
+    delete user.activeSessionRememberMe;
     this.saveState();
     const { salt: _salt, passwordHash: _passwordHash, ...profile } = user;
     return profile;
