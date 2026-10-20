@@ -895,7 +895,7 @@ fn main() {
                 .first()
                 .cloned()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ARC Studio window configuration is missing"))?;
-            let config_dir = app.path().app_config_dir()?;
+            let config_dir = node_compatible_path(&app.path().app_config_dir()?);
             fs::create_dir_all(&config_dir)?;
             let window_size_path = config_dir.join("window-size.txt");
             let window_size = restore_window_size(app, &window_config, &window_size_path);
@@ -1146,10 +1146,35 @@ fn js_string_literal(value: &str) -> String {
     escaped
 }
 
+#[cfg(target_os = "windows")]
+fn node_compatible_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const VERBATIM_PREFIX: [u16; 4] = [92, 92, 63, 92];
+    const VERBATIM_UNC_PREFIX: [u16; 8] = [92, 92, 63, 92, 85, 78, 67, 92];
+    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+
+    if wide.starts_with(&VERBATIM_UNC_PREFIX) {
+        let mut ordinary = vec![92, 92];
+        ordinary.extend_from_slice(&wide[VERBATIM_UNC_PREFIX.len()..]);
+        PathBuf::from(OsString::from_wide(&ordinary))
+    } else if wide.starts_with(&VERBATIM_PREFIX) {
+        PathBuf::from(OsString::from_wide(&wide[VERBATIM_PREFIX.len()..]))
+    } else {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn node_compatible_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
 fn start_studio_server<R: tauri::Runtime>(
     app: &mut tauri::App<R>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let resource_dir = app.path().resource_dir()?;
+    let resource_dir = node_compatible_path(&app.path().resource_dir()?);
     let runtime_dir = resource_dir.join("resources/runtime");
     let app_root = runtime_dir.join("app");
     let node_name = if cfg!(target_os = "windows") {
@@ -1167,8 +1192,8 @@ fn start_studio_server<R: tauri::Runtime>(
         .into());
     }
 
-    let data_dir = app.path().app_data_dir()?;
-    let config_dir = app.path().app_config_dir()?;
+    let data_dir = node_compatible_path(&app.path().app_data_dir()?);
+    let config_dir = node_compatible_path(&app.path().app_config_dir()?);
     let logs_dir = data_dir.join("logs");
     fs::create_dir_all(&data_dir)?;
     fs::create_dir_all(&config_dir)?;
