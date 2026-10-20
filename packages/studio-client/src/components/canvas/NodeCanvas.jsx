@@ -82,6 +82,103 @@ function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
   </div>;
 }
 
+function RemoteCollaborationCursor({ peer }) {
+  const elementRef = useRef(null);
+  const displayedRef = useRef(null);
+  const lastUpdateRef = useRef(0);
+  const cursor = peer.action.cursor;
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    if (!element || !Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y)) return undefined;
+    const target = { x: cursor.x, y: cursor.y };
+    if (!displayedRef.current) {
+      displayedRef.current = target;
+      element.style.transform = `translate3d(${target.x}px, ${target.y}px, 0)`;
+      lastUpdateRef.current = Number(peer.updatedAt) || Date.now();
+      return undefined;
+    }
+    const from = displayedRef.current;
+    const serverUpdatedAt = Number(peer.updatedAt) || Date.now();
+    const gap = lastUpdateRef.current ? Math.max(0, serverUpdatedAt - lastUpdateRef.current) : 70;
+    const duration = Math.min(150, Math.max(55, gap * 1.15));
+    lastUpdateRef.current = serverUpdatedAt;
+    let frame = 0;
+    const startedAt = performance.now();
+    const step = (now) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      const point = { x: from.x + (target.x - from.x) * eased, y: from.y + (target.y - from.y) * eased };
+      displayedRef.current = point;
+      element.style.transform = `translate3d(${point.x}px, ${point.y}px, 0)`;
+      if (progress < 1) frame = requestAnimationFrame(step);
+      else { displayedRef.current = target; element.style.transform = `translate3d(${target.x}px, ${target.y}px, 0)`; }
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [cursor?.x, cursor?.y, peer.updatedAt]);
+  const idle = peer.action.kind === 'idle' || peer.action.cursorIdle;
+  return <div ref={elementRef} className={`canvas-collaborator-cursor is-${idle ? 'idle' : peer.action.mode || peer.action.kind}`} style={{ '--collaborator-color': idle ? '#858c98' : peer.color }}>
+    {peer.action.mode === 'text' ? <Type size={16} strokeWidth={2.4} /> : peer.action.mode === 'cut' ? <Scissors size={16} strokeWidth={2.4} /> : ['node-drag', 'note-drag', 'library-drag', 'pan'].includes(peer.action.kind) || peer.action.mode === 'pan' ? <Hand size={17} strokeWidth={2.4} /> : <MousePointer2 size={17} strokeWidth={2.4} />}
+    <span>{peer.username}</span>
+    {peer.action.kind === 'wire-drag' && <small>Connecting</small>}
+    {peer.action.kind === 'node-drag' && <small>Moving {peer.action.nodeIds?.length > 1 ? `${peer.action.nodeIds.length} nodes` : 'node'}</small>}
+    {peer.action.kind === 'note-drag' && <small>Moving note</small>}
+    {peer.action.kind === 'node-edit' && <small>Editing node</small>}
+    {peer.action.kind === 'library-drag' && <small>Adding {peer.action.label || 'node'}</small>}
+    {peer.action.kind === 'studio-focus' && <small>Editing {peer.action.label || peer.action.studioType}</small>}
+    {peer.action.kind === 'studio-draft' && <small>Editing {peer.action.studioType === 'text' ? 'text' : peer.action.studioType === 'arguments' ? 'command arguments' : 'embed'}</small>}
+  </div>;
+}
+
+function RemoteWirePreview({ peer, computePath }) {
+  const pathRef = useRef(null);
+  const circleRef = useRef(null);
+  const displayedRef = useRef(null);
+  const lastUpdateRef = useRef(0);
+  const lastStartRef = useRef('');
+  const computePathRef = useRef(computePath);
+  computePathRef.current = computePath;
+  const { start, cursor } = peer.action;
+  useLayoutEffect(() => {
+    if (!Number.isFinite(cursor?.x) || !Number.isFinite(cursor?.y) || !start) return undefined;
+    const target = { x: cursor.x, y: cursor.y };
+    const startKey = `${start.x}:${start.y}`;
+    const sameStart = lastStartRef.current === startKey;
+    if (!displayedRef.current || !sameStart) {
+      displayedRef.current = target;
+      lastStartRef.current = startKey;
+      lastUpdateRef.current = Number(peer.updatedAt) || Date.now();
+      if (pathRef.current) pathRef.current.setAttribute('d', computePathRef.current(start.x, start.y, target.x, target.y));
+      if (circleRef.current) { circleRef.current.setAttribute('cx', String(target.x)); circleRef.current.setAttribute('cy', String(target.y)); }
+      return undefined;
+    }
+    const from = displayedRef.current;
+    const serverUpdatedAt = Number(peer.updatedAt) || Date.now();
+    const updateGap = lastUpdateRef.current ? Math.max(0, serverUpdatedAt - lastUpdateRef.current) : 0;
+    const duration = sameStart && displayedRef.current ? Math.min(125, Math.max(50, updateGap * 1.2)) : 0;
+    lastStartRef.current = startKey;
+    lastUpdateRef.current = serverUpdatedAt;
+    const startedAt = performance.now();
+    let frame = 0;
+    const step = (now) => {
+      const progress = duration ? Math.min(1, (now - startedAt) / duration) : 1;
+      const eased = 1 - (1 - progress) ** 3;
+      const point = { x: from.x + (target.x - from.x) * eased, y: from.y + (target.y - from.y) * eased };
+      displayedRef.current = point;
+      if (pathRef.current) pathRef.current.setAttribute('d', computePathRef.current(start.x, start.y, point.x, point.y));
+      if (circleRef.current) { circleRef.current.setAttribute('cx', String(point.x)); circleRef.current.setAttribute('cy', String(point.y)); }
+      if (progress < 1) frame = requestAnimationFrame(step);
+      else displayedRef.current = target;
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [start?.x, start?.y, cursor?.x, cursor?.y, peer.updatedAt]);
+  return <g className="collaboration-wire-preview" style={{ '--collaborator-color': peer.color }}>
+    <path ref={pathRef} />
+    <circle ref={circleRef} r="4" />
+  </g>;
+}
+
 function getWireCutSegments(pathElement, event) {
   try {
     const length = pathElement.getTotalLength();
@@ -118,7 +215,7 @@ function getWireCutSegments(pathElement, event) {
 
 export function NodeCanvas({
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
-  tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
+  tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
@@ -869,9 +966,18 @@ export function NodeCanvas({
     };
   }, [desktopMode, dropLibraryPayload, showLibraryDragPreview]);
 
+  const remoteNodePositionById = useMemo(() => {
+    const positions = new Map();
+    for (const peer of remoteActions) if (Array.isArray(peer.action?.nodePositions)) {
+      for (const position of peer.action.nodePositions) if (position && typeof position.id === 'string') positions.set(position.id, position);
+    }
+    return positions;
+  }, [remoteActions]);
+
   const getSocketPosition = useCallback((nodeId, pinId, direction) => {
     const node = nodes.find((item) => item.id === nodeId);
     if (!node) return { x: 0, y: 0 };
+    const nodePosition = remoteNodePositionById.get(nodeId) || node;
     const row = [...(containerRef.current?.querySelectorAll('.node-pin-row') || [])].find((element) =>
       element.dataset.nodeId === nodeId && element.dataset.pinId === pinId && element.dataset.direction === direction
     );
@@ -882,18 +988,18 @@ export function NodeCanvas({
     if (socketBounds && cardBounds && cardBounds.width > 0) {
       const scale = cardBounds.width / NODE_WIDTH;
       return {
-        x: node.x + (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
-        y: node.y + (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
+        x: nodePosition.x + (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
+        y: nodePosition.y + (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
       };
     }
     const definition = getNodeDefinition(node);
     const pins = direction === 'output' ? definition?.outputs || [] : definition?.inputs || [];
     const index = Math.max(0, pins.findIndex((pin) => pin.id === pinId));
     return {
-      x: node.x + (direction === 'output' ? NODE_WIDTH : 0),
-      y: node.y + 72 + index * 23
+      x: nodePosition.x + (direction === 'output' ? NODE_WIDTH : 0),
+      y: nodePosition.y + 72 + index * 23
     };
-  }, [nodes, getNodeDefinition]);
+  }, [nodes, getNodeDefinition, remoteNodePositionById]);
 
   const pinFromRow = useCallback((row) => row ? ({
     nodeId: row.dataset.nodeId,
@@ -1193,8 +1299,32 @@ export function NodeCanvas({
       const cursor = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
       collaborationCursorRef.current = cursor;
       if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, selectedNodeIds });
-      else if (draggingNode) onCollaborationAction?.({ kind: 'node-drag', cursor, nodeIds: draggingNode.nodeIds || [draggingNode.id] });
-      else if (draggingNote) onCollaborationAction?.({ kind: 'note-drag', cursor, noteId: draggingNote.id, noteIds: draggingNote.noteIds || [draggingNote.id] });
+      else if (draggingNode) {
+        const deltaX = (event.clientX - draggingNode.startX) / displayScale / zoom;
+        const deltaY = (event.clientY - draggingNode.startY) / displayScale / zoom;
+        let x = draggingNode.initialX + deltaX;
+        let y = draggingNode.initialY + deltaY;
+        if (snapToGrid) { x = Math.round(x / GRID_SIZE) * GRID_SIZE; y = Math.round(y / GRID_SIZE) * GRID_SIZE; }
+        const groupDeltaX = x - draggingNode.initialX;
+        const groupDeltaY = y - draggingNode.initialY;
+        const ids = draggingNode.nodeIds || [draggingNode.id];
+        const initialPositions = draggingNode.initialPositions || { [draggingNode.id]: { x: draggingNode.initialX, y: draggingNode.initialY } };
+        const nodePositions = collaborationMotionSupported && Math.hypot(deltaX * zoom, deltaY * zoom) >= 2 ? ids.map((id) => {
+          const initial = initialPositions[id] || nodes.find((node) => node.id === id) || { x: 0, y: 0 };
+          return { id, x: Math.round(initial.x + groupDeltaX), y: Math.round(initial.y + groupDeltaY) };
+        }) : undefined;
+        onCollaborationAction?.({ kind: 'node-drag', cursor, nodeIds: ids, nodePositions });
+      }
+      else if (draggingNote) {
+        const deltaX = Math.round((event.clientX - draggingNote.startX) / displayScale / zoom);
+        const deltaY = Math.round((event.clientY - draggingNote.startY) / displayScale / zoom);
+        const ids = draggingNote.noteIds || [draggingNote.id];
+        const notePositions = collaborationMotionSupported && (draggingNote.historyStarted || Math.hypot(deltaX, deltaY) >= 2) ? ids.map((id) => {
+          const initial = draggingNote.initialPositions[id] || notes.find((note) => note.id === id) || { x: 0, y: 0 };
+          return { id, x: initial.x + deltaX, y: initial.y + deltaY };
+        }) : undefined;
+        onCollaborationAction?.({ kind: 'note-drag', cursor, noteId: draggingNote.id, noteIds: ids, notePositions });
+      }
       else if (selectionStartRef.current) {
         const start = selectionStartRef.current;
         const toWorld = (x, y) => ({ x: ((x - bounds.left) / displayScale - pan.x) / zoom, y: ((y - bounds.top) / displayScale - pan.y) / zoom });
@@ -1315,6 +1445,41 @@ export function NodeCanvas({
     let finalSelectedNodeIds = selectedNodeIds;
     let finalSelectedNoteIds = selectedNoteIds;
     const finishedDraggingNode = draggingNode;
+    const finishBounds = containerRef.current?.getBoundingClientRect();
+    const finishScale = getCanvasDisplayScale(containerRef.current);
+    const finishCursor = finishBounds ? {
+      x: ((event.clientX - finishBounds.left) / finishScale - pan.x) / zoom,
+      y: ((event.clientY - finishBounds.top) / finishScale - pan.y) / zoom
+    } : collaborationCursorRef.current;
+    const finalNodeDelta = finishedDraggingNode ? {
+      x: (event.clientX - finishedDraggingNode.startX) / finishScale / zoom,
+      y: (event.clientY - finishedDraggingNode.startY) / finishScale / zoom
+    } : null;
+    let finalNodeX = finishedDraggingNode ? finishedDraggingNode.initialX + finalNodeDelta.x : 0;
+    let finalNodeY = finishedDraggingNode ? finishedDraggingNode.initialY + finalNodeDelta.y : 0;
+    if (finishedDraggingNode && snapToGrid) { finalNodeX = Math.round(finalNodeX / GRID_SIZE) * GRID_SIZE; finalNodeY = Math.round(finalNodeY / GRID_SIZE) * GRID_SIZE; }
+    const finalNodeMoveX = finishedDraggingNode ? finalNodeX - finishedDraggingNode.initialX : 0;
+    const finalNodeMoveY = finishedDraggingNode ? finalNodeY - finishedDraggingNode.initialY : 0;
+    const nodeMoveStarted = Boolean(finishedDraggingNode && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= 2));
+    const finishedNodePositions = collaborationMotionSupported && nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
+      const initial = finishedDraggingNode.initialPositions?.[id] || nodes.find((item) => item.id === id) || { x: 0, y: 0 };
+      return { id, x: Math.round(initial.x + finalNodeMoveX), y: Math.round(initial.y + finalNodeMoveY) };
+    }) : undefined;
+    if (nodeMoveStarted && finishedNodePositions?.length) {
+      const finalPositionsById = new Map(finishedNodePositions.map((position) => [position.id, position]));
+      onNodesChange?.(nodes.map((node) => finalPositionsById.has(node.id) ? { ...node, ...finalPositionsById.get(node.id) } : node));
+    }
+    const finalNoteDelta = draggingNote ? {
+      x: Math.round((event.clientX - draggingNote.startX) / finishScale / zoom),
+      y: Math.round((event.clientY - draggingNote.startY) / finishScale / zoom)
+    } : null;
+    const noteMoveStarted = Boolean(draggingNote && (draggingNote.historyStarted || Math.hypot(finalNoteDelta.x, finalNoteDelta.y) >= 2));
+    const finishedNotePositions = collaborationMotionSupported && noteMoveStarted ? (draggingNote.noteIds || [draggingNote.id]).map((id) => {
+      const note = notes.find((item) => item.id === id);
+      if (!note) return null;
+      const initial = draggingNote.initialPositions[id] || { x: note.x, y: note.y };
+      return { id, x: initial.x + finalNoteDelta.x, y: initial.y + finalNoteDelta.y };
+    }).filter(Boolean) : undefined;
     if (!isLocked && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey)) {
       const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
       const bounds = containerRef.current?.getBoundingClientRect();
@@ -1376,10 +1541,11 @@ export function NodeCanvas({
     setIsPanning(false);
     setDraggingNode(null);
     if (draggingNote) {
-      if (draggingNote.historyStarted) {
+      if (noteMoveStarted) {
+        if (!draggingNote.historyStarted) onHistoryGroupStart?.();
         const movingIds = new Set(draggingNote.noteIds || [draggingNote.id]);
-        const deltaX = draggingNote.deltaX || 0;
-        const deltaY = draggingNote.deltaY || 0;
+        const deltaX = finalNoteDelta.x;
+        const deltaY = finalNoteDelta.y;
         onNotesChange?.(notes.map((note) => {
           if (!movingIds.has(note.id)) return note;
           const initial = draggingNote.initialPositions[note.id] || { x: note.x, y: note.y };
@@ -1398,8 +1564,8 @@ export function NodeCanvas({
       else if (targetRow && targetRow.dataset.nodeId !== connectingWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
       setConnectingWire(null);
     }
-    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: collaborationCursorRef.current, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds }, true);
-    else if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
+    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
+    else if (finishCursor) onCollaborationAction?.({ kind: 'cursor', cursor: finishCursor, mode: 'move', selectedNodeIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
   };
 
   const finishCanvasPointer = (event) => {
@@ -1905,7 +2071,12 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         }
       }}
       onPointerUp={finishCanvasPointer}
-      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onHistoryGroupEnd?.(); }}
+      onPointerCancel={() => {
+        touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false);
+        const nodePositions = collaborationMotionSupported && draggingNode ? (draggingNode.nodeIds || [draggingNode.id]).map((id) => { const node = nodes.find((item) => item.id === id); return node ? { id, x: node.x, y: node.y } : null; }).filter(Boolean) : undefined;
+        if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds, nodePositions }, true);
+        setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onHistoryGroupEnd?.();
+      }}
       onContextMenu={openContextMenu}
       onDragOver={updateLibraryDragPreview}
       onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragPreview(null); }}
@@ -1971,17 +2142,20 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const definition = getNodeDefinition(node);
           const templatePreviewValues = Object.fromEntries((inputWiresByNode.get(node.id) || []).map((wire) => [wire.targetPinId, previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId)]).filter(([, value]) => value !== undefined));
           const remoteSelection = remoteActions.find((peer) => peer.action?.selectedNodeIds?.includes(node.id));
+          const remotePosition = remoteNodePositionById.get(node.id);
           const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'node-edit' && peer.action.nodeId === node.id
-            || peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)) || remoteSelection;
+            || peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)
+            || peer.action?.nodePositions?.some((position) => position.id === node.id)) || remoteSelection;
+          const displayNode = remotePosition ? { ...node, x: remotePosition.x, y: remotePosition.y } : node;
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isConnectedToSelection ? 'is-connected-to-selection' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isConnectedToSelection ? 'is-connected-to-selection' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)) ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
               key={node.id}
               style={{ zIndex: isSelected ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
               onPointerDown={(event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
-                node={node}
+                node={displayNode}
                 definition={definition}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
@@ -2025,10 +2199,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
               ? computePath(connectingWire.startPos.x, connectingWire.startPos.y, connectingWire.currentPos.x, connectingWire.currentPos.y)
               : computePath(connectingWire.currentPos.x, connectingWire.currentPos.y, connectingWire.startPos.x, connectingWire.startPos.y)}
             className={`wire-preview ${connectingWire.originalConnection ? 'wire-preview-reroute' : ''}`} style={{ '--wire-color': PinColors[connectingWire.pinType] || '#9299a6' }} />}
-          {remoteActions.filter((peer) => peer.action?.kind === 'wire-drag' && peer.action.start && peer.action.cursor).map((peer) => <g key={`remote-wire-${peer.userId}`} className="collaboration-wire-preview" style={{ '--collaborator-color': peer.color }}>
-            <path d={computePath(peer.action.start.x, peer.action.start.y, peer.action.cursor.x, peer.action.cursor.y)} />
-            <circle cx={peer.action.cursor.x} cy={peer.action.cursor.y} r="4" />
-          </g>)}
+          {remoteActions.filter((peer) => peer.action?.kind === 'wire-drag' && peer.action.start && peer.action.cursor).map((peer) => <RemoteWirePreview key={`remote-wire-${peer.userId}`} peer={peer} computePath={computePath} />)}
         </svg>
         {notes.map((note) => {
           const noteDragInitial = draggingNote?.noteIds?.includes(note.id) ? draggingNote.initialPositions[note.id] : null;
@@ -2038,12 +2209,15 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const ownsNoteLock = Boolean(noteLock && noteLock.userId === currentUser?.id && noteLock.clientId === collaborationClientId);
           const lockHeldByOther = isNoteBeingEditedByOther(note.id);
           const canEditText = mayEdit && (!collaborationOnline || ownsNoteLock);
-      const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id)));
+          const remotePosition = remoteActions.find((peer) => peer.action?.notePositions?.some((position) => position.id === note.id))?.action.notePositions.find((position) => position.id === note.id);
+          const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id))
+            || peer.action?.notePositions?.some((position) => position.id === note.id));
           const headerLabel = lockHeldByOther ? 'Note'
             : focusedNoteId === note.id && collaborationOnline && mayEdit
               ? !collaborationReady ? 'Connecting…' : ownsNoteLock ? 'Editing' : 'Waiting for edit access…'
               : 'Note';
-          return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${selectedNoteIds.includes(note.id) ? 'is-selected' : ''} ${remoteOwner || lockHeldByOther ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.selectedNoteIds?.includes(note.id)) ? 'is-collaborator-selected' : ''}`} style={{ left: activePosition.x, top: activePosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color || noteLock?.color || '#b794f4' }} onPointerDown={(event) => { event.stopPropagation(); if (!(event.target instanceof Element) || !event.target.closest('.canvas-note-header')) handleNoteSelectionPointerDown(event, note.id); }} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
+          const displayPosition = remotePosition || activePosition;
+          return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${selectedNoteIds.includes(note.id) ? 'is-selected' : ''} ${remoteOwner || lockHeldByOther ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id))) ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteActions.some((peer) => peer.action?.selectedNoteIds?.includes(note.id)) ? 'is-collaborator-selected' : ''}`} style={{ left: displayPosition.x, top: displayPosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color || noteLock?.color || '#b794f4' }} onPointerDown={(event) => { event.stopPropagation(); if (!(event.target instanceof Element) || !event.target.closest('.canvas-note-header')) handleNoteSelectionPointerDown(event, note.id); }} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
             <header className="canvas-note-header" onPointerDown={(event) => {
               if (event.button !== 0 || event.target instanceof Element && event.target.closest('button') || !mayEdit || lockHeldByOther) return;
               if (event.metaKey || event.ctrlKey || event.shiftKey) { event.stopPropagation(); handleNoteSelectionPointerDown(event, note.id); return; }
@@ -2082,17 +2256,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           </div>)}
         </div>
         <div className="canvas-collaborator-cursors" aria-hidden="true">
-          {remoteCursorViews.filter((item) => !item.offscreen).map(({ peer }) => <div key={`remote-cursor-${peer.userId}`} className={`canvas-collaborator-cursor is-${peer.action.kind === 'idle' || peer.action.cursorIdle ? 'idle' : peer.action.mode || peer.action.kind}`} style={{ left: peer.action.cursor.x, top: peer.action.cursor.y, '--collaborator-color': peer.action.kind === 'idle' || peer.action.cursorIdle ? '#858c98' : peer.color }}>
-            {peer.action.mode === 'text' ? <Type size={16} strokeWidth={2.4} /> : peer.action.mode === 'cut' ? <Scissors size={16} strokeWidth={2.4} /> : ['node-drag', 'note-drag', 'library-drag', 'pan'].includes(peer.action.kind) || peer.action.mode === 'pan' ? <Hand size={17} strokeWidth={2.4} /> : <MousePointer2 size={17} strokeWidth={2.4} />}
-            <span>{peer.username}</span>
-            {peer.action.kind === 'wire-drag' && <small>Connecting</small>}
-            {peer.action.kind === 'node-drag' && <small>Moving {peer.action.nodeIds?.length > 1 ? `${peer.action.nodeIds.length} nodes` : 'node'}</small>}
-            {peer.action.kind === 'note-drag' && <small>Moving note</small>}
-            {peer.action.kind === 'node-edit' && <small>Editing node</small>}
-            {peer.action.kind === 'library-drag' && <small>Adding {peer.action.label || 'node'}</small>}
-            {peer.action.kind === 'studio-focus' && <small>Editing {peer.action.label || peer.action.studioType}</small>}
-            {peer.action.kind === 'studio-draft' && <small>Editing {peer.action.studioType === 'text' ? 'text' : peer.action.studioType === 'arguments' ? 'command arguments' : 'embed'}</small>}
-          </div>)}
+          {remoteCursorViews.filter((item) => !item.offscreen).map(({ peer }) => <RemoteCollaborationCursor key={`remote-cursor-${peer.userId}`} peer={peer} />)}
         </div>
         {remoteActions.filter((peer) => peer.action?.kind === 'library-drag' && peer.action.cursor).map((peer) => {
           const definition = definitionsByType.get(peer.action.nodeType);
