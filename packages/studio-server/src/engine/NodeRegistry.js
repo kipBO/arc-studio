@@ -808,6 +808,53 @@ export const NodeDefinitions = {
     inputs: [{ id: 'json', label: 'JSON', type: PinTypes.STRING, defaultValue: '' }],
     outputs: [{ id: 'value', label: 'Value', type: PinTypes.OBJECT }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
   },
+  data_to_number: {
+    type: 'data_to_number', category: NodeCategories.VALUES, label: 'Text to Number', color: '#06b6d4',
+    inputs: [{ id: 'text', label: 'Text', type: PinTypes.STRING, defaultValue: '' }],
+    outputs: [{ id: 'number', label: 'Number', type: PinTypes.NUMBER }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
+  },
+  data_check_value: {
+    type: 'data_check_value', category: NodeCategories.VALUES, label: 'Check Value', color: '#06b6d4',
+    description: 'Distinguishes missing, null, empty text, and real values. The Value output uses the fallback unless a real value is present.',
+    inputs: [{ id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: undefined }, { id: 'fallback', label: 'Fallback', type: PinTypes.ARG, defaultValue: '' }],
+    outputs: [{ id: 'value', label: 'Value or fallback', type: PinTypes.ARG }, { id: 'state', label: 'State', type: PinTypes.STRING }, { id: 'is_missing', label: 'Missing', type: PinTypes.BOOLEAN }, { id: 'is_null', label: 'Null', type: PinTypes.BOOLEAN }, { id: 'is_empty', label: 'Empty text', type: PinTypes.BOOLEAN }, { id: 'has_value', label: 'Has value', type: PinTypes.BOOLEAN }]
+  },
+  data_format_number: {
+    type: 'data_format_number', category: NodeCategories.VALUES, label: 'Format Number', color: '#06b6d4',
+    description: 'Formats a finite number with locale grouping, decimal, percent, or currency style. Percent style scales the number by 100.',
+    inputs: [{ id: 'value', label: 'Value', type: PinTypes.NUMBER, defaultValue: 0 }, { id: 'locale', label: 'Locale', type: PinTypes.STRING, defaultValue: 'en-US' }, { id: 'style', label: 'Style', type: PinTypes.STRING, defaultValue: 'decimal' }, { id: 'currency', label: 'Currency', type: PinTypes.STRING, defaultValue: 'USD' }, { id: 'minimum_fraction_digits', label: 'Minimum decimals', type: PinTypes.NUMBER, defaultValue: 0 }, { id: 'maximum_fraction_digits', label: 'Maximum decimals', type: PinTypes.NUMBER, defaultValue: 2 }],
+    outputs: [{ id: 'text', label: 'Formatted', type: PinTypes.STRING }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
+  },
+  data_to_text: {
+    type: 'data_to_text', category: NodeCategories.VALUES, label: 'To Text', color: '#06b6d4',
+    inputs: [{ id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: '' }],
+    outputs: [{ id: 'text', label: 'Text', type: PinTypes.STRING }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
+  },
+  data_to_boolean: {
+    type: 'data_to_boolean', category: NodeCategories.VALUES, label: 'To Boolean', color: '#06b6d4',
+    inputs: [{ id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: false }],
+    outputs: [{ id: 'boolean', label: 'Boolean', type: PinTypes.BOOLEAN }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
+  },
+  data_regex: {
+    type: 'data_regex', category: NodeCategories.VALUES, label: 'Regular Expression', color: '#06b6d4',
+    description: 'Tests, extracts, or replaces text with a JavaScript regular expression. Pattern and text sizes are limited, and risky regex structures are rejected.',
+    inputs: [
+      { id: 'text', label: 'Text', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'pattern', label: 'Pattern', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'flags', label: 'Flags', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'replacement', label: 'Replacement', type: PinTypes.STRING, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'text', label: 'Text', type: PinTypes.STRING },
+      { id: 'matched', label: 'Matched', type: PinTypes.BOOLEAN },
+      { id: 'match', label: 'First Match', type: PinTypes.STRING },
+      { id: 'matches', label: 'All Matches', type: PinTypes.OBJECT },
+      { id: 'captures', label: 'Capture Groups', type: PinTypes.OBJECT },
+      { id: 'index', label: 'Index', type: PinTypes.NUMBER },
+      { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN },
+      { id: 'error', label: 'Error', type: PinTypes.STRING }
+    ]
+  },
   data_array_create: {
     type: 'data_array_create', category: NodeCategories.VALUES, label: 'Create Array', color: '#06b6d4',
     inputs: [{ id: 'item_1', label: 'Item 1', type: PinTypes.ARG, defaultValue: null }],
