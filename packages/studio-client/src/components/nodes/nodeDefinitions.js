@@ -1,3 +1,6 @@
+import { getTemplateReferences, renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+export { renderTextTemplate };
+
 export const NodeCategories = {
   EVENTS: 'Events',
   ACTIONS: 'Discord Actions',
@@ -124,7 +127,7 @@ export function getNodeArgumentPins(node, baseInputs = [], connections = []) {
   const excluded = ['function_input', 'function_return', 'function_call', 'variable_get'];
   if (!node || node.type.startsWith('event_') || excluded.includes(node.type) || node.type === 'data_permission_overwrites') return [];
   if (BuiltInNodeDefinitions.some((definition) => definition.type === node.type && definition.pluginAdapter)) return [];
-  if (!['build_embed', 'build_modal', 'format_text'].includes(node.type) && !baseInputs.some((pin) => pin.type === 'string')) return [];
+  if (!['build_embed', 'build_modal', 'format_text', 'data_regex'].includes(node.type) && !baseInputs.some((pin) => pin.type === 'string')) return [];
   const highestConnectedArgument = connections.reduce((highest, connection) => {
     if (connection.targetNodeId !== node.id) return highest;
     const match = /^arg_(\d+)$/.exec(connection.targetPinId);
@@ -204,161 +207,20 @@ export function getTextTemplateSlots(template) {
   const pattern = /(\\)?(\{\{\s*([^{}]+?)\s*\}\})/g;
   for (const match of String(template ?? '').matchAll(pattern)) {
     if (match[1]) continue;
-    const base = match[3].split('|')[0].trim();
-    const withoutStrings = base.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ').trim();
-    const root = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(withoutStrings)?.[1];
-    if (root && !['true', 'false', 'null', 'undefined'].includes(root.toLowerCase()) && !root.toLowerCase().startsWith('e_')) slots.add(root);
+    for (const reference of getTemplateReferences(match[3])) if (!reference.toLowerCase().startsWith('e_')) slots.add(reference);
   }
   return [...slots];
 }
 
-function splitTemplateExpression(source, delimiter) {
-  let quote = ''; let escaped = false; let depth = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && quote) { escaped = true; continue; }
-    if ((char === '"' || char === "'") && (!quote || quote === char)) { quote = quote ? '' : char; continue; }
-    if (quote) continue;
-    if (char === '(') { depth += 1; continue; }
-    if (char === ')') { depth = Math.max(0, depth - 1); continue; }
-    if (!depth && source.startsWith(delimiter, index)) return index;
-  }
-  return -1;
-}
-
-function splitTemplatePipeline(source) {
-  const parts = [];
-  let quote = ''; let escaped = false; let depth = 0; let start = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && quote) { escaped = true; continue; }
-    if ((char === '"' || char === "'") && (!quote || quote === char)) { quote = quote ? '' : char; continue; }
-    if (quote) continue;
-    if (char === '(') { depth += 1; continue; }
-    if (char === ')') { depth = Math.max(0, depth - 1); continue; }
-    if (!depth && char === '|') { parts.push(source.slice(start, index).trim()); start = index + 1; }
-  }
-  parts.push(source.slice(start).trim());
-  return parts;
-}
-
-function templateLiteral(source) {
-  const value = source.trim();
-  if (/^"(?:\\.|[^"\\])*"$/.test(value)) { try { return JSON.parse(value); } catch { return undefined; } }
-  if (/^'(?:\\.|[^'\\])*'$/.test(value)) return value.slice(1, -1).replace(/\\(['\\])/g, '$1');
-  if (/^-?(?:\d+\.?\d*|\.\d+)$/.test(value)) return Number(value);
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null' || value === 'undefined') return null;
-  return undefined;
-}
-
-function resolveTemplatePath(source, resolveSlot) {
-  const match = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(.*)$/.exec(source.trim());
-  if (!match) return { found: false, value: undefined };
-  let value = resolveSlot?.(match[1], `{{${match[1]}}}`);
-  if (value === undefined) return { found: false, value };
-  const path = match[2].replace(/\.\s*\[(\d+)\]/g, '[$1]');
-  const tokens = [];
-  const tokenPattern = /\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\d+))\]/g;
-  let cursor = 0;
-  for (const part of path.matchAll(tokenPattern)) {
-    if (part.index !== cursor) return { found: false, value: undefined };
-    tokens.push(part[1] ?? part[2] ?? part[3] ?? Number(part[4]));
-    cursor += part[0].length;
-  }
-  if (cursor !== path.length) return { found: false, value: undefined };
-  for (const key of tokens) {
-    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string')) return { found: false, value: undefined };
-    if (!Object.prototype.hasOwnProperty.call(Object(value), key)) return { found: false, value: undefined };
-    value = value[key];
-  }
-  return { found: true, value };
-}
-
-function evaluateTemplateExpression(source, resolveSlot) {
-  const expression = source.trim();
-  const question = splitTemplateExpression(expression, '?');
-  if (question >= 0) {
-    const remainder = expression.slice(question + 1);
-    const colon = splitTemplateExpression(remainder, ':');
-    if (colon < 0) return { found: false, value: undefined };
-    const condition = expression.slice(0, question).trim();
-    let conditionValue;
-    let operatorIndex = -1; let operator = '';
-    for (const candidate of ['!==', '===', '!=', '==', '>=', '<=', '>', '<']) {
-      operatorIndex = splitTemplateExpression(condition, candidate);
-      if (operatorIndex >= 0) { operator = candidate; break; }
-    }
-    const read = (part) => {
-      const literal = templateLiteral(part);
-      if (literal !== undefined || part.trim() === 'undefined') return literal;
-      return resolveTemplatePath(part, resolveSlot).value;
-    };
-    if (operator) {
-      const left = read(condition.slice(0, operatorIndex)); const right = read(condition.slice(operatorIndex + operator.length));
-      if (operator === '==' || operator === '===') conditionValue = left === right;
-      else if (operator === '!=' || operator === '!==') conditionValue = left !== right;
-      else if (operator === '>') conditionValue = left > right;
-      else if (operator === '>=') conditionValue = left >= right;
-      else if (operator === '<') conditionValue = left < right;
-      else conditionValue = left <= right;
-    } else {
-      const negate = condition.startsWith('!');
-      conditionValue = Boolean(read(negate ? condition.slice(1) : condition));
-      if (negate) conditionValue = !conditionValue;
-    }
-    return evaluateTemplateExpression(conditionValue ? remainder.slice(0, colon) : remainder.slice(colon + 1), resolveSlot);
-  }
-  const literal = templateLiteral(expression);
-  if (literal !== undefined || expression === 'undefined') return { found: true, value: literal };
-  return resolveTemplatePath(expression, resolveSlot);
-}
-
-export function renderTextTemplate(template, resolveSlot, appEmojis = []) {
-  const pattern = /(\\)?(\{\{\s*([^{}]+?)\s*\}\})/g;
-  return String(template ?? '').replace(pattern, (_match, escaped, token, expression) => {
-    if (escaped) return `\\${token}`;
-    const parts = splitTemplatePipeline(expression);
-    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(parts[0])?.[1];
-    if (name?.toLowerCase().startsWith('e_')) {
-      const emojiName = name.slice(2).toLowerCase();
-      const emoji = appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName);
-      if (emoji?.id && emoji.name) return `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
-    }
-    const resolved = evaluateTemplateExpression(parts[0], resolveSlot);
-    let value = resolved.value;
-    const transforms = parts.slice(1);
-    const text = () => value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
-    for (const transform of transforms) {
-      const match = /^([A-Za-z][A-Za-z0-9]*)(?:\((.*)\))?$/.exec(transform);
-      if (!match) continue;
-      const filter = match[1].toLowerCase();
-      const args = match[2] === undefined ? [] : match[2].split(',').map((part) => { const parsed = templateLiteral(part); return parsed === undefined ? part.trim().replace(/^['"]|['"]$/g, '') : parsed; });
-      if (['lower', 'lowercase', 'tolowercase'].includes(filter)) value = text().toLocaleLowerCase();
-      else if (['upper', 'uppercase', 'touppercase'].includes(filter)) value = text().toLocaleUpperCase();
-      else if (filter === 'trim') value = text().trim();
-      else if (filter === 'trimstart') value = text().trimStart();
-      else if (filter === 'trimend') value = text().trimEnd();
-      else if (filter === 'title' || filter === 'titlecase') value = text().toLocaleLowerCase().replace(/(^|[\s\p{P}\p{S}])([\p{L}\p{N}])/gu, (_all, prefix, letter) => `${prefix}${letter.toLocaleUpperCase()}`);
-      else if (filter === 'capitalize') value = text().replace(/^\s*\p{L}/u, (letter) => letter.toLocaleUpperCase());
-      else if (filter === 'replace' && args.length > 1 && String(args[0])) value = text().split(String(args[0])).join(String(args[1]));
-      else if (filter === 'replacefirst' && args.length > 1 && String(args[0])) value = text().replace(String(args[0]), String(args[1]));
-      else if (filter === 'join' && Array.isArray(value)) value = value.map((item) => item == null ? '' : String(item)).join(args[0] ?? ', ');
-      else if (filter === 'slice') value = value?.slice?.(Number(args[0]) || 0, args[1] === undefined ? undefined : Number(args[1]));
-      else if (filter === 'length') value = value?.length ?? text().length;
-      else if (filter === 'json') value = JSON.stringify(value) ?? '';
-      else if (filter === 'default' && (value == null || value === '')) value = args[0] ?? '';
-    }
-    if (!resolved.found && !transforms.some((filter) => /^default\s*\(/i.test(filter))) return token;
-    return text();
-  });
-}
-
 export function createDefaultNodeData(type) {
-  if (type === 'variable_create') return { name: '', valueType: 'string', value: '' };
+  if (type === 'variable_create') return { name: '', valueType: 'string', value: '', persist: true };
+  if (type === 'data_to_number') return { text: '' };
+  if (type === 'data_check_value') return { fallback: '' };
+  if (type === 'data_format_number') return { locale: 'en-US', style: 'decimal', currency: 'USD', minimum_fraction_digits: 0, maximum_fraction_digits: 2 };
+  if (type === 'data_to_text') return { value: '' };
+  if (type === 'data_to_boolean') return { value: false };
+  if (type === 'data_regex') return { mode: 'test', text: '', pattern: '', flags: '', replacement: '' };
+  if (type === 'data_array_get') return { index: 0 };
   if (type === 'repeat_while') return { condition: true, interval_ms: 500 };
   if (type === 'event_cron') return { cronExpression: '*/5 * * * *', timeZone: 'UTC' };
   if (type === 'function_input') return { paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, name: 'Input', valueType: 'number', optional: false, defaultValue: 0 };
@@ -394,7 +256,7 @@ export const BuiltInNodeDefinitions = [
     category: NodeCategories.EVENTS,
     label: 'On Message Create',
     color: '#5865F2',
-    description: 'Fires for every new message. Use Split Text or Parse Prefix Command to process message content.',
+    description: 'Fires for every new message. Use Split Text to break message content into parts.',
     gatewayIntents: ['GUILDS', 'GUILD_MESSAGES', 'DIRECT_MESSAGES', 'MESSAGE_CONTENT'],
     inputs: [],
     outputs: [
@@ -1003,6 +865,56 @@ export const BuiltInNodeDefinitions = [
     description: 'Parses JSON text into a value. Check Valid before using the parsed output.',
     inputs: [{ id: 'json', label: 'JSON', type: 'string', defaultValue: '' }],
     outputs: [{ id: 'value', label: 'Value', type: 'object' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
+  },
+  {
+    type: 'data_to_number', category: NodeCategories.VALUES, label: 'Text to Number', color: '#06b6d4',
+    description: 'Parses a complete decimal number, including sign and exponent. Invalid or non-finite input returns 0, check Valid before using it.',
+    inputs: [{ id: 'text', label: 'Text', type: 'string', defaultValue: '' }],
+    outputs: [{ id: 'number', label: 'Number', type: 'number' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
+  },
+  {
+    type: 'data_check_value', category: NodeCategories.VALUES, label: 'Check Value', color: '#06b6d4',
+    description: 'Distinguishes missing, null, empty text, and real values. The Value output uses the fallback unless a real value is present.',
+    inputs: [{ id: 'value', label: 'Value', type: 'arg', defaultValue: undefined }, { id: 'fallback', label: 'Fallback', type: 'arg', defaultValue: '' }],
+    outputs: [{ id: 'value', label: 'Value or fallback', type: 'arg' }, { id: 'state', label: 'State', type: 'string' }, { id: 'is_missing', label: 'Missing', type: 'boolean' }, { id: 'is_null', label: 'Null', type: 'boolean' }, { id: 'is_empty', label: 'Empty text', type: 'boolean' }, { id: 'has_value', label: 'Has value', type: 'boolean' }]
+  },
+  {
+    type: 'data_format_number', category: NodeCategories.VALUES, label: 'Format Number', color: '#06b6d4',
+    description: 'Formats a finite number with locale grouping, decimal, percent, or currency style. Percent style scales the number by 100.',
+    inputs: [{ id: 'value', label: 'Value', type: 'number', defaultValue: 0 }, { id: 'locale', label: 'Locale', type: 'string', defaultValue: 'en-US' }, { id: 'style', label: 'Style', type: 'string', defaultValue: 'decimal' }, { id: 'currency', label: 'Currency', type: 'string', defaultValue: 'USD' }, { id: 'minimum_fraction_digits', label: 'Minimum decimals', type: 'number', defaultValue: 0 }, { id: 'maximum_fraction_digits', label: 'Maximum decimals', type: 'number', defaultValue: 2 }],
+    outputs: [{ id: 'text', label: 'Formatted', type: 'string' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
+  },
+  {
+    type: 'data_to_text', category: NodeCategories.VALUES, label: 'To Text', color: '#06b6d4',
+    description: 'Converts a value to text. Objects and arrays become JSON, null becomes empty text. Check Valid if the value cannot be serialized.',
+    inputs: [{ id: 'value', label: 'Value', type: 'arg', defaultValue: '' }],
+    outputs: [{ id: 'text', label: 'Text', type: 'string' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
+  },
+  {
+    type: 'data_to_boolean', category: NodeCategories.VALUES, label: 'To Boolean', color: '#06b6d4',
+    description: 'Converts booleans, numbers, and common text values (true/false, yes/no, 1/0, on/off). Unknown text returns false; check Valid.',
+    inputs: [{ id: 'value', label: 'Value', type: 'arg', defaultValue: false }],
+    outputs: [{ id: 'boolean', label: 'Boolean', type: 'boolean' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
+  },
+  {
+    type: 'data_regex', category: NodeCategories.VALUES, label: 'Regular Expression', color: '#06b6d4',
+    description: 'Tests, extracts, or replaces text with a JavaScript regular expression. Inputs are bounded and risky regex structures are rejected.',
+    inputs: [
+      { id: 'text', label: 'Text', type: 'string', defaultValue: '' },
+      { id: 'pattern', label: 'Pattern', type: 'string', defaultValue: '' },
+      { id: 'flags', label: 'Flags', type: 'string', defaultValue: '' },
+      { id: 'replacement', label: 'Replacement', type: 'string', defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'text', label: 'Text', type: 'string' },
+      { id: 'matched', label: 'Matched', type: 'boolean' },
+      { id: 'match', label: 'First Match', type: 'string' },
+      { id: 'matches', label: 'All Matches', type: 'object' },
+      { id: 'captures', label: 'Capture Groups', type: 'object' },
+      { id: 'index', label: 'Index', type: 'number' },
+      { id: 'valid', label: 'Valid', type: 'boolean' },
+      { id: 'error', label: 'Error', type: 'string' }
+    ]
   },
   {
     type: 'data_array_create', category: NodeCategories.VALUES, label: 'Create Array', color: '#06b6d4',
