@@ -3,16 +3,16 @@ import { Puzzle, Search, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, NodeCategories, isNodeDefinitionNew } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 //
-export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRevision = 0 }) {
+export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRevision = 0, definitions = BuiltInNodeDefinitions }) {
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef(null);
-  const categories = ['All', ...new Set([...Object.values(NodeCategories), ...BuiltInNodeDefinitions.map((node) => node.category).filter(Boolean)])];
-  const filteredNodes = useMemo(() => BuiltInNodeDefinitions.filter((node) => !node.hidden).filter((node) => {
+  const categories = ['All', ...new Set([...Object.values(NodeCategories), ...definitions.map((node) => node.category).filter(Boolean)])];
+  const filteredNodes = useMemo(() => definitions.filter((node) => !node.hidden).filter((node) => {
     const text = `${node.label} ${node.description} ${node.category}`.toLowerCase();
     return text.includes(query.toLowerCase()) && (selectedCategory === 'All' || node.category === selectedCategory);
-  }), [query, selectedCategory, pluginDefinitionsRevision]);
+  }), [query, selectedCategory, pluginDefinitionsRevision, definitions]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
