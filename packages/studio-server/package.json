@@ -6,6 +6,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node scripts/start.mjs",
+    "start:server": "node scripts/start.mjs --server-only",
     "dev": "node --watch src/index.js",
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "test": "node --test tests/crypto.test.js"
