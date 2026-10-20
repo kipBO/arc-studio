@@ -1324,8 +1324,10 @@ export class GraphRunner {
 
     let flowStepCount = 0;
     const runExecWires = async (currentExecWires, inParallelBranch = false, parallelDepth = 0) => {
+      if (context.signal?.aborted) return { error: 'Graph execution cancelled.' };
       if (parallelDepth > 16) return { error: 'Parallel graph nesting exceeded 16 levels.' };
       while (currentExecWires.length > 0) {
+      if (context.signal?.aborted) return { error: 'Graph execution cancelled.' };
       if (++flowStepCount > 10000) return { error: 'Graph execution stopped after reaching the 10,000 step safety limit.' };
       const wire = currentExecWires.shift();
       const targetNode = nodes.find((n) => n.id === wire.targetNodeId);
