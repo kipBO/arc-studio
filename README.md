@@ -8,7 +8,7 @@
 [![Node.js version](docs/badges/node-version.svg)](https://nodejs.org/)
 [![License](docs/badges/license.svg)](LICENSE)
 [![CI status](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml)
-[![Desktop builds](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml/badge.svg)](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml)
+[![Desktop builds](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml/badge.svg?event=push)](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml)
 [![Commits](docs/badges/commits.svg)](https://github.com/relentiousdragon/arc-studio/commits)
 [![GitHub release downloads](docs/badges/release-downloads.svg)](https://github.com/relentiousdragon/arc-studio/releases)
 [![GitHub stars](docs/badges/stars.svg)](https://github.com/relentiousdragon/arc-studio)
