@@ -244,7 +244,7 @@ export class UserStore extends EventEmitter {
     return { token: sessionToken, user: publicProfile };
   }
 
-  createUser({ username, password, role = 'editor' }) {
+  createUser({ username, password, role = 'editor', mustChangePassword = false }) {
     if (!this.isSetupCompleted()) {
       throw new Error('First-time setup must be completed first.');
     }
@@ -258,6 +258,10 @@ export class UserStore extends EventEmitter {
       throw new Error(`Invalid role "${role}". Supported: ${Object.keys(RolePermissions).join(', ')}`);
     }
 
+    if (typeof mustChangePassword !== 'boolean') {
+      throw new Error('The require password change option must be true or false.');
+    }
+
     const salt = crypto.randomBytes(16).toString('hex');
     const newUser = {
       id: `user_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
@@ -267,6 +271,7 @@ export class UserStore extends EventEmitter {
       role,
       permissions: RolePermissions[role],
       isPrimaryAdmin: false,
+      mustChangePassword,
       authVersion: 0,
       createdAt: new Date().toISOString()
     };
@@ -289,7 +294,9 @@ export class UserStore extends EventEmitter {
     }
 
     if (!this.verifyPassword(password, user)) {
-      throw new Error('Invalid username or password.');
+      const error = new Error('Invalid username or password.');
+      if (user.isPrimaryAdmin === true) error.ownerPasswordIncorrect = true;
+      throw error;
     }
 
     if (user.activeSessionId && Number(user.activeSessionExpiresAt) > Date.now()) {
@@ -483,6 +490,9 @@ export class UserStore extends EventEmitter {
     const user = this.users.find((item) => item.id === userId);
     if (!user) throw new Error('User not found.');
     if (typeof password !== 'string' || password.length < 6) throw new Error('Password must be at least 6 characters.');
+    if (user.mustChangePassword && this.verifyPassword(password, user)) {
+      throw new Error('Choose a password different from your current password.');
+    }
     const salt = crypto.randomBytes(16).toString('hex');
     user.salt = salt;
     user.passwordHash = this.hashPassword(password, salt);
