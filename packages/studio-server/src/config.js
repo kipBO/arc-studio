@@ -24,6 +24,7 @@ if (fs.existsSync(envPath)) {
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '127.0.0.1';
+const showBotTokenExportOptionToAuthorizedUsers = ['1', 'true', 'yes', 'on'].includes(String(process.env.ARC_SHOW_BOT_TOKEN_EXPORT_OPTION || '').trim().toLowerCase());
 
 let setupKey = process.env.ARC_SETUP_KEY?.trim() || 'ARC-CHANGETHIS';
 let isDefaultKey = setupKey === 'ARC-CHANGETHIS';
@@ -91,6 +92,7 @@ export const serverConfig = {
   desktopDevMode: process.env.ARC_DESKTOP_DEV_MODE === '1',
   port: PORT,
   host: HOST,
+  showBotTokenExportOptionToAuthorizedUsers,
   setupKey,
   isDefaultKey,
   sessionSecret,
