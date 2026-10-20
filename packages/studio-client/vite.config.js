@@ -24,14 +24,13 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          const pathParts = id.split(/[\\\\/]/);
+          const normalizedId = id.replaceAll(String.fromCharCode(92), '/');
+          const pathParts = normalizedId.split('/');
           const modulesIndex = pathParts.lastIndexOf('node_modules');
           const packageName = pathParts[modulesIndex + 1];
           if (['react', 'react-dom', 'scheduler'].includes(packageName)) return 'react-vendor';
+          if (normalizedId.includes('/emoji-picker-react/dist/data/emojis-en.js')) return 'emoji-data';
           if (['emoji-picker-react', 'shipstyles'].includes(packageName)) return 'emoji-vendor';
-          const sourceIndex = pathParts.lastIndexOf('src');
-          const sourceParts = pathParts.slice(sourceIndex + 1);
-          if (sourceIndex >= 0 && sourceParts[0] === 'components') return 'studio-components';
         }
       }
     }
