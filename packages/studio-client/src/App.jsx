@@ -2311,13 +2311,14 @@ export function App() {
             const userId = msg.payload?.userId;
             const projectId = msg.payload?.projectId;
             const graphId = msg.payload?.graphId;
+            const hasRoomIdentity = typeof projectId === 'string' && typeof graphId === 'string';
             const clearRevision = Number(msg.payload?.revision);
             const revisionKey = `${projectId}:${graphId}:${userId}`;
             const lastRevision = latestRemoteCollaborationRevisionRef.current.get(revisionKey) || 0;
             if (Number.isFinite(clearRevision) && clearRevision > 0 && clearRevision <= lastRevision) return;
             if (Number.isFinite(clearRevision) && clearRevision > 0) latestRemoteCollaborationRevisionRef.current.set(revisionKey, clearRevision);
             setRemoteCollaborationActions((previous) => previous.filter((item) => item.userId !== userId
-              || item.projectId !== projectId || item.graphId !== graphId));
+              || hasRoomIdentity && (item.projectId !== projectId || item.graphId !== graphId)));
           } else if (msg.type === 'LOGS_CLEARED') {
             setLogs([]);
           } else if (msg.type === 'EMBEDS_UPDATED' && Array.isArray(msg.payload?.embeds)) {
@@ -2417,7 +2418,7 @@ export function App() {
       }
       if (wsRef.current === socket) wsRef.current = null;
     };
-  }, [authToken, workspaceMode]);
+  }, [authToken, remoteWorkspaceUrl, workspaceMode]);
 
   useEffect(() => {
     const socket = wsRef.current;
@@ -4758,6 +4759,30 @@ export function App() {
       localStorage.setItem('arc_workspace_mode', mode);
       if (mode === 'remote') localStorage.setItem('arc_remote_workspace_url', url);
     } catch {}
+    deletedGraphsRef.current.clear();
+    collaborationPresenceRef.current = { projectId: '', graphId: '' };
+    pendingCollaborationActionRef.current.clear();
+    latestRemoteCollaborationRevisionRef.current.clear();
+    localCanvasMotionRoomRef.current = '';
+    collaborationMotionSendIntervalRef.current = 16;
+    liveGraphReadyRef.current.clear();
+    liveGraphBaseRef.current.clear();
+    liveGraphRevisionRef.current.clear();
+    lastLiveGraphSentRef.current.clear();
+    pendingLiveGraphRef.current.clear();
+    remoteProjectTabGraphsRef.current.clear();
+    unsharedProjectTabIdsRef.current.clear();
+    remoteTabCloseNoticeRef.current.clear();
+    initialGraphStatesRef.current.clear();
+    projectTabSyncRef.current = { projectId: '', socketRevision: -1, graphIds: [] };
+    projectTabStartupBaselineRef.current = new Set();
+    projectTabStartupPendingRef.current = !(desktopMode && mode === 'local');
+    projectTabSafeRestorePendingRef.current = !(desktopMode && mode === 'local');
+    projectTabSafeRestoreProjectRef.current = '';
+    for (const timer of liveGraphSendTimersRef.current.values()) window.clearTimeout(timer);
+    liveGraphSendTimersRef.current.clear();
+    window.clearTimeout(collaborationActionTimerRef.current);
+    collaborationActionTimerRef.current = null;
     setWorkspaceMode(mode);
     setTransientCanvasMotionSupported(false);
     setSupportedWorkspaceNodeTypes(null);
