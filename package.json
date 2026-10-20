@@ -12,6 +12,7 @@
   "scripts": {
     "sync:version": "node scripts/sync-version.mjs",
     "start": "npm run start --workspace=packages/studio-server",
+    "start:server": "npm run start:server --workspace=packages/studio-server",
     "dev:server": "npm run dev --workspace=packages/studio-server",
     "dev:client": "npm run dev --workspace=packages/studio-client",
     "dev:desktop:services": "concurrently -k -n server,client \"npm:dev:desktop --workspace=packages/studio-server\" \"npm:dev:client\"",
