@@ -1033,12 +1033,9 @@ export function App() {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     const loadReleaseNotes = async () => {
-      const tag = `v${studioVersion}`;
-      const releaseUrl = `https://github.com/relentiousdragon/arc-studio/releases/tag/${encodeURIComponent(tag)}`;
+      const releaseUrl = `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(studioVersion)}`;
       try {
-        const response = await fetch(`https://api.github.com/repos/relentiousdragon/arc-studio/releases/tags/${encodeURIComponent(tag)}`, {
-          headers: { Accept: 'application/vnd.github+json' },
-          cache: 'no-store',
+        const response = await fetch(apiUrl(`/api/release-notes/${encodeURIComponent(studioVersion)}`), {
           signal: controller.signal
         });
         if (!response.ok) throw new Error(`Release notes request failed (${response.status}).`);
@@ -1046,9 +1043,9 @@ export function App() {
         if (cancelled) return;
         setReleaseNotesNotice({
           version: studioVersion,
-          title: release.name || `ARC Studio ${studioVersion}`,
-          notes: String(release.body || '').trim().slice(0, 12000) || 'This release does not include release notes.',
-          url: release.html_url || releaseUrl
+          title: release.title || `ARC Studio ${studioVersion}`,
+          notes: String(release.notes || '').trim().slice(0, 12000) || 'This release does not include release notes.',
+          url: release.url || releaseUrl
         });
       } catch (error) {
         if (cancelled || error?.name === 'AbortError' || navigator.onLine === false) return;
