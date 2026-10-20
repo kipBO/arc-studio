@@ -42,6 +42,26 @@ const sendToCollaborationRoom = (roomKey, data, excludedClient = null) => {
     if (client !== excludedClient && client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcRoomKey === roomKey) client.send(serialized);
   }
 };
+function publishPresence() {
+  for (const client of wss.clients) {
+    if (!client.arcAuthenticated || client.readyState !== WebSocket.OPEN || !client.arcPresence) continue;
+    const peers = [...wss.clients].filter((peer) => peer !== client && peer.arcAuthenticated && peer.readyState === WebSocket.OPEN
+      && peer.arcPresence?.projectId === client.arcPresence.projectId && peer.arcPresence?.graphId === client.arcPresence.graphId)
+      .map((peer) => ({ id: peer.arcUser?.id, username: peer.arcUser?.username }))
+      .filter((user) => user.id && user.username)
+      .filter((user, index, users) => users.findIndex((item) => item.id === user.id) === index);
+    client.send(JSON.stringify({ type: 'COLLABORATORS_UPDATED', payload: peers }));
+  }
+  const projectUsers = new Map();
+  for (const peer of wss.clients) {
+    if (!peer.arcAuthenticated || peer.readyState !== WebSocket.OPEN || !peer.arcProjectId || !peer.arcUser?.username) continue;
+    const members = projectUsers.get(peer.arcProjectId) || [];
+    if (!members.some((member) => member.id === peer.arcUser.id)) members.push({ id: peer.arcUser.id, username: peer.arcUser.username });
+    projectUsers.set(peer.arcProjectId, members);
+  }
+  const payload = Object.fromEntries(projectUsers);
+  for (const client of wss.clients) if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'PROJECT_USERS_UPDATED', payload }));
+}
 
 const desktopOrigins = (process.env.ARC_CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
 app.use(cors(desktopOrigins.length ? {
@@ -81,6 +101,15 @@ userStore.on('permissionsUpdated', ({ user }) => {
     client.arcUser = { ...client.arcUser, role: user.role, permissions: user.permissions || [] };
     client.send(payload);
   }
+});
+userStore.on('usernameUpdated', ({ user }) => {
+  const payload = JSON.stringify({ type: 'USER_PROFILE_UPDATED', payload: { user: { id: user.id, username: user.username } } });
+  for (const client of wss.clients) {
+    if (!client.arcAuthenticated || client.arcUser?.id !== user.id || client.readyState !== WebSocket.OPEN) continue;
+    client.arcUser = { ...client.arcUser, username: user.username };
+    client.send(payload);
+  }
+  publishPresence();
 });
 userStore.on('sessionRevoked', ({ userId }) => {
   const payload = JSON.stringify({ type: 'SESSION_REVOKED', payload: { reason: 'admin' } });
@@ -167,26 +196,6 @@ wss.on('connection', (ws) => {
     if (!ws.arcAuthenticated && ws.readyState === WebSocket.OPEN) ws.close(1008, 'Authentication required.');
   }, 5000);
   authTimeout.unref?.();
-  const publishPresence = () => {
-    for (const client of wss.clients) {
-      if (!client.arcAuthenticated || client.readyState !== WebSocket.OPEN || !client.arcPresence) continue;
-      const peers = [...wss.clients].filter((peer) => peer !== client && peer.arcAuthenticated && peer.readyState === WebSocket.OPEN
-        && peer.arcPresence?.projectId === client.arcPresence.projectId && peer.arcPresence?.graphId === client.arcPresence.graphId)
-        .map((peer) => ({ id: peer.arcUser?.id, username: peer.arcUser?.username }))
-        .filter((user) => user.id && user.username)
-        .filter((user, index, users) => users.findIndex((item) => item.id === user.id) === index);
-      client.send(JSON.stringify({ type: 'COLLABORATORS_UPDATED', payload: peers }));
-    }
-    const projectUsers = new Map();
-    for (const peer of wss.clients) {
-      if (!peer.arcAuthenticated || peer.readyState !== WebSocket.OPEN || !peer.arcProjectId || !peer.arcUser?.username) continue;
-      const members = projectUsers.get(peer.arcProjectId) || [];
-      if (!members.some((member) => member.id === peer.arcUser.id)) members.push({ id: peer.arcUser.id, username: peer.arcUser.username });
-      projectUsers.set(peer.arcProjectId, members);
-    }
-    const payload = Object.fromEntries(projectUsers);
-    for (const client of wss.clients) if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'PROJECT_USERS_UPDATED', payload }));
-  };
   const clearCollaborationAction = (leaveRoom = true, clearDrafts = true, studioId = '') => {
     clearTimeout(ws.arcActionExpiry);
     ws.arcActionExpiry = null;
@@ -444,7 +453,7 @@ server.listen(serverConfig.port, serverConfig.host, () => {
   const localUrl = `http://${serverConfig.host}:${activePort}`;
 
   const retention = logger.retentionDays === 'forever' || Number(logger.retentionDays) === 0 ? 'forever' : `${logger.retentionDays}d`;
-  console.log(`\n============================================================================`);
+  console.log(`\n==============================================================================`);
   console.log(`   █████╗ ██████╗  ██████╗      ███████╗████████╗██╗   ██╗██████╗ ██╗ ██████╗ `);
   console.log(`  ██╔══██╗██╔══██╗██╔════╝      ██╔════╝╚══██╔══╝██║   ██║██╔══██╗██║██╔═══██╗`);
   console.log(`  ███████║██████╔╝██║     █████╗███████╗   ██║   ██║   ██║██║  ██║██║██║   ██║`);
