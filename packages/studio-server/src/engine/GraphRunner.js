@@ -2,6 +2,7 @@ import { NodeDefinitions } from './NodeRegistry.js';
 import { EmbedBuilder, parseEmoji } from 'chezcord';
 import { CryptoEngine } from '../security/CryptoEngine.js';
 import { evaluateMathNode } from './MathOperations.js';
+import { renderTextTemplate } from './TemplateExpressions.js';
 //
 function waitFor(ms, signal) {
   if (signal?.aborted) return Promise.reject(Object.assign(new Error('Graph execution cancelled.'), { name: 'AbortError' }));
@@ -20,7 +21,96 @@ function waitFor(ms, signal) {
   });
 }
 
+function regexSafetyError(pattern) {
+  if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
+  if (/\\(?:[1-9]|k<)/.test(pattern)) return 'Regex backreferences are disabled because they can cause very slow matches.';
+  if (/\(\?<([=!])/.test(pattern)) return 'Regex lookbehind is not supported.';
+  const stack = [{ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false }];
+  let inClass = false;
+  let unboundedCount = 0;
+  let quantifierCount = 0;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === '\\') { index += 1; continue; }
+    if (inClass) { if (char === ']') inClass = false; continue; }
+    if (char === '[') { inClass = true; continue; }
+    if (char === '(') {
+      let headerEnd = index;
+      if (pattern[index + 1] === '?') {
+        if (pattern[index + 2] === ':' || pattern[index + 2] === '=' || pattern[index + 2] === '!') headerEnd = index + 2;
+        else if (pattern[index + 2] === '<') headerEnd = pattern.indexOf('>', index + 3);
+      }
+      stack.push({ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false });
+      index = Math.max(index, headerEnd);
+      continue;
+    }
+    if (char === '|') { stack.at(-1).hasAlternation = true; continue; }
+    if (char === ')') {
+      if (stack.length === 1) continue;
+      const group = stack.pop();
+      const next = pattern[index + 1];
+      const quantified = next === '*' || next === '+' || next === '?' || next === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index + 1));
+      const repetition = next === '{' ? /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1)) : null;
+      const repetitionMax = next === '*' || next === '+' || repetition?.[2] === '' ? Infinity : next === '?' ? 1 : Number(repetition?.[2] ?? repetition?.[1] ?? 0);
+      const groupRepeatIsUnbounded = next === '*' || next === '+' || Boolean(repetition && repetition[2] === '');
+      if (quantified && (group.hasUnboundedQuantifier || group.hasQuantifier && groupRepeatIsUnbounded || group.hasAlternation && (groupRepeatIsUnbounded || repetitionMax > 10))) return 'Regex groups with nested repetition or repeated alternatives are not supported.';
+      const parent = stack.at(-1);
+      parent.hasQuantifier ||= group.hasQuantifier || quantified;
+      parent.hasUnboundedQuantifier ||= group.hasUnboundedQuantifier || groupRepeatIsUnbounded;
+      parent.hasAlternation ||= group.hasAlternation;
+      if (quantified) {
+        quantifierCount += 1;
+        if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
+        if (next === '{') {
+          const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1));
+          const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
+          if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
+        }
+      }
+      if (quantified && (next === '*' || next === '+' || next === '{' && /^\{\d+,\}/.test(pattern.slice(index + 1)))) unboundedCount += 1;
+      continue;
+    }
+    const quantifier = char === '*' || char === '+' || char === '?' || char === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index));
+    if (quantifier) {
+      quantifierCount += 1;
+      if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
+      if (char === '{') {
+        const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index));
+        const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
+        if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
+      }
+      stack.at(-1).hasQuantifier = true;
+      const unbounded = char === '*' || char === '+' || char === '{' && /^\{\d+,\}/.test(pattern.slice(index));
+      if (unbounded) {
+        stack.at(-1).hasUnboundedQuantifier = true;
+        unboundedCount += 1;
+      }
+      if (char === '{') index += (pattern.slice(index).match(/^\{\d+(?:,\d*)?\}/)?.[0].length || 1) - 1;
+    }
+  }
+  if (unboundedCount > 4) return 'Regex patterns can use at most four unbounded repetitions.';
+  return '';
+}
+
 function evaluateDataNode(type, inputs = {}, data = {}) {
+  if (type === 'data_check_value') {
+    const value = inputs.value;
+    const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && value.trim() === '' ? 'empty' : 'value';
+    return { value: state === 'value' ? value : inputs.fallback, state, is_missing: state === 'missing', is_null: state === 'null', is_empty: state === 'empty', has_value: state === 'value' };
+  }
+  if (type === 'data_format_number') {
+    const raw = inputs.value;
+    const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw.trim()) : NaN;
+    if (!Number.isFinite(value)) return { text: '', valid: false };
+    const style = ['decimal', 'percent', 'currency'].includes(inputs.style) ? inputs.style : 'decimal';
+    const minimumFractionDigits = Math.max(0, Math.min(20, Math.trunc(Number(inputs.minimum_fraction_digits) || 0)));
+    const maximumFractionDigits = Math.max(minimumFractionDigits, Math.min(20, Math.trunc(Number.isFinite(Number(inputs.maximum_fraction_digits)) ? Number(inputs.maximum_fraction_digits) : 2)));
+    try {
+      const options = { style, useGrouping: true, minimumFractionDigits, maximumFractionDigits };
+      if (style === 'currency') { const currency = String(inputs.currency || 'USD').toUpperCase(); if (!/^[A-Z]{3}$/.test(currency)) return { text: '', valid: false }; options.currency = currency; }
+      return { text: new Intl.NumberFormat(String(inputs.locale || 'en-US'), options).format(value), valid: true };
+    } catch { return { text: '', valid: false }; }
+  }
   if (type === 'data_permission_overwrites') {
     const permissionBits = {
       CreateInstantInvite: 0, KickMembers: 1, BanMembers: 2, Administrator: 3, ManageChannels: 4, ManageGuild: 5, AddReactions: 6, ViewAuditLog: 7,
@@ -65,6 +155,73 @@ function evaluateDataNode(type, inputs = {}, data = {}) {
   if (type === 'data_parse_json') {
     try { return { value: JSON.parse(String(inputs.json ?? '')), valid: true }; }
     catch { return { value: null, valid: false }; }
+  }
+  if (type === 'data_to_number') {
+    const text = String(inputs.text ?? '').trim();
+    const valid = Boolean(text) && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text) && Number.isFinite(Number(text));
+    return { number: valid ? Number(text) : 0, valid };
+  }
+  if (type === 'data_to_text') {
+    const value = inputs.value;
+    if (value == null) return { text: '', valid: true };
+    if (typeof value === 'string') return { text: value.slice(0, 10000), valid: true };
+    try {
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      return { text: String(text ?? '').slice(0, 10000), valid: text !== undefined };
+    } catch { return { text: '', valid: false }; }
+  }
+  if (type === 'data_to_boolean') {
+    const value = inputs.value;
+    if (typeof value === 'boolean') return { boolean: value, valid: true };
+    if (typeof value === 'number') return { boolean: Number.isFinite(value) && value !== 0, valid: Number.isFinite(value) };
+    if (value == null) return { boolean: false, valid: true };
+    const normalized = String(value).trim().toLowerCase();
+    if (['true', 'yes', '1', 'on'].includes(normalized)) return { boolean: true, valid: true };
+    if (['false', 'no', '0', 'off', ''].includes(normalized)) return { boolean: false, valid: true };
+    return { boolean: false, valid: false };
+  }
+  if (type === 'data_regex') {
+    const text = String(inputs.text ?? '');
+    const pattern = String(inputs.pattern ?? '');
+    const flags = String(inputs.flags ?? '');
+    const mode = ['test', 'match', 'replace'].includes(data.mode) ? data.mode : 'test';
+    const invalid = (error) => ({ text, matched: false, match: '', matches: [], captures: [], index: -1, valid: false, error });
+    if (text.length > 8192) return invalid('Regex input is limited to 8,192 characters.');
+    if (pattern.length > 256) return invalid('Regex pattern is limited to 256 characters.');
+    if (flags.length > 6 || !/^[gimsuy]*$/.test(flags)) return invalid('Use the supported JavaScript regex flags: g, i, m, s, u, y.');
+    const safetyError = regexSafetyError(pattern);
+    if (safetyError) return invalid(safetyError);
+    try {
+      const expression = new RegExp(pattern, flags);
+      const results = [];
+      if (expression.global) {
+        let result;
+        while ((result = expression.exec(text)) && results.length < 1000) {
+          results.push(result);
+          if (result[0] === '') expression.lastIndex += 1;
+        }
+      } else {
+        const result = expression.exec(text);
+        if (result) results.push(result);
+      }
+      const first = results[0];
+      let outputText = text;
+      if (mode === 'replace') {
+        const replacement = String(inputs.replacement ?? '').slice(0, 2000);
+        outputText = text.replace(expression, replacement);
+        if (outputText.length > 10000) return invalid('Regex output is limited to 10,000 characters.');
+      }
+      return {
+        text: outputText,
+        matched: Boolean(first),
+        match: first?.[0] ?? '',
+        matches: results.map((result) => result[0]).slice(0, 1000),
+        captures: first ? first.slice(1).map((value) => value ?? '') : [],
+        index: first?.index ?? -1,
+        valid: true,
+        error: ''
+      };
+    } catch (error) { return invalid(error?.message || 'Invalid regular expression.'); }
   }
   if (type === 'data_array_create') {
     const array = Array.from({ length: 50 }, (_, index) => inputs[`item_${index + 1}`]).filter((value) => value !== undefined && value !== null);
@@ -203,211 +360,6 @@ function evaluateDataNode(type, inputs = {}, data = {}) {
 }
 import { performSafeHttpRequest } from './SafeHttpRequest.js';
 import { PluginStore } from './PluginStore.js';
-
-function templateText(value) {
-  if (value == null) return '';
-  if (typeof value === 'object') { try { return JSON.stringify(value); } catch { return ''; } }
-  return String(value);
-}
-
-function splitTemplateArguments(source) {
-  const parts = [];
-  let quote = '';
-  let escaped = false;
-  let start = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && quote) { escaped = true; continue; }
-    if ((char === '"' || char === "'") && (!quote || quote === char)) { quote = quote ? '' : char; continue; }
-    if (char === ',' && !quote) { parts.push(source.slice(start, index).trim()); start = index + 1; }
-  }
-  if (quote) return null;
-  const last = source.slice(start).trim();
-  if (last || parts.length) parts.push(last);
-  return parts;
-}
-
-function splitTemplatePipeline(source) {
-  const parts = [];
-  let quote = '';
-  let escaped = false;
-  let depth = 0;
-  let start = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && quote) { escaped = true; continue; }
-    if ((char === '"' || char === "'") && (!quote || quote === char)) { quote = quote ? '' : char; continue; }
-    if (!quote && char === '(') depth += 1;
-    else if (!quote && char === ')') depth = Math.max(0, depth - 1);
-    else if (!quote && depth === 0 && char === '|') { parts.push(source.slice(start, index).trim()); start = index + 1; }
-  }
-  parts.push(source.slice(start).trim());
-  return parts;
-}
-
-function findTemplateOperator(source, operators) {
-  let quote = '';
-  let escaped = false;
-  let depth = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-    if (escaped) { escaped = false; continue; }
-    if (char === '\\' && quote) { escaped = true; continue; }
-    if ((char === '"' || char === "'") && (!quote || quote === char)) { quote = quote ? '' : char; continue; }
-    if (quote) continue;
-    if (char === '(') { depth += 1; continue; }
-    if (char === ')') { depth = Math.max(0, depth - 1); continue; }
-    if (depth) continue;
-    const operator = operators.find((item) => source.startsWith(item, index));
-    if (operator) return { index, operator };
-  }
-  return null;
-}
-
-function parseTemplateLiteral(source) {
-  const value = source.trim();
-  if (/^"(?:\\.|[^"\\])*"$/.test(value)) { try { return JSON.parse(value); } catch { return undefined; } }
-  if (/^'(?:\\.|[^'\\])*'$/.test(value)) return value.slice(1, -1).replace(/\\(['\\])/g, '$1');
-  if (/^-?(?:\d+\.?\d*|\.\d+)$/.test(value)) return Number(value);
-  if (value === 'true') return true;
-  if (value === 'false') return false;
-  if (value === 'null') return null;
-  if (value === 'undefined') return undefined;
-  return undefined;
-}
-
-function resolveTemplatePath(source, resolveSlot) {
-  const match = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)(.*)$/.exec(source.trim());
-  if (!match) return { found: false, value: undefined };
-  let value = resolveSlot?.(match[1], `{{${match[1]}}}`);
-  if (value === undefined) return { found: false, value };
-  const path = match[2].replace(/\.\s*\[(\d+)\]/g, '[$1]');
-  const tokens = [];
-  const tokenPattern = /\.([A-Za-z_$][A-Za-z0-9_$]*)|\[(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\d+))\]/g;
-  let cursor = 0;
-  for (const part of path.matchAll(tokenPattern)) {
-    if (part.index !== cursor) return { found: false, value: undefined };
-    tokens.push(part[1] ?? part[2] ?? part[3] ?? Number(part[4]));
-    cursor += part[0].length;
-  }
-  if (cursor !== path.length) return { found: false, value: undefined };
-  for (const key of tokens) {
-    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string')) return { found: false, value: undefined };
-    if (!Object.prototype.hasOwnProperty.call(Object(value), key)) return { found: false, value: undefined };
-    value = value[key];
-  }
-  return { found: true, value };
-}
-
-function evaluateTemplateExpression(source, resolveSlot) {
-  const expression = source.trim();
-  const question = findTemplateOperator(expression, ['?']);
-  if (question) {
-    const remainder = expression.slice(question.index + 1);
-    const colon = findTemplateOperator(remainder, [':']);
-    if (!colon) return { found: false, value: undefined };
-    const condition = expression.slice(0, question.index).trim();
-    const comparison = findTemplateOperator(condition, ['!==', '===', '!=', '==', '>=', '<=', '>', '<']);
-    let truth;
-    if (comparison) {
-      const leftSource = condition.slice(0, comparison.index).trim();
-      const rightSource = condition.slice(comparison.index + comparison.operator.length).trim();
-      const resolveValue = (item) => {
-        const literal = parseTemplateLiteral(item);
-        if (literal !== undefined || item === 'undefined') return literal;
-        return resolveTemplatePath(item, resolveSlot).value;
-      };
-      const left = resolveValue(leftSource); const right = resolveValue(rightSource);
-      switch (comparison.operator) {
-        case '==': case '===': truth = left === right; break;
-        case '!=': case '!==': truth = left !== right; break;
-        case '>': truth = left > right; break;
-        case '>=': truth = left >= right; break;
-        case '<': truth = left < right; break;
-        case '<=': truth = left <= right; break;
-        default: truth = false;
-      }
-    } else {
-      const negate = condition.startsWith('!');
-      const valueSource = negate ? condition.slice(1).trim() : condition;
-      const literal = parseTemplateLiteral(valueSource);
-      const value = literal !== undefined || valueSource === 'undefined' ? literal
-        : resolveTemplatePath(valueSource, resolveSlot).value;
-      truth = Boolean(value);
-      if (negate) truth = !truth;
-    }
-    const selected = truth ? remainder.slice(0, colon.index) : remainder.slice(colon.index + 1);
-    return evaluateTemplateExpression(selected, resolveSlot);
-  }
-  const literal = parseTemplateLiteral(expression);
-  if (literal !== undefined || expression === 'undefined') return { found: true, value: literal };
-  return resolveTemplatePath(expression, resolveSlot);
-}
-
-function parseTemplateArgument(source) {
-  if (/^"(?:\\.|[^"\\])*"$/.test(source)) { try { return JSON.parse(source); } catch { return undefined; } }
-  if (/^'(?:\\.|[^'\\])*'$/.test(source)) return source.slice(1, -1).replace(/\\(['\\])/g, '$1');
-  if (/^-?\d+(?:\.\d+)?$/.test(source)) return Number(source);
-  if (source === 'true') return true;
-  if (source === 'false') return false;
-  if (source === 'null') return null;
-  return undefined;
-}
-
-function applyTemplateTransforms(value, transforms) {
-  let result = value;
-  for (const transform of transforms) {
-    const match = /^([A-Za-z][A-Za-z0-9]*)(?:\((.*)\))?$/.exec(transform.trim());
-    if (!match) continue;
-    const name = match[1].toLowerCase();
-    const rawArgs = splitTemplateArguments(match[2] || '');
-    if (!rawArgs) continue;
-    const args = rawArgs.map(parseTemplateArgument);
-    if (args.some((arg, index) => arg === undefined && rawArgs[index] !== '')) continue;
-    const text = () => templateText(result);
-    if (['lower', 'lowercase', 'tolowercase'].includes(name)) result = text().toLocaleLowerCase();
-    else if (['upper', 'uppercase', 'touppercase'].includes(name)) result = text().toLocaleUpperCase();
-    else if (['trim'].includes(name)) result = text().trim();
-    else if (name === 'trimstart') result = text().trimStart();
-    else if (name === 'trimend') result = text().trimEnd();
-    else if (['title', 'titlecase'].includes(name)) result = text().toLocaleLowerCase().replace(/(^|[\s\p{P}\p{S}])([\p{L}\p{N}])/gu, (_all, prefix, letter) => `${prefix}${letter.toLocaleUpperCase()}`);
-    else if (name === 'capitalize') result = text().replace(/^\s*\p{L}/u, (letter) => letter.toLocaleUpperCase());
-    else if (name === 'replace' && args.length >= 2 && String(args[0]) !== '') result = text().split(String(args[0])).join(String(args[1]));
-    else if (name === 'replacefirst' && args.length >= 2 && String(args[0]) !== '') result = text().replace(String(args[0]), String(args[1]));
-    else if (name === 'join' && result != null && typeof result[Symbol.iterator] === 'function' && typeof result !== 'string') result = Array.from(result, templateText).join(args.length ? String(args[0]) : ', ');
-    else if (name === 'slice') {
-      const source = Array.isArray(result) ? result : text();
-      const start = Number.isFinite(Number(args[0])) ? Number(args[0]) : 0;
-      const end = args.length > 1 && Number.isFinite(Number(args[1])) ? Number(args[1]) : undefined;
-      result = source.slice(start, end);
-    } else if (name === 'length') result = result != null && Number.isFinite(result.length) ? result.length : text().length;
-    else if (name === 'json') result = JSON.stringify(result) ?? '';
-    else if (name === 'default' && (result == null || result === '')) result = args.length ? args[0] : '';
-  }
-  return templateText(result);
-}
-
-function renderTextTemplate(template, resolveSlot, appEmojis = []) {
-  const pattern = /(\\)?(\{\{\s*([^{}]+?)\s*\}\})/g;
-  return String(template ?? '').replace(pattern, (_match, escaped, token, expression) => {
-    if (escaped) return `\\${token}`;
-    const parts = splitTemplatePipeline(expression);
-    const base = parts[0];
-    const name = /^([A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)/.exec(base)?.[1];
-    if (name?.toLowerCase().startsWith('e_')) {
-      const emojiName = name.slice(2).toLowerCase();
-      const emoji = appEmojis instanceof Map ? appEmojis.get(emojiName) : appEmojis.find?.((item) => item?.name?.toLowerCase() === emojiName);
-      if (emoji?.id && emoji.name) return `<${emoji.animated ? 'a' : ''}:${emoji.name}:${emoji.id}>`;
-    }
-    const evaluated = evaluateTemplateExpression(base, resolveSlot);
-    let value = evaluated.value;
-    const transforms = parts.slice(1).filter(Boolean);
-    if (!evaluated.found && !transforms.some((item) => /^default\s*\(/i.test(item))) return token;
-    return applyTemplateTransforms(value, transforms);
-  });
-}
 
 function buildDiscordComponents(rows = [], renderText = (value) => value) {
   const styles = { primary: 1, secondary: 2, success: 3, danger: 4, link: 5 };
@@ -688,7 +640,7 @@ export class GraphRunner {
       }
       const sourcePin = NodeDefinitions[source.type]?.outputs?.find((pin) => pin.id === valueWire.sourcePinId);
       let type = sourcePin?.type || null;
-      if (type === 'object' && ['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type)) type = 'array';
+      if (type === 'object' && (['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type) || source.type === 'data_regex' && ['captures', 'matches'].includes(sourcePinId))) type = 'array';
       if (source.type === 'data_parse_json' && !connections.some((wire) => wire.targetNodeId === source.id && wire.targetPinId === 'json')) {
         try { type = Array.isArray(JSON.parse(source.data?.json || '')) ? 'array' : 'object'; } catch {}
       }
@@ -699,7 +651,7 @@ export class GraphRunner {
       if (!name || (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name))) return [];
       const type = inferCreatedVariableType(node) || 'string';
       const initialValue = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value') ? defaultValueForType(type) : node.data?.value ?? defaultValueForType(type);
-      return [{ id: `nodevar_${node.id}`, name, type, valueType: type, initialValue, persist: true, nodeOwned: true, sourceNodeId: node.id }];
+      return [{ id: `nodevar_${node.id}`, name, type, valueType: type, initialValue, persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
     });
     const graphVariables = [...declaredGraphVariables, ...createdGraphVariables.filter((created) => !declaredGraphVariables.some((variable) => variable.id === created.id))];
     const projectVariables = Array.isArray(context.projectVariables) ? context.projectVariables.filter((variable) => variable && typeof variable.id === 'string') : [];
@@ -1196,6 +1148,8 @@ export class GraphRunner {
     const startNode = nodes.find((node) => {
       const definition = NodeDefinitions[node.type];
       if (definition?.gatewayEvent !== normalizedEvent) return false;
+      if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
+        && !String(eventPayload?.content || '').trimStart().startsWith(node.data.prefix)) return false;
       if (node.type === 'event_cron' && eventPayload?.cronNodeId && node.id !== eventPayload.cronNodeId) return false;
       if (definition.gatewayInteractionType && Number(eventPayload.type) !== definition.gatewayInteractionType) return false;
       if (definition.gatewayCommandType && Number(eventPayload.data?.type || 1) !== definition.gatewayCommandType) return false;
@@ -1227,6 +1181,12 @@ export class GraphRunner {
       dataCache.set(`${startNode.id}:is_bot`, Boolean(eventPayload.author?.bot));
       dataCache.set(`${startNode.id}:has_mentions`, Array.isArray(eventPayload.mentions) && eventPayload.mentions.length > 0);
       dataCache.set(`${startNode.id}:is_reply`, Boolean(eventPayload.message_reference?.message_id));
+      // Keep old saved graphs with the former event-node prefix setting working.
+      const legacyPrefix = String(startNode.data?.prefix || '');
+      if (legacyPrefix) {
+        const parsed = evaluateDataNode('data_parse_prefix_command', { content: eventPayload.content || '', prefix: legacyPrefix }, {});
+        for (const [pinId, value] of Object.entries(parsed)) dataCache.set(`${startNode.id}:${pinId}`, value);
+      }
     } else if (eventNodeType === 'event_slash_command') {
       const cmdName = eventPayload.data?.name || '';
       const userId = eventPayload.member?.user?.id || eventPayload.user?.id || '';
@@ -1373,7 +1333,7 @@ export class GraphRunner {
           else if (op === 'endsWith') result = textA.endsWith(textB);
 
           dataCache.set(`${targetNode.id}:result`, result);
-          log(`[Compare Text] "${textA}" ${op} "${textB}" => ${result}`);
+          log(`[Compare Text] Compared text values using ${op}; result: ${result}.`);
         } else if (targetNode.type === 'delay') {
           const ms = Number(resolveDataInput(targetNode, 'ms', targetNode.data?.ms ?? 1000));
           if (!Number.isFinite(ms) || ms < 0 || ms > 604_800_000) throw new Error('Wait duration must be between 0 ms and 7 days.');
@@ -1512,7 +1472,7 @@ export class GraphRunner {
           const fileData = String(resolveDataInput(targetNode, 'file_data', targetNode.data?.file_data || ''));
           const fileName = String(resolveDataInput(targetNode, 'file_name', targetNode.data?.file_name || 'image.png'));
           const replyToMessageId = String(resolveDataInput(targetNode, 'reply_to_message_id', targetNode.data?.reply_to_message_id || '')).trim();
-          const mentionRepliedUser = Boolean(resolveDataInput(targetNode, 'mention_replied_user', targetNode.data?.mention_replied_user || false));
+          const mentionRepliedUser = Boolean(resolveDataInput(targetNode, 'mention_replied_user', targetNode.data?.mention_replied_user ?? Boolean(replyToMessageId)));
 
           if (!channelId) {
             log(`[Action Send Message] Error: Missing Channel ID`);
@@ -1531,7 +1491,7 @@ export class GraphRunner {
               payload.file_name = fileName || 'image.png';
             }
 
-            log(`[Action Send Message] Sending to channel ${channelId}: "${content}"`);
+            log(`[Action Send Message] Sending message to channel ${channelId}.`);
             const sentMsg = await context.rest.createMessage(channelId, payload);
             if (sentMsg?.id) {
               dataCache.set(`${targetNode.id}:message_id`, sentMsg.id);
@@ -1681,7 +1641,7 @@ export class GraphRunner {
           if (!interactionToken) {
             log(`[Action Reply] Error: Missing interaction token`);
           } else {
-            log(`[Action Reply] Replying: "${content}" (ephemeral: ${ephemeral})`);
+            log(`[Action Reply] Sending interaction response (ephemeral: ${ephemeral}).`);
             const responseData = {
               ...(content ? { content } : {}),
               ...(embed ? { embeds: [embed] } : {}),
@@ -1747,7 +1707,7 @@ export class GraphRunner {
           } else if (!interactionToken) {
             log(`[Edit Interaction Reply] Error: Missing interaction token`);
           } else {
-            log(`[Edit Interaction Reply] Editing original response: "${content}"`);
+            log('[Edit Interaction Reply] Editing original interaction response.');
             const payload = {
               ...(content ? { content } : {}),
               ...(embed ? { embeds: [embed] } : {}),
