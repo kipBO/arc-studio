@@ -105,6 +105,7 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
       .replace('__ARC_PROJECT_NAME__', JSON.stringify(projectName))
       .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor)) },
     { name: 'src/engine/GraphRunner.js', data: readText('src/engine/GraphRunner.js') },
+    { name: 'src/engine/TemplateExpressions.js', data: readText('src/engine/TemplateExpressions.js') },
     { name: 'src/engine/MathOperations.js', data: readText('src/engine/MathOperations.js') },
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
     { name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') },
@@ -355,10 +356,42 @@ const logRetention = String(process.env.ARC_LOG_RETENTION_DAYS || '7').trim().to
 let logDate = '';
 let logStream = null;
 let logWriteWarningShown = false;
+let retainedLogsSanitized = false;
+function sanitizeRetainedLogs() {
+  if (retainedLogsSanitized) return;
+  fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+  for (const file of fs.readdirSync(logDirectory)) {
+    if (!/^arc-bot-\\d{4}-\\d{2}-\\d{2}\\.log$/.test(file)) continue;
+    const filePath = path.join(logDirectory, file);
+    const original = fs.readFileSync(filePath, 'utf8');
+    const records = original.split(/(?=^\\[[^\\r\\n]+\\] \\[[A-Z]+\\s*\\] )/m);
+    const sanitized = records.map((record) => {
+      if (/^\\[[^\\]\\r\\n]+\\] \\[INFO\\s*\\] Message received from [^:\\r\\n]+: /.test(record)) {
+        return record.replace(/^(\\[[^\\]\\r\\n]+\\] \\[INFO\\s*\\] )Message received from [^:\\r\\n]+: [\\s\\S]*$/, '$1Message event received.\\n');
+      }
+      if (/^\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Compare Text\\] /.test(record)) {
+        return record.replace(/^(\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Compare Text\\] )[\\s\\S]*$/, '$1Operands redacted; comparison result retained.\\n');
+      }
+      if (/^\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Action Send Message\\] Sending to channel /.test(record)) {
+        return record.replace(/^(\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Action Send Message\\] Sending to channel [^:\\r\\n]+: )[\\s\\S]*$/, '$1[message content redacted]\\n');
+      }
+      if (/^\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Action Reply\\] Replying: /.test(record)) {
+        return record.replace(/^(\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Action Reply\\] Replying: )[\\s\\S]*$/, '$1[message content redacted]\\n');
+      }
+      if (/^\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Edit Interaction Reply\\] Editing original response: /.test(record)) {
+        return record.replace(/^(\\[[^\\]\\r\\n]+\\] \\[[A-Z]+\\s*\\] \\[Edit Interaction Reply\\] Editing original response: )[\\s\\S]*$/, '$1[message content redacted]\\n');
+      }
+      return record;
+    }).join('');
+    if (sanitized !== original) fs.writeFileSync(filePath, sanitized, { mode: 0o600 });
+  }
+  retainedLogsSanitized = true;
+}
 function rotateLogs() {
   const today = new Date().toISOString().slice(0, 10);
   if (today === logDate && logStream) return;
   fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+  sanitizeRetainedLogs();
   logStream?.end();
   logDate = today;
   logStream = fs.createWriteStream(path.join(logDirectory, 'arc-bot-' + today + '.log'), { flags: 'a', mode: 0o600 });
