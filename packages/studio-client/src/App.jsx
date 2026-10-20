@@ -557,6 +557,7 @@ export function App() {
   const [collaborators, setCollaborators] = useState([]);
   const [projectCollaboration, setProjectCollaboration] = useState({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
   const [remoteCollaborationActions, setRemoteCollaborationActions] = useState([]);
+  const [graphChatBubbles, setGraphChatBubbles] = useState([]);
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
@@ -971,6 +972,18 @@ export function App() {
       collaborationActionTimerRef.current = window.setTimeout(flush, 40);
     }
   }, [activeProjectId, activeTabId]);
+  const sendGraphChatMessage = useCallback((content, position) => {
+    const socket = wsRef.current;
+    if (localDesktopWorkspace || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
+      || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_SEND', projectId: activeProjectId, graphId: activeTabId, payload: { content, position } }));
+    return true;
+  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
+  const moveGraphChatBubble = useCallback((id, position) => {
+    const socket = wsRef.current;
+    if (localDesktopWorkspace || !id || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'GRAPH_CHAT_MOVE', projectId: activeProjectId, graphId: activeTabId, payload: { id, position } }));
+  }, [activeProjectId, activeTabId, localDesktopWorkspace]);
   const requestNoteEditLock = useCallback((noteId) => {
     const socket = wsRef.current;
     if (!noteId || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
@@ -2014,6 +2027,19 @@ export function App() {
             }
             setTabs(nextTabs);
             if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
+          } else if (msg.type === 'GRAPH_CHAT_BUBBLE') {
+            const bubble = msg.payload;
+            if (!bubble?.id || bubble.projectId !== activeProjectIdRef.current || bubble.graphId !== activeTabIdRef.current
+              || typeof bubble.content !== 'string' || !Number.isFinite(bubble.x) || !Number.isFinite(bubble.y)
+              || !Number.isFinite(bubble.expiresAt) || bubble.expiresAt <= Date.now()) return;
+            setGraphChatBubbles((previous) => [...previous.filter((item) => item.id !== bubble.id && item.expiresAt > Date.now()), bubble]);
+          } else if (msg.type === 'GRAPH_CHAT_EXPIRED') {
+            const expired = msg.payload;
+            if (expired?.projectId === activeProjectIdRef.current && expired?.graphId === activeTabIdRef.current && expired?.id) {
+              setGraphChatBubbles((previous) => previous.filter((item) => item.id !== expired.id));
+            }
+          } else if (msg.type === 'GRAPH_CHAT_REJECTED') {
+            arcEvents.emit('toast:notify', { title: 'Canvas message not sent', message: msg.payload?.message || 'Please try again in a moment.', type: 'warning' });
           } else if (msg.type === 'COLLAB_ACTION_UPDATED') {
             const action = msg.payload;
             if (action?.projectId !== activeProjectIdRef.current || action?.graphId !== activeTabIdRef.current || action.userId === currentUser?.id) return;
@@ -5172,6 +5198,10 @@ export function App() {
             onOpenFunctionGraph={handleOpenGraph}
             remoteActions={remoteCollaborationActions}
             onCollaborationAction={sendCollaborationAction}
+            graphChatEnabled={!localDesktopWorkspace && Boolean(activeGraph)}
+            graphChatBubbles={graphChatBubbles}
+            onSendGraphChat={sendGraphChatMessage}
+            onMoveGraphChatBubble={moveGraphChatBubble}
           />
           <div className={`canvas-context-label ${!activeGraph ? 'is-no-graph' : graphValidation.errors.length ? 'has-validation-errors' : graphValidation.warnings.length ? 'has-validation-warnings' : 'is-validation-ready'}`}>
             {activeGraph ? <><span className="context-dot" />
