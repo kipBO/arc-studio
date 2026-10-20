@@ -256,6 +256,21 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
+  router.patch('/auth/username', (req, res) => {
+    if (serverConfig.desktopMode) return res.sendStatus(404);
+    if (req.user.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can rename this account.' });
+    try {
+      const result = userStore.renamePrimaryAdmin(req.user.id, req.body?.username);
+      if (result.changed) {
+        logger.info(`Primary workspace owner renamed their account to "${result.user.username}"`);
+        recordTeamActivity({ ...req, user: result.user }, 'account.renamed', `Renamed the owner account to ${result.user.username}`, { previousUsername: req.user.username, username: result.user.username });
+      }
+      res.json({ success: true, ...result });
+    } catch (error) {
+      res.status(error.retryAfterMs ? 429 : 400).json({ error: error.message, ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs, availableAt: error.availableAt } : {}) });
+    }
+  });
+
   router.get('/projects', requirePermission('graphs:read'), (_req, res) => {
     res.json(botManager.getProjects());
   });
@@ -928,10 +943,19 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/graphs/export/bot.zip', requirePermission('graphs:read'), (req, res) => {
+    const includeBotToken = req.body?.includeBotToken === true;
+    const includeCryptoSecret = req.body?.includeCryptoSecret === true;
+    const permissions = req.user?.permissions || [];
+    if (includeBotToken && !permissions.includes('*') && !permissions.includes('bot:control')) {
+      return res.status(403).json({ error: 'You need bot control permission to include the bot token in an export.' });
+    }
     const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : botManager.project.id;
     const project = botManager.projectStore.projects.find((item) => item.id === projectId);
     if (!project) return res.status(404).json({ error: 'That project no longer exists.' });
     const isActiveProject = projectId === botManager.project.id;
+    if (includeBotToken && !isActiveProject) return res.status(400).json({ error: 'Switch to the project whose bot token you want to include, then export again.' });
+    const botToken = includeBotToken ? botManager.getBotToken() : null;
+    if (includeBotToken && !botToken) return res.status(400).json({ error: 'No bot token is configured for this project.' });
     const openGraphs = isActiveProject && Array.isArray(req.body?.graphs) ? req.body.graphs : [];
     if (openGraphs.length > 1000) return res.status(413).json({ error: 'Too many graphs to export.' });
     try {
@@ -956,7 +980,16 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         if (graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections)) byId.set(graph.id, graph);
       }
       const exportGraphs = [...byId.values()];
-      const archive = buildBotArchive(exportGraphs, projectVariables, PluginStore.exportAdapters(exportGraphs));
+      const projectOwner = userStore.users.find((user) => user.id === project.ownerId);
+      const archive = buildBotArchive(exportGraphs, projectVariables, PluginStore.exportAdapters(exportGraphs), {
+        includeCryptoSecret,
+        includeBotToken,
+        projectName: project.name,
+        projectAuthor: projectOwner?.username || req.user?.username || 'Unknown',
+        logRetentionDays: project.logRetentionDays ?? process.env.LOG_RETENTION_DAYS ?? 7,
+        ...(includeBotToken ? { botToken } : {})
+      });
+      res.setHeader('Cache-Control', 'no-store, private');
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="arc-bot-export.zip"');
       res.setHeader('Content-Length', archive.length);
