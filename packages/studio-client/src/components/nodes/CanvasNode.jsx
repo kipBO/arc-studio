@@ -224,6 +224,28 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     if (value.length > LONG_TEXT_THRESHOLD) return <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label={label} maxLength={maxLength} />;
     return <CharacterLimit value={value} maxLength={maxLength}><DiscordTextField onOpenTextEditor={openTextEditor} discordAutocomplete={autocomplete} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} graphVariables={graphVariables} as="textarea" rows={2} maxLength={maxLength} value={value} appEmojis={appEmojis} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></CharacterLimit>;
   };
+  const templateInput = (id, label, { multiline = false, maxLength = 8192, inputMode, placeholder = 'Used when unconnected' } = {}) => {
+    if (isConnected(id)) return null;
+    const value = String(node.data?.[id] ?? '');
+    const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
+    return <FallbackField label={label}><DiscordTextField
+      as={multiline ? 'textarea' : 'input'}
+      rows={multiline ? 2 : undefined}
+      maxLength={maxLength}
+      inputMode={inputMode}
+      value={value}
+      graphVariables={graphVariables}
+      templateValuePaths={valuePaths}
+      templateSuggestions={templateSuggestions}
+      templateAutocomplete
+      onOpenTextEditor={() => onOpenTextStudio?.(node, id, label, value, maxLength)}
+      onChange={(event) => update(id, event.target.value)}
+      onPointerDown={(event) => event.stopPropagation()}
+      placeholder={placeholder}
+      aria-label={label}
+    /></FallbackField>;
+  };
   const valueTypes = [{ value: 'number', label: 'Number' }, { value: 'string', label: 'Text' }, { value: 'boolean', label: 'Boolean' }, { value: 'object', label: 'Object / Array' }];
   if (node.type === 'data_get_modal_value') {
     const fieldId = String(node.data?.custom_id ?? '');
@@ -489,7 +511,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'build_embed') {
-    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
+    const templateValuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
+    const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
+    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} templatePreviewValues={templatePreviewValues} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
   if (node.type === 'build_modal') return <div className="node-config node-config-stack"><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenModalStudio?.(node); }}><Plus size={12} /> Edit popup modal{node.data?.modal?.components?.length ? ` · ${node.data.modal.components.length} fields` : ''}</button></div>;
   if (node.type === 'action_send_message') {
@@ -612,11 +636,11 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const canRetry = node.type === 'action_web_retry';
     return <div className="node-config node-config-stack">
       {!['url', 'method', 'headers', 'body', 'timeout_ms', 'max_bytes'].every(isConnected) && <span className="node-config-hint">Set a value here or connect a wire.</span>}
-      {!isConnected('url') && <FallbackField label="URL"><input value={node.data?.url ?? ''} onChange={(event) => update('url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Request URL" /></FallbackField>}
+      {templateInput('url', 'URL', { inputMode: 'url', maxLength: 4096 })}
       {!isConnected('method') && <FallbackField label="Method"><AnimatedDropdown value={node.data?.method || 'GET'} options={['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({ value, label: value }))} onChange={(value) => update('method', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Request method" className="node-select" /></FallbackField>}
-      {!isConnected('headers') && <FallbackField label="Headers (JSON)"><textarea rows={2} value={node.data?.headers ?? '{}'} onChange={(event) => update('headers', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="{}" aria-label="Request headers JSON" /></FallbackField>}
-      {!isConnected('user_agent') && <FallbackField label="User-Agent"><input value={node.data?.user_agent ?? ''} onChange={(event) => update('user_agent', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Optional" aria-label="Request User-Agent" /></FallbackField>}
-      {!isConnected('body') && <FallbackField label="Body"><textarea rows={2} value={node.data?.body ?? ''} onChange={(event) => update('body', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Request body" /></FallbackField>}
+      {templateInput('headers', 'Headers (JSON)', { multiline: true, maxLength: 16384, placeholder: '{}' })}
+      {templateInput('user_agent', 'User-Agent', { maxLength: 512, placeholder: 'Optional' })}
+      {templateInput('body', 'Body', { multiline: true, maxLength: 8192 })}
       {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 10000} onChange={(event) => update('timeout_ms', Math.max(1000, Math.min(30000, Number(event.target.value) || 1000)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Request timeout in milliseconds" /></FallbackField>}
       {!isConnected('max_bytes') && <FallbackField label="Max response bytes"><NodeNumberInput min="1024" max="1048576" value={node.data?.max_bytes ?? 1048576} onChange={(event) => update('max_bytes', Math.max(1024, Math.min(1048576, Number(event.target.value) || 1024)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum response bytes" /></FallbackField>}
       {canRetry && !isConnected('max_attempts') && <FallbackField label="Max attempts"><NodeNumberInput min="1" max="5" value={node.data?.max_attempts ?? 3} onChange={(event) => update('max_attempts', Math.max(1, Math.min(5, Number(event.target.value) || 1)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum request attempts" /></FallbackField>}
@@ -626,8 +650,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'action_http_download') {
     return <div className="node-config node-config-stack">
-      {!isConnected('url') && <FallbackField label="URL"><input value={node.data?.url ?? ''} onChange={(event) => update('url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Direct public file URL" aria-label="File download URL" /></FallbackField>}
-      {!isConnected('user_agent') && <FallbackField label="User-Agent"><input value={node.data?.user_agent ?? ''} onChange={(event) => update('user_agent', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Optional" aria-label="Download User-Agent" /></FallbackField>}
+      {templateInput('url', 'URL', { inputMode: 'url', maxLength: 4096, placeholder: 'Direct public file URL' })}
+      {templateInput('user_agent', 'User-Agent', { maxLength: 512, placeholder: 'Optional' })}
       {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 20000} onChange={(event) => update('timeout_ms', Math.max(1000, Math.min(30000, Number(event.target.value) || 1000)))} onPointerDown={(event) => event.stopPropagation()} aria-label="File download timeout in milliseconds" /></FallbackField>}
       {!isConnected('max_bytes') && <FallbackField label="Max file bytes"><NodeNumberInput min="1024" max="20971520" value={node.data?.max_bytes ?? 20971520} onChange={(event) => update('max_bytes', Math.max(1024, Math.min(20971520, Number(event.target.value) || 1024)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum file size in bytes" /></FallbackField>}
       <span className="node-config-hint">Connect File to a message or interaction reply Files input. Maximum file size is 20 MiB.</span>
