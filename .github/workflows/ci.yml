@@ -9,7 +9,7 @@ on:
 jobs:
   version-consistency:
     name: ARC Version Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -22,7 +22,7 @@ jobs:
 
   test-chezcord:
     name: Test Chezcord lib (Node ${{ matrix.node-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         node-version: [20.x, 22.x]
@@ -45,7 +45,7 @@ jobs:
 
   build-client:
     name: Build Studio Client
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test-chezcord
 
     steps:
@@ -66,7 +66,7 @@ jobs:
 
   server-diagnostics:
     name: Server Pre-flight Diagnostics
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: test-chezcord
 
     steps:
