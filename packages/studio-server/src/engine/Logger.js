@@ -17,6 +17,7 @@ export class Logger {
       fs.mkdirSync(this.logsDir, { recursive: true });
     }
 
+    this.redactRetainedMessageContent();
     this.currentDate = this.getDateString();
     this.currentLogPath = this.getLogFilePath(this.currentDate);
     this.writeStream = fs.createWriteStream(this.currentLogPath, { flags: 'a', mode: 0o600 });
@@ -40,6 +41,7 @@ export class Logger {
     this.logsDir = nextDir;
     this.retentionDays = nextRetention;
     fs.mkdirSync(this.logsDir, { recursive: true, mode: 0o700 });
+    this.redactRetainedMessageContent();
     this.currentDate = this.getDateString();
     this.currentLogPath = this.getLogFilePath(this.currentDate);
     this.writeStream = fs.createWriteStream(this.currentLogPath, { flags: 'a', mode: 0o600 });
@@ -68,6 +70,24 @@ export class Logger {
     if (!this.writeStream) { callback?.(); return; }
     this.writeStream.end(callback);
     this.writeStream = null;
+  }
+
+  redactRetainedMessageContent() {
+    try {
+      for (const file of fs.readdirSync(this.logsDir)) {
+        if (!file.startsWith('arc-studio-') || !file.endsWith('.log')) continue;
+        const filePath = path.join(this.logsDir, file);
+        const original = fs.readFileSync(filePath, 'utf8');
+        const records = original.split(/(?=^\[[^\r\n]+\]\s+\[[A-Z]+\s*\]\s+)/m);
+        const sanitized = records.map((record) => record.replace(
+          /^(\[[^\]\r\n]+\]\s+\[[A-Z]+\s*\]\s+)Message received from [^:\r\n]+: [\s\S]*$/,
+          '$1Message event received.\n'
+        )).join('');
+        if (sanitized !== original) fs.writeFileSync(filePath, sanitized, { mode: 0o600 });
+      }
+    } catch (error) {
+      console.error('Could not redact message content from retained logs:', error.message);
+    }
   }
 
   log(level, message, meta = null) {
