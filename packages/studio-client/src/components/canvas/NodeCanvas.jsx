@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
 import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
 import { FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, StepForward, Type } from 'lucide-react';
-import { embedBlockPins, getEmbedBlocks } from '../nodes/EmbedNodeBuilder.jsx';
+import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
@@ -60,8 +60,8 @@ function getWireCutSegments(pathElement, event) {
 }
 
 export function NodeCanvas({
-  nodes = [], connections = [], graphId = '', projectId = '', focusRequest = null, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
-  tagGroups = [], notes = [], currentUser = null, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
+  nodes = [], connections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
+  tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction
 }) {
@@ -77,14 +77,63 @@ export function NodeCanvas({
   const [isPanning, setIsPanning] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
+  const [selectedNoteIds, setSelectedNoteIds] = useState([]);
   const [shiftHeld, setShiftHeld] = useState(false);
   const [deleteConfirmationIds, setDeleteConfirmationIds] = useState(null);
+  const [deleteConfirmationNoteIds, setDeleteConfirmationNoteIds] = useState([]);
   const [selectionBox, setSelectionBox] = useState(null);
   const [draggingNode, setDraggingNode] = useState(null);
   const [draggingNote, setDraggingNote] = useState(null);
+  const [focusedNote, setFocusedNote] = useState(null);
+  const [noteLockClock, setNoteLockClock] = useState(Date.now());
+  const focusedNoteRef = useRef(null);
+  const noteEditHistoryRef = useRef(null);
+  const collaborationRoomKey = `${projectId}:${graphId}`;
+  const focusedNoteId = focusedNote?.roomKey === collaborationRoomKey ? focusedNote.noteId : '';
+  const focusedNoteLock = focusedNoteId ? noteEditLocks[focusedNoteId] : null;
+  const ownsFocusedNoteLock = Boolean(focusedNoteLock && focusedNoteLock.userId === currentUser?.id && focusedNoteLock.clientId === collaborationClientId);
+  const userRank = { viewer: 1, operator: 2, editor: 3, admin: 4, owner: 5 };
+  const mayEditNote = (note) => !note.locked || Boolean(currentUser && (
+    (note.createdById && currentUser.id && note.createdById === currentUser.id)
+    || (note.createdBy && currentUser.username && note.createdBy.toLocaleLowerCase() === currentUser.username.toLocaleLowerCase())
+    || (userRank[String(currentUser.role || '').toLowerCase()] || 0) > (userRank[String(note.createdByRole || 'viewer').toLowerCase()] || 0)
+  ));
+  const focusedNoteRecord = focusedNoteId ? notes.find((note) => note.id === focusedNoteId) : null;
+  const canRequestFocusedNoteLock = Boolean(focusedNoteRecord && !isLocked && mayEditNote(focusedNoteRecord));
+
+  useEffect(() => {
+    if (!Object.keys(noteEditLocks).length) return undefined;
+    const timer = window.setInterval(() => setNoteLockClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [noteEditLocks]);
+
+  useEffect(() => {
+    if (!focusedNoteId || !canRequestFocusedNoteLock || !collaborationOnline || !collaborationReady) return undefined;
+    const requestWhileFocused = () => {
+      if (focusedNoteRef.current?.roomKey === collaborationRoomKey && focusedNoteRef.current.noteId === focusedNoteId) onRequestNoteEditLock?.(focusedNoteId);
+    };
+    if (!focusedNoteLock) {
+      requestWhileFocused();
+      const retry = window.setInterval(requestWhileFocused, 1000);
+      return () => window.clearInterval(retry);
+    }
+    if (!ownsFocusedNoteLock) return undefined;
+    const renewal = window.setInterval(requestWhileFocused, 5000);
+    return () => window.clearInterval(renewal);
+  }, [canRequestFocusedNoteLock, collaborationOnline, collaborationReady, collaborationRoomKey, focusedNoteId, focusedNoteLock?.clientId, focusedNoteLock?.expiresAt, focusedNoteLock?.userId, onRequestNoteEditLock, ownsFocusedNoteLock]);
 
   useEffect(() => { onSelectedNodeChange?.(selectedNodeId || null); }, [onSelectedNodeChange, selectedNodeId]);
   useEffect(() => { onSelectedNodeCountChange?.(selectedNodeIds.length); }, [onSelectedNodeCountChange, selectedNodeIds.length]);
+  useEffect(() => {
+    const noteIds = new Set(notes.map((note) => note.id));
+    setSelectedNoteIds((current) => {
+      const filtered = current.filter((id) => noteIds.has(id));
+      return filtered.length === current.length ? current : filtered;
+    });
+  }, [notes]);
+  useEffect(() => () => {
+    if (noteEditHistoryRef.current?.historyStarted) onHistoryGroupEnd?.();
+  }, [graphId, onHistoryGroupEnd]);
   const [libraryDragPreview, setLibraryDragPreview] = useState(null);
   const [wireLayoutRevision, refreshWireLayout] = useState(0);
   const [connectingWire, setConnectingWire] = useState(null);
@@ -108,7 +157,8 @@ export function NodeCanvas({
   const selectionStartRef = useRef(null);
   const rightPanMovedRef = useRef(false);
   const rightPanOriginRef = useRef(null);
-  const collaborationCursorRef = useRef({ x: 0, y: 0 });
+  const collaborationCursorRef = useRef(null);
+  useEffect(() => { collaborationCursorRef.current = null; }, [graphId]);
   const spaceDownRef = useRef(false);
   const altDownRef = useRef(false);
   const cancelConnectingWire = useCallback(() => {
@@ -188,12 +238,26 @@ export function NodeCanvas({
             })
             .map((card) => card.dataset.nodeCardId);
           selectNodes(visibleIds);
-        } else selectNodes(nodes.map((node) => node.id));
+          const visibleNoteIds = [...(containerRef.current?.querySelectorAll('[data-note-id]') || [])]
+            .filter((card) => {
+              const rect = card.getBoundingClientRect();
+              return viewport && rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+            })
+            .map((card) => card.dataset.noteId);
+          setSelectedNoteIds(visibleNoteIds);
+          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: visibleIds, selectedNoteIds: visibleNoteIds });
+        } else {
+          const allNodeIds = nodes.map((node) => node.id);
+          const allNoteIds = notes.map((note) => note.id);
+          selectNodes(allNodeIds);
+          setSelectedNoteIds(allNoteIds);
+          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: allNodeIds, selectedNoteIds: allNoteIds });
+        }
         return;
       }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNodeIds.length && !isLocked && !shortcutBlocked) {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedNodeIds.length || selectedNoteIds.length) && !isLocked && !shortcutBlocked) {
         event.preventDefault();
-        deleteNodes(selectedNodeIds);
+        deleteSelectedItems(selectedNodeIds, selectedNoteIds);
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && selectedNodeIds.length && !shortcutBlocked) {
         event.preventDefault();
@@ -244,7 +308,7 @@ export function NodeCanvas({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [selectedNodeId, selectedNodeIds, connectingWire, isLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange]);
+  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, connectingWire, isLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -301,7 +365,8 @@ export function NodeCanvas({
         scrollArea = scrollArea.parentElement;
       }
       event.preventDefault();
-      if (event.ctrlKey || event.metaKey) {
+      const zoomWithWheel = settings.zoomCanvasWithScroll && !event.shiftKey;
+      if (event.ctrlKey || event.metaKey || zoomWithWheel) {
         const rect = container.getBoundingClientRect();
         const displayScale = getCanvasDisplayScale(container);
         const cursorX = (event.clientX - rect.left) / displayScale;
@@ -325,7 +390,7 @@ export function NodeCanvas({
     };
     container.addEventListener('wheel', onWheel, { passive: false });
     return () => container.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [settings.zoomCanvasWithScroll]);
 
   useEffect(() => {
     const validIds = selectedNodeIds.filter((id) => nodes.some((node) => node.id === id));
@@ -414,7 +479,8 @@ export function NodeCanvas({
         const sourceNode = nodes.find((item) => item.id === wire.sourceNodeId);
         const sourceDefinition = sourceNode && getNodeDefinition(sourceNode, nextSeen);
         const sourcePin = sourceDefinition?.outputs?.find((item) => item.id === wire.sourcePinId);
-        const colorType = sourcePin?.colorType || sourcePin?.type;
+        const declaredType = sourcePin?.colorType || sourcePin?.type;
+        const colorType = declaredType && !['arg', 'any'].includes(declaredType) ? declaredType : wire.type;
         return colorType && colorType !== 'arg' && colorType !== 'any' ? { ...pin, colorType } : pin;
       });
       const withArguments = typedArgumentPins.length ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...typedArgumentPins.filter((pin) => !existingIds.has(pin.id))] } : nextDefinition;
@@ -422,7 +488,7 @@ export function NodeCanvas({
     };
     if (node.type === 'event_message_create') {
       const highestArgument = connections.reduce((highest, wire) => wire.sourceNodeId === node.id ? Math.max(highest, Number(/^argument_(\d+)$/.exec(wire.sourcePinId)?.[1]) || 0) : highest, 0);
-      const argumentOutputs = Array.from({ length: Math.min(50, Math.max(1, highestArgument + 1)) }, (_, index) => ({ id: `argument_${index + 1}`, label: `Argument ${index + 1}`, type: 'string' }));
+      const argumentOutputs = Array.from({ length: Math.min(50, highestArgument) }, (_, index) => ({ id: `argument_${index + 1}`, label: `Legacy Argument ${index + 1}`, type: 'string' }));
       return withArgumentPins({ ...definition, outputs: [...definition.outputs.filter((pin) => !/^argument_\d+$/.test(pin.id)), ...argumentOutputs] });
     }
     if (node.type === 'event_slash_command') {
@@ -499,12 +565,16 @@ export function NodeCanvas({
       return withArgumentPins({ ...definition, inputs: embedBlockPins(getEmbedBlocks(node.data)) });
     }
     if (node.type === 'build_embed' && Array.isArray(node.data?.fields) && node.data.fields.length) {
+      const fields = node.data.fields;
       return withArgumentPins({
         ...definition,
-        inputs: [...definition.inputs, ...node.data.fields.flatMap((field, index) => [
-          { id: `field_${field.id}_name`, label: `Field ${index + 1} name`, type: 'string', defaultValue: field.name || '' },
-          { id: `field_${field.id}_value`, label: `Field ${index + 1} value`, type: 'string', defaultValue: field.value || '' }
-        ])]
+        inputs: [...definition.inputs, ...fields.flatMap((field, index) => {
+          const labels = getEmbedFieldSocketLabels(field, index, fields);
+          return [
+            { id: `field_${field.id}_name`, label: labels.name, type: 'string', defaultValue: field.name || '' },
+            { id: `field_${field.id}_value`, label: labels.value, type: 'string', defaultValue: field.value || '' }
+          ];
+        })]
       });
     }
     if (node.type === 'format_text') {
@@ -738,26 +808,68 @@ export function NodeCanvas({
     setSelectedNodeIds((selected) => selected.filter((id) => id !== nodeId));
   }
 
-  function deleteNodes(nodeIds, confirmed = false) {
-    const ids = new Set(nodeIds);
-    if (ids.size > 1 && !confirmed) {
-      setDeleteConfirmationIds([...ids]);
+  function deleteSelectedItems(nodeIds = selectedNodeIds, noteIds = selectedNoteIds, confirmed = false) {
+    const uniqueNodeIds = [...new Set(nodeIds)];
+    const removableNoteIds = [...new Set(noteIds)].filter((id) => {
+      const note = notes.find((item) => item.id === id);
+      return note && !isNoteBeingEditedByOther(id) && (!note.locked || mayEditNote(note));
+    });
+    if (uniqueNodeIds.length > 1 && !confirmed) {
+      setDeleteConfirmationIds(uniqueNodeIds);
+      setDeleteConfirmationNoteIds(removableNoteIds);
       return;
     }
+    if (!uniqueNodeIds.length && !removableNoteIds.length) return;
     onHistoryGroupStart?.();
-    onNodesChange?.(nodes.filter((node) => !ids.has(node.id)));
-    onConnectionsChange?.(connections.filter((connection) => !ids.has(connection.sourceNodeId) && !ids.has(connection.targetNodeId)));
+    if (uniqueNodeIds.length) {
+      const ids = new Set(uniqueNodeIds);
+      onNodesChange?.(nodes.filter((node) => !ids.has(node.id)));
+      onConnectionsChange?.(connections.filter((connection) => !ids.has(connection.sourceNodeId) && !ids.has(connection.targetNodeId)));
+    }
+    if (removableNoteIds.length) {
+      const ids = new Set(removableNoteIds);
+      onNotesChange?.(notes.filter((note) => !ids.has(note.id)));
+    }
     onHistoryGroupEnd?.();
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
+    setSelectedNoteIds([]);
     setDeleteConfirmationIds(null);
+    setDeleteConfirmationNoteIds([]);
   }
 
-  const selectNodes = (ids, primaryId = ids[ids.length - 1] || null) => {
+  const selectNodes = (ids, primaryId = ids[ids.length - 1] || null, { preserveNotes = false } = {}) => {
     const validIds = [...new Set(ids)];
     setSelectedNodeIds(validIds);
     setSelectedNodeId(primaryId && validIds.includes(primaryId) ? primaryId : validIds[validIds.length - 1] || null);
-    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: validIds });
+    if (!preserveNotes) setSelectedNoteIds([]);
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: validIds, selectedNoteIds: preserveNotes ? selectedNoteIds : [] });
+  };
+
+  const selectNotes = (noteIds, { additive = false } = {}) => {
+    const validIds = [...new Set(noteIds)].filter((id) => notes.some((note) => note.id === id));
+    const nextIds = additive ? [...new Set([...selectedNoteIds.filter((id) => notes.some((note) => note.id === id)), ...validIds])] : validIds;
+    setSelectedNoteIds(nextIds);
+    if (!additive) {
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+    }
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds });
+  };
+
+  const handleNoteSelectionPointerDown = (event, noteId) => {
+    if (event.button !== 0) return false;
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const nextIds = additive
+      ? selectedNoteIds.includes(noteId) ? selectedNoteIds.filter((id) => id !== noteId) : [...selectedNoteIds, noteId]
+      : [noteId];
+    setSelectedNoteIds(nextIds);
+    if (!additive) {
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+    }
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds });
+    return additive;
   };
 
   const selectTagGroupNodes = (groupId) => {
@@ -940,7 +1052,7 @@ export function NodeCanvas({
       collaborationCursorRef.current = cursor;
       if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, selectedNodeIds });
       else if (draggingNode) onCollaborationAction?.({ kind: 'node-drag', cursor, nodeIds: draggingNode.nodeIds || [draggingNode.id] });
-      else if (draggingNote) onCollaborationAction?.({ kind: 'note-drag', cursor, noteId: draggingNote.id });
+      else if (draggingNote) onCollaborationAction?.({ kind: 'note-drag', cursor, noteId: draggingNote.id, noteIds: draggingNote.noteIds || [draggingNote.id] });
       else if (selectionStartRef.current) {
         const start = selectionStartRef.current;
         const toWorld = (x, y) => ({ x: ((x - bounds.left) / displayScale - pan.x) / zoom, y: ((y - bounds.top) / displayScale - pan.y) / zoom });
@@ -958,8 +1070,13 @@ export function NodeCanvas({
           const rect = card.getBoundingClientRect();
           return rect.right >= screenRect.left && rect.left <= screenRect.right && rect.bottom >= screenRect.top && rect.top <= screenRect.bottom;
         }).map((card) => card.dataset.nodeCardId);
+        const hitNoteIds = [...(containerRef.current?.querySelectorAll('[data-note-id]') || [])].filter((card) => {
+          const rect = card.getBoundingClientRect();
+          return rect.right >= screenRect.left && rect.left <= screenRect.right && rect.bottom >= screenRect.top && rect.top <= screenRect.bottom;
+        }).map((card) => card.dataset.noteId);
         const selected = start.additive ? [...new Set([...selectedNodeIds, ...hitIds])] : hitIds;
-        onCollaborationAction?.({ kind: 'selection', cursor, mode: 'select', selectedNodeIds: selected, selectionRect });
+        const selectedNotes = start.additive ? [...new Set([...selectedNoteIds, ...hitNoteIds])] : hitNoteIds;
+        onCollaborationAction?.({ kind: 'selection', cursor, mode: 'select', selectedNodeIds: selected, selectedNoteIds: selectedNotes, selectionRect });
       }
       else {
         const target = event.target instanceof Element ? event.target : null;
@@ -1007,7 +1124,14 @@ export function NodeCanvas({
     }
     if (draggingNote) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
-      setDraggingNote((current) => current ? { ...current, x: Math.round(current.initialX + (event.clientX - current.startX) / displayScale / zoom), y: Math.round(current.initialY + (event.clientY - current.startY) / displayScale / zoom) } : current);
+      const deltaX = (event.clientX - draggingNote.startX) / displayScale / zoom;
+      const deltaY = (event.clientY - draggingNote.startY) / displayScale / zoom;
+      if (!draggingNote.historyStarted && Math.hypot(deltaX, deltaY) < 2) return;
+      if (!draggingNote.historyStarted) {
+        onHistoryGroupStart?.();
+        setDraggingNote((current) => current ? { ...current, historyStarted: true } : current);
+      }
+      setDraggingNote((current) => current ? { ...current, deltaX: Math.round(deltaX), deltaY: Math.round(deltaY) } : current);
       return;
     }
     if (connectingWire && containerRef.current) {
@@ -1047,6 +1171,7 @@ export function NodeCanvas({
 
   const finishPointer = (event) => {
     let finalSelectedNodeIds = selectedNodeIds;
+    let finalSelectedNoteIds = selectedNoteIds;
     const finishedDraggingNode = draggingNode;
     if (!isLocked && finishedDraggingNode && (event.altKey || altDownRef.current || finishedDraggingNode.altKey)) {
       const selectedIds = [...new Set(finishedDraggingNode.nodeIds || [finishedDraggingNode.id])];
@@ -1059,9 +1184,26 @@ export function NodeCanvas({
       const targetGroup = point && tagGroupLayouts
         .filter((group) => point.x >= group.left && point.x <= group.left + group.width && point.y >= group.top && point.y <= group.top + group.height)
         .sort((a, b) => a.width * a.height - b.width * b.height)[0];
-      if (targetGroup) onTagGroupsChange?.(tagGroups.map((group) => group.id === targetGroup.id
-        ? { ...group, nodeIds: [...new Set([...(group.nodeIds || []), ...selectedIds])] }
-        : group));
+      const finalNodes = new Map(nodes.map((node) => [node.id, node]));
+      const cards = new Map(Array.from(containerRef.current?.querySelectorAll('[data-node-card-id]') || [], (card) => [card.dataset.nodeCardId, card]));
+      const scale = getCanvasDisplayScale(containerRef.current) * zoom;
+      const isInsideGroup = (nodeId, group) => {
+        const node = finalNodes.get(nodeId);
+        if (!node || !group) return false;
+        const rect = cards.get(nodeId)?.getBoundingClientRect();
+        const width = rect?.width && scale ? rect.width / scale : NODE_WIDTH;
+        const height = rect?.height && scale ? rect.height / scale : estimateNodeHeight(getNodeDefinition(node));
+        return node.x >= group.left && node.y >= group.top && node.x + width <= group.left + group.width && node.y + height <= group.top + group.height;
+      };
+      const nextGroups = tagGroups.map((group) => {
+        const layout = tagGroupLayouts.find((item) => item.id === group.id);
+        let nodeIds = (group.nodeIds || []).filter((id) => !selectedIds.includes(id) || isInsideGroup(id, layout));
+        if (targetGroup?.id === group.id) nodeIds = [...new Set([...nodeIds, ...selectedIds.filter((id) => isInsideGroup(id, layout))])];
+        return nodeIds.length === (group.nodeIds || []).length && nodeIds.every((id, index) => id === group.nodeIds[index])
+          ? group
+          : { ...group, nodeIds };
+      });
+      if (nextGroups.some((group, index) => group !== tagGroups[index])) onTagGroupsChange?.(nextGroups);
     }
     const marqueeStart = selectionStartRef.current;
     if (marqueeStart) {
@@ -1072,11 +1214,19 @@ export function NodeCanvas({
           const rect = card.getBoundingClientRect();
           return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
         }).map((card) => card.dataset.nodeCardId);
+        const hitNoteIds = [...(containerRef.current?.querySelectorAll('[data-note-id]') || [])].filter((card) => {
+          const rect = card.getBoundingClientRect();
+          return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
+        }).map((card) => card.dataset.noteId);
         finalSelectedNodeIds = marqueeStart.additive ? [...new Set([...selectedNodeIds, ...hitIds])] : hitIds;
-        selectNodes(finalSelectedNodeIds);
+        finalSelectedNoteIds = marqueeStart.additive ? [...new Set([...selectedNoteIds, ...hitNoteIds])] : hitNoteIds;
+        selectNodes(finalSelectedNodeIds, finalSelectedNodeIds[finalSelectedNodeIds.length - 1] || null, { preserveNotes: true });
+        setSelectedNoteIds(finalSelectedNoteIds);
       } else if (!marqueeStart.additive) {
         finalSelectedNodeIds = [];
+        finalSelectedNoteIds = [];
         selectNodes([]);
+        setSelectedNoteIds([]);
       }
       selectionStartRef.current = null;
       setSelectionBox(null);
@@ -1084,7 +1234,17 @@ export function NodeCanvas({
     setIsPanning(false);
     setDraggingNode(null);
     if (draggingNote) {
-      onNotesChange?.(notes.map((note) => note.id === draggingNote.id ? { ...note, x: draggingNote.x, y: draggingNote.y, editedAt: new Date().toISOString(), editedBy: currentUser?.username || 'Unknown' } : note));
+      if (draggingNote.historyStarted) {
+        const movingIds = new Set(draggingNote.noteIds || [draggingNote.id]);
+        const deltaX = draggingNote.deltaX || 0;
+        const deltaY = draggingNote.deltaY || 0;
+        const editedAt = new Date().toISOString();
+        onNotesChange?.(notes.map((note) => {
+          if (!movingIds.has(note.id)) return note;
+          const initial = draggingNote.initialPositions[note.id] || { x: note.x, y: note.y };
+          return { ...note, x: initial.x + deltaX, y: initial.y + deltaY, editedAt, editedBy: currentUser?.username || 'Unknown' };
+        }));
+      }
       setDraggingNote(null);
     }
     onHistoryGroupEnd?.();
@@ -1097,8 +1257,8 @@ export function NodeCanvas({
       else if (targetRow && targetRow.dataset.nodeId !== connectingWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
       setConnectingWire(null);
     }
-    if (finalSelectedNodeIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', selectedNodeIds: finalSelectedNodeIds }, true);
-    else onCollaborationAction?.({ kind: 'idle' }, true);
+    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds }, true);
+    else onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
   };
 
   const finishCanvasPointer = (event) => {
@@ -1112,7 +1272,7 @@ export function NodeCanvas({
       setDraggingNode(null);
       setDraggingNote(null);
       onHistoryGroupEnd?.();
-      onCollaborationAction?.({ kind: 'idle' }, true);
+      onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
       return;
     }
     finishPointer(event);
@@ -1149,7 +1309,13 @@ export function NodeCanvas({
 
   const startWireFromInput = (event, nodeId, pinId) => {
     const connection = connections.find((item) => item.targetNodeId === nodeId && item.targetPinId === pinId);
+    if (connection) startWireFromConnection(event, connection, 'output', false);
+  };
+
+  const startWireFromOutput = (event, nodeId, pinId) => {
+    const connection = connections.find((item) => item.sourceNodeId === nodeId && item.sourcePinId === pinId);
     if (connection) startWireFromConnection(event, connection, 'output', true);
+    else setConnectingWire(null);
   };
 
   const cutWire = (event, connection) => {
@@ -1182,9 +1348,10 @@ export function NodeCanvas({
     if (isLocked || event.button !== 0 || spaceDownRef.current || event.target.closest('button, input, textarea, select, [data-pin-id], .node-config')) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey) {
       const nextIds = selectedNodeIds.includes(node.id) ? selectedNodeIds.filter((id) => id !== node.id) : [...selectedNodeIds, node.id];
-      selectNodes(nextIds, nextIds.includes(node.id) ? node.id : nextIds[nextIds.length - 1] || null);
+      selectNodes(nextIds, nextIds.includes(node.id) ? node.id : nextIds[nextIds.length - 1] || null, { preserveNotes: true });
       return;
     }
+    setSelectedNoteIds([]);
     let nextIds = selectedNodeIds;
     if (!selectedNodeIds.includes(node.id)) nextIds = [node.id];
     selectNodes(nextIds, node.id);
@@ -1210,12 +1377,27 @@ export function NodeCanvas({
     setPan({ x: (viewWidth - (maxX - minX) * nextZoom) / 2 - minX * nextZoom, y: (viewHeight - (maxY - minY) * nextZoom) / 2 - minY * nextZoom });
   };
 
-  const focusWorldPoint = (x, y) => {
+  const focusWorldPoint = useCallback((x, y) => {
     const bounds = containerRef.current?.getBoundingClientRect();
     if (!bounds) return;
     const scale = getCanvasDisplayScale(containerRef.current);
     setPan({ x: bounds.width / scale / 2 - x * zoom, y: bounds.height / scale / 2 - y * zoom });
-  };
+  }, [zoom]);
+
+  const handledFollowRequestRef = useRef(null);
+  useEffect(() => {
+    if (!followRequest || followRequest.graphId !== graphId || handledFollowRequestRef.current === followRequest.requestId) return;
+    const peer = remoteActions.find((item) => item.graphId === graphId && item.userId === followRequest.userId && item.action?.cursor
+      && Number.isFinite(item.action.cursor.x) && Number.isFinite(item.action.cursor.y));
+    if (!peer) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (handledFollowRequestRef.current === followRequest.requestId) return;
+      focusWorldPoint(peer.action.cursor.x, peer.action.cursor.y);
+      handledFollowRequestRef.current = followRequest.requestId;
+      onFollowComplete?.(followRequest.requestId);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [followRequest, focusWorldPoint, graphId, onFollowComplete, remoteActions]);
 
   const computePath = (x1, y1, x2, y2) => {
     if (wireStyle === 'straight') return `M ${x1} ${y1} L ${x2} ${y2}`;
@@ -1234,8 +1416,10 @@ export function NodeCanvas({
     const tagGroupElement = event.target.closest?.('[data-tag-group-id]');
     const wireGroup = event.target.closest?.('[data-wire-id]');
     const nodeId = nodeCard?.dataset.nodeCardId || null;
+    const noteId = noteCard?.dataset.noteId || null;
     const groupId = tagGroupElement?.dataset.tagGroupId || null;
     if (nodeId && !selectedNodeIds.includes(nodeId)) selectNodes([nodeId], nodeId);
+    if (noteId && !selectedNoteIds.includes(noteId)) selectNotes([noteId]);
     setContextMenu({
       x: Math.max(8, event.clientX),
       y: Math.max(8, event.clientY),
@@ -1245,7 +1429,7 @@ export function NodeCanvas({
         return { x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom) };
       })(),
       nodeId,
-      noteId: noteCard?.dataset.noteId || null,
+      noteId,
       nodeIds: nodeId ? (selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]) : selectedNodeIds,
       groupId,
       wireId: wireGroup?.dataset.wireId || null,
@@ -1261,12 +1445,10 @@ export function NodeCanvas({
   };
 
   const updateNote = (noteId, patch) => onNotesChange?.(notes.map((note) => note.id === noteId ? { ...note, ...patch, editedAt: new Date().toISOString(), editedBy: currentUser?.username || 'Unknown' } : note));
-  const userRank = { viewer: 1, operator: 2, editor: 3, admin: 4, owner: 5 };
-  const mayEditNote = (note) => !note.locked || Boolean(currentUser && (
-    (note.createdById && currentUser.id && note.createdById === currentUser.id)
-    || (note.createdBy && currentUser.username && note.createdBy.toLocaleLowerCase() === currentUser.username.toLocaleLowerCase())
-    || (userRank[String(currentUser.role || '').toLowerCase()] || 0) > (userRank[String(note.createdByRole || 'viewer').toLowerCase()] || 0)
-  ));
+  const isNoteBeingEditedByOther = (noteId) => {
+    const lock = noteEditLocks[noteId];
+    return Boolean(collaborationOnline && lock && (lock.userId !== currentUser?.id || lock.clientId !== collaborationClientId));
+  };
 
   const gridSize = Math.max(12, GRID_SIZE * zoom);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
@@ -1279,7 +1461,8 @@ export function NodeCanvas({
     const measuredNodes = members.map((node) => {
       const card = cards.get(node.id);
       const rect = card?.getBoundingClientRect();
-      return { x: node.x, y: node.y, width: rect?.width && scale ? rect.width / scale : NODE_WIDTH, height: rect?.height && scale ? rect.height / scale : estimateNodeHeight(getNodeDefinition(node)) };
+      const initialPosition = draggingNode && (draggingNode.altKey || altDownRef.current) ? draggingNode.initialPositions?.[node.id] : null;
+      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: rect?.width && scale ? rect.width / scale : NODE_WIDTH, height: rect?.height && scale ? rect.height / scale : estimateNodeHeight(getNodeDefinition(node)) };
     });
     const measured = measuredNodes.length ? measuredNodes : noteMembers.map((note) => ({ x: note.x, y: note.y, width: 224, height: 156 }));
     const side = 28;
@@ -1289,7 +1472,7 @@ export function NodeCanvas({
     const right = Math.max(...measured.map((item) => item.x + item.width)) + side;
     const bottom = Math.max(...measured.map((item) => item.y + item.height)) + side;
     return { ...group, left, top, width: right - left, height: bottom - top };
-  }).filter(Boolean), [tagGroups, nodes, notes, zoom, wireLayoutRevision, getNodeDefinition]);
+  }).filter(Boolean), [tagGroups, nodes, notes, zoom, wireLayoutRevision, getNodeDefinition, draggingNode]);
   const nearbyTagGroups = (nodeIds) => {
     const selectedNodes = nodes.filter((node) => nodeIds.includes(node.id));
     if (!selectedNodes.length) return [];
@@ -1350,6 +1533,17 @@ export function NodeCanvas({
       }
     }
     return { baseConnections: base, selectedConnections: selected };
+  }, [connections, selectedNodeIds]);
+  const connectedSelectedNodeIds = useMemo(() => {
+    if (!selectedNodeIds.length) return new Set();
+    const selectedIds = new Set(selectedNodeIds);
+    const connectedIds = new Set();
+    for (const connection of connections) {
+      if (selectedIds.has(connection.sourceNodeId)) connectedIds.add(connection.targetNodeId);
+      if (selectedIds.has(connection.targetNodeId)) connectedIds.add(connection.sourceNodeId);
+    }
+    for (const id of selectedIds) connectedIds.delete(id);
+    return connectedIds;
   }, [connections, selectedNodeIds]);
 
   const renderWire = (connection, isSelectedNodeWire) => {
@@ -1434,6 +1628,32 @@ export function NodeCanvas({
     );
   };
 
+  const canvasWidth = containerRef.current?.clientWidth || 0;
+  const canvasHeight = containerRef.current?.clientHeight || 0;
+  const remoteCursorViews = remoteActions.filter((peer) => peer.action?.cursor).map((peer) => {
+    const cursor = peer.action.cursor;
+    const screenX = pan.x + cursor.x * zoom;
+    const screenY = pan.y + cursor.y * zoom;
+    const margin = Math.min(16, canvasWidth / 3, canvasHeight / 3);
+    const offscreen = canvasWidth > 0 && canvasHeight > 0 && (screenX < margin || screenX > canvasWidth - margin || screenY < margin || screenY > canvasHeight - margin);
+    if (!offscreen) return { peer, offscreen: false };
+    const dx = screenX - canvasWidth / 2;
+    const dy = screenY - canvasHeight / 2;
+    const availableX = Math.max(1, canvasWidth / 2 - margin);
+    const availableY = Math.max(1, canvasHeight / 2 - margin);
+    const xScale = dx ? availableX / Math.abs(dx) : Infinity;
+    const yScale = dy ? availableY / Math.abs(dy) : Infinity;
+    const scale = Math.min(xScale, yScale);
+    return {
+      peer,
+      offscreen: true,
+      left: canvasWidth / 2 + dx * scale,
+      top: canvasHeight / 2 + dy * scale,
+      angle: Math.atan2(dy, dx) * 180 / Math.PI,
+      edge: xScale <= yScale ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'top' : 'bottom')
+    };
+  });
+
   return (
     <div
       ref={containerRef}
@@ -1455,13 +1675,13 @@ export function NodeCanvas({
       }}
       onPointerLeave={() => {
         if (connectingWire || draggingNode || draggingNote || isPanning || selectionStartRef.current) return;
-        onCollaborationAction?.({ kind: 'navigation', label: 'Navigating menus' }, true);
+        onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
       }}
       onPointerUp={finishCanvasPointer}
-      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onCollaborationAction?.({ kind: 'idle' }, true); onHistoryGroupEnd?.(); }}
+      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true); onHistoryGroupEnd?.(); }}
       onContextMenu={openContextMenu}
       onDragOver={updateLibraryDragPreview}
-      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setLibraryDragPreview(null); onCollaborationAction?.({ kind: 'idle' }, true); } }}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setLibraryDragPreview(null); onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true); } }}
       onDrop={(event) => {
         const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
         const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
@@ -1480,7 +1700,7 @@ export function NodeCanvas({
           else if (fallback.mimeType === 'application/x-arc-embed-asset') embedPayload = fallbackPayload;
         }
         setLibraryDragPreview(null);
-        onCollaborationAction?.({ kind: 'idle' }, true);
+        onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
         window.__arcNodeDragPayload = null;
         window.__arcGraphDragPayload = null;
         window.__arcEmbedDragPayload = null;
@@ -1520,15 +1740,16 @@ export function NodeCanvas({
 
         {nodes.map((node) => {
           const isSelected = selectedNodeIds.includes(node.id);
+          const isConnectedToSelection = connectedSelectedNodeIds.has(node.id);
           const definition = getNodeDefinition(node);
           const remoteSelection = remoteActions.find((peer) => peer.action?.selectedNodeIds?.includes(node.id));
           const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'node-edit' && peer.action.nodeId === node.id
             || peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)) || remoteSelection;
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isConnectedToSelection ? 'is-connected-to-selection' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
               key={node.id}
-              style={{ zIndex: isSelected ? 10 : undefined, '--collaborator-color': remoteOwner?.color }}
+              style={{ zIndex: isSelected ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
               onPointerDown={(event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
@@ -1549,7 +1770,10 @@ export function NodeCanvas({
                 onDelete={deleteNode}
                 onNodeDataChange={updateNodeData}
                 onPinStartConnect={startWire}
-                onPinDoubleClick={(event, nodeId, pinId) => startWireFromInput(event, nodeId, pinId)}
+                onPinDoubleClick={(event, nodeId, pinId, direction) => {
+                  if (direction === 'input') startWireFromInput(event, nodeId, pinId);
+                  else startWireFromOutput(event, nodeId, pinId);
+                }}
                 onOpenVariables={onOpenVariables}
                 onOpenEmbedStudio={onOpenEmbedStudio}
                 onOpenTextStudio={onOpenTextStudio}
@@ -1577,25 +1801,45 @@ export function NodeCanvas({
           </g>)}
         </svg>
         {notes.map((note) => {
-          const activePosition = draggingNote?.id === note.id ? { x: draggingNote.x, y: draggingNote.y } : note;
-          const canEdit = mayEditNote(note) && !isLocked;
-          const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'note-drag' && peer.action.noteId === note.id);
-          return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${remoteOwner ? 'is-collaborator-active' : ''}`} style={{ left: activePosition.x, top: activePosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color }} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
+          const noteDragInitial = draggingNote?.noteIds?.includes(note.id) ? draggingNote.initialPositions[note.id] : null;
+          const activePosition = noteDragInitial ? { x: noteDragInitial.x + (draggingNote.deltaX || 0), y: noteDragInitial.y + (draggingNote.deltaY || 0) } : note;
+          const mayEdit = mayEditNote(note) && !isLocked;
+          const noteLock = noteEditLocks[note.id];
+          const ownsNoteLock = Boolean(noteLock && noteLock.userId === currentUser?.id && noteLock.clientId === collaborationClientId);
+          const lockHeldByOther = isNoteBeingEditedByOther(note.id);
+          const canEditText = mayEdit && (!collaborationOnline || ownsNoteLock);
+      const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'note-drag' && (peer.action.noteId === note.id || peer.action.noteIds?.includes(note.id)));
+          const headerLabel = lockHeldByOther ? 'Note'
+            : focusedNoteId === note.id && collaborationOnline && mayEdit
+              ? !collaborationReady ? 'Connecting…' : ownsNoteLock ? 'Editing' : 'Waiting for edit access…'
+              : 'Note';
+          return <article key={note.id} data-note-id={note.id} className={`canvas-note-card ${note.locked ? 'is-locked' : ''} ${selectedNoteIds.includes(note.id) ? 'is-selected' : ''} ${remoteOwner || lockHeldByOther ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.selectedNoteIds?.includes(note.id)) ? 'is-collaborator-selected' : ''}`} style={{ left: activePosition.x, top: activePosition.y, '--note-color': note.color || '#f6d365', '--collaborator-color': remoteOwner?.color || noteLock?.color || '#b794f4' }} onPointerDown={(event) => { event.stopPropagation(); if (!(event.target instanceof Element) || !event.target.closest('.canvas-note-header')) handleNoteSelectionPointerDown(event, note.id); }} onContextMenu={(event) => { event.stopPropagation(); openContextMenu(event); }}>
             <header className="canvas-note-header" onPointerDown={(event) => {
-              if (event.button !== 0 || event.target instanceof Element && event.target.closest('button') || isLocked || (note.locked && !canEdit)) return;
+              if (event.button !== 0 || event.target instanceof Element && event.target.closest('button') || !mayEdit || lockHeldByOther) return;
+              if (event.metaKey || event.ctrlKey || event.shiftKey) { event.stopPropagation(); handleNoteSelectionPointerDown(event, note.id); return; }
+              if (!selectedNoteIds.includes(note.id)) handleNoteSelectionPointerDown(event, note.id);
               event.preventDefault(); event.stopPropagation();
-              setDraggingNote({ id: note.id, x: note.x, y: note.y, initialX: note.x, initialY: note.y, startX: event.clientX, startY: event.clientY });
+              const movingNotes = (selectedNoteIds.includes(note.id) ? notes.filter((item) => selectedNoteIds.includes(item.id)) : [note])
+                .filter((item) => mayEditNote(item) && !isNoteBeingEditedByOther(item.id));
+              const initialPositions = Object.fromEntries(movingNotes.map((item) => [item.id, { x: item.x, y: item.y }]));
+              setDraggingNote({ id: note.id, noteIds: movingNotes.map((item) => item.id), initialPositions, startX: event.clientX, startY: event.clientY, deltaX: 0, deltaY: 0, historyStarted: false });
               containerRef.current?.setPointerCapture?.(event.pointerId);
             }}>
-              <span>Note</span>
+              <span>{headerLabel}</span>
+              {noteLock && Number.isFinite(noteLock.expiresAt) && (() => {
+                const seconds = Math.max(0, Math.ceil((noteLock.expiresAt - noteLockClock) / 1000));
+                const time = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+                const owner = noteLock.username || 'A collaborator';
+                return <span className={`canvas-note-lock-timer${seconds <= 5 ? ' is-expiring' : ''}`} title={`${owner} · lock ${time}`} aria-label={`${owner} is editing this note, lock ${time}`} onPointerDown={(event) => event.stopPropagation()}>{time}</span>;
+              })()}
               <span className="canvas-note-actions">
-                <button type="button" title={note.locked ? 'Unlock note' : 'Lock note'} disabled={isLocked || (note.locked && !canEdit)} onClick={(event) => { event.stopPropagation(); updateNote(note.id, { locked: !note.locked }); }} aria-label={note.locked ? 'Unlock note' : 'Lock note'}>{note.locked ? <LockKeyhole size={12} /> : <LockOpen size={12} />}</button>
-                <button type="button" title="Delete note" disabled={isLocked || (note.locked && !canEdit)} onClick={(event) => { event.stopPropagation(); onNotesChange?.(notes.filter((item) => item.id !== note.id)); }} aria-label="Delete note">×</button>
+                <button type="button" title={note.locked ? 'Unlock note' : 'Lock note'} disabled={!mayEdit || lockHeldByOther} onClick={(event) => { event.stopPropagation(); updateNote(note.id, { locked: !note.locked }); }} aria-label={note.locked ? 'Unlock note' : 'Lock note'}>{note.locked ? <LockKeyhole size={12} /> : <LockOpen size={12} />}</button>
+                <button type="button" title="Delete note" disabled={!mayEdit || lockHeldByOther} onClick={(event) => { event.stopPropagation(); onNotesChange?.(notes.filter((item) => item.id !== note.id)); }} aria-label="Delete note">×</button>
               </span>
             </header>
-            <textarea aria-label="Graph note" value={note.text || ''} readOnly={!canEdit} placeholder="Add a note…" autoCapitalize="off" autoCorrect="off" spellCheck={false} maxLength={4000} onChange={(event) => updateNote(note.id, { text: event.target.value })} />
+            <textarea aria-label="Graph note" value={note.text || ''} readOnly={!canEditText} placeholder="Add a note…" autoCapitalize="off" autoCorrect="off" spellCheck={false} maxLength={4000} onFocus={() => { focusedNoteRef.current = { roomKey: collaborationRoomKey, noteId: note.id }; noteEditHistoryRef.current = { noteId: note.id, historyStarted: false }; setFocusedNote(focusedNoteRef.current); }} onBlur={() => { if (focusedNoteRef.current?.roomKey === collaborationRoomKey && focusedNoteRef.current.noteId === note.id) focusedNoteRef.current = null; if (noteEditHistoryRef.current?.noteId === note.id) { if (noteEditHistoryRef.current.historyStarted) onHistoryGroupEnd?.(); noteEditHistoryRef.current = null; } setFocusedNote((current) => current?.roomKey === collaborationRoomKey && current.noteId === note.id ? null : current); if (ownsNoteLock) onReleaseNoteEditLock?.(note.id); }} onChange={(event) => { if (canEditText) { if (noteEditHistoryRef.current?.noteId === note.id && !noteEditHistoryRef.current.historyStarted) { onHistoryGroupStart?.(); noteEditHistoryRef.current.historyStarted = true; } updateNote(note.id, { text: event.target.value }); } }} />
             <div className="canvas-note-colors" aria-label="Note color">
-              {['#f6d365', '#fca5a5', '#93c5fd', '#86efac', '#c4b5fd', '#f0abfc'].map((color) => <button key={color} type="button" aria-label={`Set note color ${color}`} title="Change note color" disabled={!canEdit} className={note.color === color ? 'is-selected' : ''} style={{ '--note-color': color }} onClick={() => updateNote(note.id, { color })} />)}
+              {['#f6d365', '#fca5a5', '#93c5fd', '#86efac', '#c4b5fd', '#f0abfc'].map((color) => <button key={color} type="button" aria-label={`Set note color ${color}`} title="Change note color" disabled={!mayEdit || lockHeldByOther} className={note.color === color ? 'is-selected' : ''} style={{ '--note-color': color }} onClick={() => updateNote(note.id, { color })} />)}
             </div>
             <footer title={`Created by ${note.createdBy || 'Unknown'} · ${new Date(note.createdAt).toLocaleString()}${note.editedBy ? ` · Edited by ${note.editedBy} · ${new Date(note.editedAt).toLocaleString()}` : ''}`}>
               <span>By {note.createdBy || 'Unknown'}</span>{note.editedAt && note.editedAt !== note.createdAt && <span>Edited {note.editedBy || ''}</span>}
@@ -1608,7 +1852,7 @@ export function NodeCanvas({
           </div>)}
         </div>
         <div className="canvas-collaborator-cursors" aria-hidden="true">
-          {remoteActions.filter((peer) => peer.action?.cursor && peer.action.kind !== 'idle').map((peer) => <div key={`remote-cursor-${peer.userId}`} className={`canvas-collaborator-cursor is-${peer.action.mode || peer.action.kind}`} style={{ left: peer.action.cursor.x, top: peer.action.cursor.y, '--collaborator-color': peer.color }}>
+          {remoteCursorViews.filter((item) => !item.offscreen).map(({ peer }) => <div key={`remote-cursor-${peer.userId}`} className={`canvas-collaborator-cursor is-${peer.action.kind === 'idle' || peer.action.cursorIdle ? 'idle' : peer.action.mode || peer.action.kind}`} style={{ left: peer.action.cursor.x, top: peer.action.cursor.y, '--collaborator-color': peer.action.kind === 'idle' || peer.action.cursorIdle ? '#858c98' : peer.color }}>
             {peer.action.mode === 'text' ? <Type size={16} strokeWidth={2.4} /> : peer.action.mode === 'cut' ? <Scissors size={16} strokeWidth={2.4} /> : ['node-drag', 'note-drag', 'library-drag', 'pan'].includes(peer.action.kind) || peer.action.mode === 'pan' ? <Hand size={17} strokeWidth={2.4} /> : <MousePointer2 size={17} strokeWidth={2.4} />}
             <span>{peer.username}</span>
             {peer.action.kind === 'wire-drag' && <small>Connecting</small>}
@@ -1629,6 +1873,10 @@ export function NodeCanvas({
         {libraryDragPreview && <div className="node-position node-drag-preview" style={{ transform: `translate3d(${libraryDragPreview.x}px, ${libraryDragPreview.y}px, 0)` }} aria-hidden="true">
           <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={graphVariables} functionGraphs={functionGraphs} callableGraphs={callableGraphs} appEmojis={appEmojis} />
         </div>}
+      </div>
+
+      <div className="canvas-collaborator-offscreen-layer" aria-live="polite">
+        {remoteCursorViews.filter((item) => item.offscreen).map(({ peer, left, top, angle, edge }) => <div key={`remote-offscreen-${peer.userId}`} className={`canvas-collaborator-offscreen is-edge-${edge} ${peer.action.kind === 'idle' || peer.action.cursorIdle ? 'is-idle' : ''}`} tabIndex={0} title={`${peer.username} is outside your view`} aria-label={`${peer.username} is outside your canvas view`} style={{ left, top, '--collaborator-color': peer.action.kind === 'idle' || peer.action.cursorIdle ? '#858c98' : peer.color, '--collaborator-angle': `${angle}deg` }}><i aria-hidden="true" /><span>{peer.username}</span></div>)}
       </div>
 
       <div className="canvas-collaborator-navigation-layer" aria-live="polite">
@@ -1685,7 +1933,7 @@ export function NodeCanvas({
               const hasNote = (group.noteIds || []).includes(note.id);
               return <button key={group.id} role="menuitem" disabled={isLocked || (note.locked && !mayEditNote(note))} onClick={() => { onTagGroupsChange?.(tagGroups.map((item) => item.id === group.id ? { ...item, noteIds: hasNote ? (item.noteIds || []).filter((id) => id !== note.id) : [...(item.noteIds || []), note.id] } : item)); setContextMenu(null); }}>{hasNote ? 'Remove from' : 'Add to'} {group.name}</button>;
             })}
-            <button role="menuitem" disabled={isLocked || (note.locked && !mayEditNote(note))} onClick={() => { onNotesChange?.(notes.filter((item) => item.id !== note.id)); setContextMenu(null); }}>Delete note</button>
+            <button role="menuitem" disabled={isLocked || isNoteBeingEditedByOther(note.id) || (note.locked && !mayEditNote(note))} onClick={() => { onNotesChange?.(notes.filter((item) => item.id !== note.id)); setContextMenu(null); }}>Delete note</button>
           </> : null;
         })() : contextMenu.groupId ? (() => {
           const group = tagGroups.find((item) => item.id === contextMenu.groupId);
@@ -1733,11 +1981,11 @@ export function NodeCanvas({
       </div>, document.body)}
       <Modal
         isOpen={Boolean(deleteConfirmationIds)}
-        onClose={() => setDeleteConfirmationIds(null)}
-        onConfirm={() => deleteNodes(deleteConfirmationIds || [], true)}
-        title="Delete selected nodes?"
-        subtitle={`This will delete ${deleteConfirmationIds?.length || 0} nodes and their connections.`}
-        footer={<><Button variant="secondary" onClick={() => setDeleteConfirmationIds(null)}>Cancel</Button><Button variant="danger" onClick={() => deleteNodes(deleteConfirmationIds || [], true)}>Delete nodes</Button></>}
+        onClose={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); }}
+        onConfirm={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true)}
+        title="Delete selected items?"
+        subtitle={`This will delete ${deleteConfirmationIds?.length || 0} nodes${deleteConfirmationNoteIds.length ? ` and ${deleteConfirmationNoteIds.length} notes` : ''} and their connections.`}
+        footer={<><Button variant="secondary" onClick={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); }}>Cancel</Button><Button variant="danger" onClick={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true)}>Delete selected</Button></>}
       >
         <p className="close-graph-copy">This action cannot be undone.</p>
       </Modal>
