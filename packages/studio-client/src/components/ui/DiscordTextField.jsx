@@ -84,24 +84,26 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       if (!rect) return;
       const caret = getCaretCoordinates(el, match.start);
       const scrollLeft = el.scrollLeft || 0;
-      const scrollTop = el.scrollTop || 0;
-
       const caretScreenX = rect.left + caret.left - scrollLeft;
-      const caretScreenY = rect.top + caret.top - scrollTop;
+      const gutter = 10;
+      const width = Math.max(1, Math.min(286, window.innerWidth - gutter * 2));
+      const left = Math.max(gutter, Math.min(caretScreenX - 8, window.innerWidth - width - gutter));
+      const popupHeight = pickerRef.current?.getBoundingClientRect().height
+        || Math.min(284, 150 + Math.max(1, suggestions.length) * 34);
+      const spaceAbove = Math.max(0, rect.top - gutter * 2);
+      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gutter * 2);
+      const showAbove = spaceAbove >= popupHeight || spaceAbove >= spaceBelow;
+      const availableSpace = showAbove ? spaceAbove : spaceBelow;
+      const maxHeight = Math.max(72, Math.min(284, availableSpace));
+      const height = Math.min(popupHeight, maxHeight);
+      const top = showAbove
+        ? Math.max(gutter, rect.top - height - 8)
+        : Math.min(window.innerHeight - height - gutter, rect.bottom + 8);
 
-      const width = Math.min(286, window.innerWidth - 20);
-      const height = Math.min(284, 46 + Math.max(1, suggestions.length) * 36);
-
-      const left = Math.max(10, Math.min(caretScreenX - 8, window.innerWidth - width - 10));
-
-      const spaceBelow = window.innerHeight - (caretScreenY + caret.height);
-      const top = spaceBelow >= height + 10 || spaceBelow >= caretScreenY
-        ? caretScreenY + caret.height + 6
-        : Math.max(10, caretScreenY - height - 6);
-
-      setPosition({ left, top, width });
+      setPosition({ left, top, width, maxHeight });
     };
     update();
+    const frame = window.requestAnimationFrame(update);
     window.addEventListener('resize', update);
     window.addEventListener('scroll', update, true);
     const closeOutside = (event) => {
@@ -113,6 +115,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     window.addEventListener('arc:emoji-picker-open', onFullPicker);
     const removePageBlurListener = onPageBlur(() => setMatch(null));
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
       document.removeEventListener('pointerdown', closeOutside, true);
@@ -218,7 +221,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   return <>
     <Component {...fieldProps} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
-    {(discordAutocomplete || templateAutocomplete) && match && position && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
+    {(discordAutocomplete || templateAutocomplete) && match && position && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight, overflowY: 'auto' }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
       {suggestions.length ? suggestions.map((item, index) => <button type="button" role="option" aria-selected={index === selectedIndex} className={`discord-emoji-suggestion ${index === selectedIndex ? 'is-selected' : ''}`} key={item.key} onPointerDown={(event) => event.preventDefault()} onMouseEnter={() => setSelectedIndex(index)} onClick={() => selectSuggestion(item)}>
         {match.kind === 'template' ? <span className="discord-emoji-suggestion-glyph">{match.filterStage ? 'ƒ' : '{{'}</span> : item.isCustom ? <img src={item.image} alt="" /> : <span className="discord-emoji-suggestion-glyph">{item.emoji}</span>}
