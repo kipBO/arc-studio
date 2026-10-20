@@ -130,6 +130,7 @@ export function EmbedNodeBuilder({
   wiredFields = {},
   appEmojis = [],
   graphVariables = [],
+  templateValuePaths = [],
   templatePreviewValues = {}
 }) {
   const blocks = getEmbedBlocks(data);
@@ -281,6 +282,7 @@ export function EmbedNodeBuilder({
             discordAutocomplete
             templateAutocomplete
             graphVariables={graphVariables}
+            templateValuePaths={templateValuePaths}
             templateSuggestions={templateSuggestions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
@@ -300,6 +302,7 @@ export function EmbedNodeBuilder({
             discordAutocomplete
             templateAutocomplete
             graphVariables={graphVariables}
+            templateValuePaths={templateValuePaths}
             templateSuggestions={templateSuggestions}
             onOpenTextEditor={() => openTextEditor(block[key] || '')}
             type={multiline ? undefined : 'text'}
