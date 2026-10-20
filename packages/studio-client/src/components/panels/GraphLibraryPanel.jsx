@@ -21,7 +21,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], definitions = BuiltInNodeDefinitions, defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -57,16 +57,17 @@ export function GraphLibraryPanel({
   const filteredGraphs = graphs.filter((graph) => (graph.name || 'Untitled graph').toLowerCase().includes(query.trim().toLowerCase()));
   const filteredTemplates = templates.filter((graph) => (graph.name || 'Untitled template').toLowerCase().includes(query.trim().toLowerCase()));
   const graphGroups = groupGraphs(filteredGraphs);
-  const nodeGroups = groupNodes(BuiltInNodeDefinitions.filter((node) => !node.hidden).filter((node) => `${node.label} ${node.description} ${node.category}`.toLowerCase().includes(query.trim().toLowerCase())));
-  const filteredPrefabs = nodePrefabs.filter((prefab) => (prefab.name || '').toLowerCase().includes(query.trim().toLowerCase()));
+  const nodeGroups = groupNodes(definitions.filter((node) => !node.hidden).filter((node) => `${node.label} ${node.description} ${node.category}`.toLowerCase().includes(query.trim().toLowerCase())));
+  const compatiblePrefabs = nodePrefabs.filter((prefab) => definitions.some((definition) => definition.type === prefab.node?.type));
+  const filteredPrefabs = compatiblePrefabs.filter((prefab) => (prefab.name || '').toLowerCase().includes(query.trim().toLowerCase()));
   const filteredEmbeds = embedAssets.filter((asset) => (asset.name || '').toLowerCase().includes(query.trim().toLowerCase()));
   const filteredVariables = graphVariables.filter((variable) => `${variable.name || ''} ${variable.type || ''}`.toLowerCase().includes(query.trim().toLowerCase()));
   const activeSnapshots = snapshots.filter((snapshot) => snapshot.graphId === activeGraph?.id);
-  const frequentNodes = rankByUsage(BuiltInNodeDefinitions.filter((node) => !node.hidden && matchesLibraryQuery(`${node.label} ${node.description} ${node.category}`, query)), usage.nodes, (node) => node.type, 5);
+  const frequentNodes = rankByUsage(definitions.filter((node) => !node.hidden && matchesLibraryQuery(`${node.label} ${node.description} ${node.category}`, query)), usage.nodes, (node) => node.type, 5);
   const frequentGraphs = graphs.length >= 10 ? rankByUsage(filteredGraphs, usage.graphs, (graph) => graph.id, 3) : [];
   const frequentEmbeds = embedAssets.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
   const allGraphGroupNames = groupGraphs(graphs).map(([name]) => name);
-  const allNodeGroupNames = groupNodes(BuiltInNodeDefinitions.filter((node) => !node.hidden)).map(([name]) => name);
+  const allNodeGroupNames = groupNodes(definitions.filter((node) => !node.hidden)).map(([name]) => name);
   const activeGroupKind = activeSection === 'graphs' ? 'graphs' : activeSection === 'nodes' ? 'nodes' : null;
   const activeGroupNames = activeGroupKind === 'graphs' ? allGraphGroupNames : activeGroupKind === 'nodes' ? allNodeGroupNames : [];
   const activeExpandedGroups = activeGroupKind === 'graphs' ? expandedGroups : expandedNodeGroups;
@@ -143,7 +144,7 @@ export function GraphLibraryPanel({
     event.preventDefault();
     event.dataTransfer.dropEffect = 'none';
     const type = payload.previewNode?.type || payload.prefabNode?.type || payload.nodeType;
-    const definition = BuiltInNodeDefinitions.find((node) => node.type === type);
+    const definition = definitions.find((node) => node.type === type);
     const prefab = payload.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId) : null;
     setLibraryDragGhost({ x: (event.clientX + 14) / uiScale, y: (event.clientY + 12) / uiScale, type, label: prefab?.name || definition?.label || payload.prefabNode?.label || 'Node', color: definition?.color || '#778196' });
   };
@@ -337,7 +338,7 @@ export function GraphLibraryPanel({
         {!filteredTemplates.length && <div className="graph-library-empty">{templates.length ? 'No matching templates' : 'No templates'}</div>}
       </>}
       {activeSection === 'nodes' && <>
-        <div className="graph-library-section-heading graph-library-subsection"><span><FileCode2 size={13} /> Node library</span><small>{BuiltInNodeDefinitions.filter((node) => !node.hidden).length}</small></div>
+        <div className="graph-library-section-heading graph-library-subsection"><span><FileCode2 size={13} /> Node library</span><small>{definitions.filter((node) => !node.hidden).length}</small></div>
         <section className="graph-library-frequent">
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentNodes.length} / 5</small></div>
           {frequentNodes.length > 0
@@ -350,9 +351,9 @@ export function GraphLibraryPanel({
           </button>
           {(isSearching || expandedNodeGroups[category]) && <div className="graph-library-children" role="group">{items.map((node) => renderNodeEntry(node))}</div>}
         </section>)}
-        <div className="graph-library-section-heading graph-library-subsection"><span><BookmarkPlus size={13} /> Saved nodes</span><small>{nodePrefabs.length}</small></div>
+        <div className="graph-library-section-heading graph-library-subsection"><span><BookmarkPlus size={13} /> Saved nodes</span><small>{compatiblePrefabs.length}</small></div>
         {filteredPrefabs.map((prefab) => {
-          const definition = BuiltInNodeDefinitions.find((node) => node.type === prefab.node?.type);
+          const definition = definitions.find((node) => node.type === prefab.node?.type);
           const pluginTooltip = `Plugin node from ${definition?.pluginName || definition?.pluginId || 'an installed plugin'}`;
           return <div className={`graph-library-item ${contextMenu?.kind === 'prefab' && contextMenu.graph?.id === prefab.id ? 'is-context-menu-open' : ''}`} key={prefab.id} onContextMenu={(event) => openPrefabMenu(event, prefab)}>
           <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onDragEnd={finishNodeDrag} onClick={() => onAddPrefab?.(prefab)} title="Drag to canvas or click to add" aria-label={definition?.pluginAdapter ? `${prefab.name || 'Node prefab'}. ${pluginTooltip}` : undefined}><NodeTypeIcon type={prefab.node?.type} color={definition?.color} size={14} /><span>{prefab.name || 'Node prefab'}</span>{definition?.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={pluginTooltip} aria-label={pluginTooltip}><Puzzle size={12} /></span>}</button>
@@ -425,7 +426,7 @@ export function GraphLibraryPanel({
     </div>, document.body)}
     {compareSnapshot && activeGraph && <div className="graph-snapshot-overlay" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget) setCompareSnapshot(null); }}><section className="graph-snapshot-dialog" role="dialog" aria-modal="true" aria-labelledby="snapshot-compare-title">
       <header><div><strong id="snapshot-compare-title">Snapshot comparison</strong><span>{compareSnapshot.name} → current graph</span></div><button onClick={() => setCompareSnapshot(null)} aria-label="Close comparison"><X size={14} /></button></header>
-      <SnapshotComparison base={compareSnapshot.graph} current={activeGraph} />
+      <SnapshotComparison base={compareSnapshot.graph} current={activeGraph} definitions={definitions} />
       <footer><button onClick={() => { onRestoreSnapshot?.(compareSnapshot); setCompareSnapshot(null); }}><RotateCcw size={13} />Restore snapshot</button><button onClick={() => setCompareSnapshot(null)}>Close</button></footer>
     </section></div>}
   </aside>;
@@ -476,7 +477,7 @@ function readLibraryTransferText(dataTransfer) {
   try { return dataTransfer.getData('text/plain') || ''; } catch { return ''; }
 }
 
-function SnapshotComparison({ base, current }) {
+function SnapshotComparison({ base, current, definitions = BuiltInNodeDefinitions }) {
   const before = new Map((base.nodes || []).map((node) => [node.id, node]));
   const after = new Map((current.nodes || []).map((node) => [node.id, node]));
   const added = [...after.values()].filter((node) => !before.has(node.id));
@@ -492,7 +493,7 @@ function SnapshotComparison({ base, current }) {
   const addedVariables = [...afterVariables.keys()].filter((id) => !beforeVariables.has(id));
   const removedVariables = [...beforeVariables.keys()].filter((id) => !afterVariables.has(id));
   const changedVariables = [...afterVariables.keys()].filter((id) => beforeVariables.has(id) && JSON.stringify(beforeVariables.get(id)) !== JSON.stringify(afterVariables.get(id)));
-  const label = (node) => node.label || BuiltInNodeDefinitions.find((definition) => definition.type === node.type)?.label || node.type;
+  const label = (node) => node.label || definitions.find((definition) => definition.type === node.type)?.label || node.type;
   return <div className="graph-snapshot-diff">
     <div className="graph-snapshot-diff-counts"><span><b>{added.length}</b> nodes added</span><span><b>{changed.length}</b> nodes changed</span><span><b>{removed.length}</b> nodes removed</span><span><b>+{addedWires.length} / −{removedWires.length}</b> wires</span><span><b>+{addedVariables.length} / ~{changedVariables.length} / −{removedVariables.length}</b> variables</span></div>
     {[['Added', added], ['Changed', changed], ['Removed', removed]].map(([heading, nodes]) => nodes.length > 0 && <section key={heading}><strong>{heading}</strong>{nodes.map((node) => <span key={node.id}>{label(node)}</span>)}</section>)}
