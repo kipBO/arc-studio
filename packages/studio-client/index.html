@@ -18,6 +18,38 @@
     <meta name="twitter:description" content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace." />
     <meta name="twitter:image" content="/arc.png" />
     <link rel="icon" type="image/png" href="/arc.png" />
+    <script>
+      (() => {
+        const reloadKey = 'arc:stale-client-reload-at';
+        const getSessionValue = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
+        const setSessionValue = (key, value) => { try { sessionStorage.setItem(key, value); return true; } catch { return false; } };
+        window.addEventListener('vite:preloadError', (event) => {
+          event.preventDefault();
+          const now = Date.now();
+          const lastReload = Number(getSessionValue(reloadKey) || 0);
+          if ((!lastReload || now - lastReload > 15000) && setSessionValue(reloadKey, String(now))) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('__arc_refresh', String(now));
+            window.location.replace(url);
+          } else {
+            console.error('ARC Studio could not load a client module after refreshing. Reload the page to try again.', event.payload);
+          }
+        });
+
+        if ('serviceWorker' in navigator) {
+          window.addEventListener('load', () => {
+            navigator.serviceWorker.getRegistrations().then(async (registrations) => {
+              if (!registrations.length) return;
+              await Promise.all(registrations.map((registration) => registration.unregister()));
+              const cleanupKey = 'arc:service-worker-cleanup';
+              if (!getSessionValue(cleanupKey) && setSessionValue(cleanupKey, '1')) {
+                window.location.reload();
+              }
+            }).catch(() => {});
+          });
+        }
+      })();
+    </script>
   </head>
   <body autocapitalize="off" autocorrect="off">
     <div id="top-loading-bar" aria-hidden="true"></div>
@@ -25,10 +57,5 @@
     <div id="root"></div>
 
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
-        window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
-      }
-    </script>
   </body>
 </html>
