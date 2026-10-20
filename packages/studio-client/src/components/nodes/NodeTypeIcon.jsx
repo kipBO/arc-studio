@@ -3,9 +3,9 @@ import {
   Activity, ArrowDown, ArrowLeftRight, ArrowUp, Asterisk, BarChart3, CaseSensitive,
   CircleDot, Database, Divide, Dices, GitBranch, GitCompare, GitFork, GitMerge, Hash, KeyRound,
   LockKeyhole, LogIn, LogOut, MessageSquare, MessageSquareReply, Minus,
-  MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Send, ShieldCheck,
+  MousePointerClick, PanelsTopLeft, Percent, Pi, Plus, Power, Search, Send, ShieldCheck,
   Slash, SlidersHorizontal, Square, SquareFunction, Sigma, TextCursorInput,
-  Timer, ToggleLeft, TrendingUp, Type, UnlockKeyhole, UserRoundPlus, Workflow, RefreshCw
+  Timer, ToggleLeft, TrendingUp, Type, UnlockKeyhole, UserRoundPlus, Workflow, RefreshCw, ListFilter
 } from 'lucide-react';
 //
 const icons = {
@@ -57,6 +57,7 @@ const icons = {
   function_call: Workflow,
   function_math: CalculatorIcon,
   branch_if: GitBranch,
+  branch_switch: GitBranch,
   parallel: GitFork,
   parallel_join: GitMerge,
   compare_text: CaseSensitive,
@@ -71,6 +72,11 @@ const icons = {
   value_text: Type,
   value_number: Hash,
   value_boolean: ToggleLeft,
+  data_check_value: CircleDot,
+  data_get_value_by_path: Database,
+  data_find_array_item: Search,
+  data_filter_array: ListFilter,
+  data_format_number: CalculatorIcon,
   format_text: TextCursorInput,
   build_embed: PanelsTopLeft,
   modify_embed: PanelsTopLeft,
