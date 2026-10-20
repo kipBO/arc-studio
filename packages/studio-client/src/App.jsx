@@ -3,7 +3,13 @@ import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database,
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
-const lazyNamed = (loader, name) => lazy(() => loader().then((module) => ({ default: module[name] })));
+const lazyNamed = (loader, name) => {
+  let modulePromise;
+  const load = () => modulePromise ||= loader().then((module) => ({ default: module[name] }));
+  const Component = lazy(load);
+  Component.preload = load;
+  return Component;
+};
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -19,6 +25,9 @@ const PopupModalStudioView = lazyNamed(() => import('./components/panels/PopupMo
 const GraphValidationModal = lazyNamed(() => import('./components/modals/GraphValidationModal.jsx'), 'GraphValidationModal');
 const BotSettingsModal = lazyNamed(() => import('./components/modals/BotSettingsModal.jsx'), 'BotSettingsModal');
 const PluginStoreModal = lazyNamed(() => import('./components/modals/PluginStoreModal.jsx'), 'PluginStoreModal');
+[NodePalette, CommandPalette, EditorSettingsModal, GraphVariablesModal, GraphLibraryPanel, BotSettingsModal].forEach((Component) => {
+  void Component.preload().catch(() => {});
+});
 import { ToastContainer } from './components/ui/ToastContainer.jsx';
 import { Modal } from './components/ui/Modal.jsx';
 import { TextInput } from './components/ui/Inputs.jsx';
@@ -33,7 +42,7 @@ import { xhrJson } from './core/xhrJson.js';
 import { readAppStorage, removeAppStorage, writeAppStorage } from './core/storage.js';
 import { getArcUiScale } from './core/uiScale.js';
 import studioPackage from '../package.json';
-import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
+import { classifyArcUpdate, compareArcVersions, getArcVersionDistance } from './core/appUpdates.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
@@ -47,6 +56,7 @@ const LEGACY_EMBED_PIN_FIELDS = {
 };
 const DEFAULT_SETTINGS = {
   snapToGrid: true,
+  zoomCanvasWithScroll: false,
   wirePulse: true,
   wireStyle: 'bezier',
   doubleClickWireToCut: false,
@@ -351,9 +361,46 @@ function readBrowserStudioRoute() {
       graphId: match?.[2] ? decodeURIComponent(match[2]) : '',
       nodeId: params.get('node') || '',
       panel: params.get('panel') || '',
-      librarySection: params.get('library') || ''
+      librarySection: params.get('library') || '',
+      variableScope: params.get('variableScope') || '',
+      emptyWorkspace: params.get('empty') === '1',
+      studio: {
+        kind: params.get('studio') || '',
+        nodeId: params.get('studioNode') || '',
+        fieldKey: params.get('studioField') || '',
+        label: params.get('studioLabel') || '',
+        maxLength: Number(params.get('studioMax')) || 0,
+        scope: params.get('studioScope') || '',
+        variableId: params.get('studioVariable') || '',
+        mode: params.get('studioMode') || '',
+        tab: params.get('studioTab') || '',
+        assetId: params.get('studioAsset') || '',
+        blockId: params.get('studioBlock') || '',
+        blockKey: params.get('studioBlockField') || ''
+      }
     };
-  } catch { return { projectId: '', graphId: '', nodeId: '', panel: '', librarySection: '' }; }
+  } catch { return { projectId: '', graphId: '', nodeId: '', panel: '', librarySection: '', variableScope: '', emptyWorkspace: false, studio: { kind: '' } }; }
+}
+
+function writeStudioRouteParams(params, route) {
+  if (!route?.kind) return;
+  const fields = {
+    studio: route.kind,
+    studioNode: route.nodeId,
+    studioField: route.fieldKey,
+    studioLabel: route.label,
+    studioMax: route.maxLength,
+    studioScope: route.scope,
+    studioVariable: route.variableId,
+    studioMode: route.mode,
+    studioTab: route.tab,
+    studioAsset: route.assetId,
+    studioBlock: route.blockId,
+    studioBlockField: route.blockKey
+  };
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined && value !== null && String(value) !== '') params.set(key, String(value));
+  }
 }
 //
 export function App() {
@@ -363,6 +410,8 @@ export function App() {
   if (!desktopMode && initialBrowserRouteRef.current === null) initialBrowserRouteRef.current = readBrowserStudioRoute();
   const browserRouteHandledRef = useRef(false);
   const browserProjectSwitchRef = useRef(false);
+  const browserInitialRouteSettledRef = useRef(false);
+  const browserStudioRestorePendingRef = useRef(Boolean(initialBrowserRouteRef.current?.studio?.kind));
   const shortcutPlatform = window.__ARC_STUDIO_CONFIG__?.platform || (/Mac|iPhone|iPad/.test(navigator.platform) ? 'macos' : 'windows');
   const macOSDesktop = desktopMode && shortcutPlatform === 'macos';
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
@@ -385,6 +434,12 @@ export function App() {
     try { return desktopMode ? (localStorage.getItem('arc_remote_workspace_name') || '').slice(0, 35) : ''; }
     catch { return ''; }
   });
+  const [supportedWorkspaceNodeTypes, setSupportedWorkspaceNodeTypes] = useState(null);
+  const [workspaceCompatibilityNotice, setWorkspaceCompatibilityNotice] = useState('');
+  const [pluginDefinitionsRevision, setPluginDefinitionsRevision] = useState(0);
+  const availableNodeDefinitions = useMemo(() => supportedWorkspaceNodeTypes
+    ? BuiltInNodeDefinitions.filter((definition) => supportedWorkspaceNodeTypes.has(definition.type))
+    : BuiltInNodeDefinitions, [pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
@@ -400,10 +455,16 @@ export function App() {
   const [localSessionRestoreReady, setLocalSessionRestoreReady] = useState(() => !desktopMode || workspaceMode !== 'local' || Boolean(getInitialAuthToken(desktopMode)));
   const [currentUser, setCurrentUser] = useState(null);
   const [collaborators, setCollaborators] = useState([]);
+  const [projectCollaboration, setProjectCollaboration] = useState({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
   const [remoteCollaborationActions, setRemoteCollaborationActions] = useState([]);
+  const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
+  const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
   const remoteGraphConflictsRef = useRef(new Set());
+  const noteEditConflictToastRef = useRef(new Set());
   const [socketReadyRevision, setSocketReadyRevision] = useState(0);
+  const socketReadyRevisionRef = useRef(socketReadyRevision);
+  socketReadyRevisionRef.current = socketReadyRevision;
   const [liveSyncRevision, setLiveSyncRevision] = useState(0);
   const [localAccountUsername, setLocalAccountUsername] = useState('');
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -483,12 +544,12 @@ export function App() {
   const [newProjectTemplate, setNewProjectTemplate] = useState('ticket');
   const [projectNameManuallyEdited, setProjectNameManuallyEdited] = useState(false);
   const [isPluginStoreOpen, setIsPluginStoreOpen] = useState(false);
-  const [pluginDefinitionsRevision, setPluginDefinitionsRevision] = useState(0);
   const [installedPlugins, setInstalledPlugins] = useState([]);
   const [isBotSettingsOpen, setIsBotSettingsOpen] = useState(false);
   const [isBotSidebarOpen, setIsBotSidebarOpen] = useState(false);
   const [commandBrowserRequest, setCommandBrowserRequest] = useState(0);
   const [isVariablesOpen, setIsVariablesOpen] = useState(false);
+  const [variableScope, setVariableScope] = useState('project');
   const [paletteNodePosition, setPaletteNodePosition] = useState(null);
   const viewportCenterRef = useRef({ x: 0, y: 0 });
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
@@ -528,6 +589,14 @@ export function App() {
     writeAppStorage(emojiCacheStorageKey, JSON.stringify({ cachedAt, emojis: list }));
   }, [emojiCacheStorageKey]);
   const [tabs, setTabs] = useState([]);
+  const projectTabSyncRef = useRef({ projectId: '', socketRevision: -1, graphIds: [] });
+  const projectTabStartupPendingRef = useRef(!localDesktopWorkspace);
+  const projectTabStartupBaselineRef = useRef(new Set());
+  const projectTabSafeRestorePendingRef = useRef(!localDesktopWorkspace);
+  const projectTabSafeRestoreProjectRef = useRef('');
+  const remoteProjectTabGraphsRef = useRef(new Map());
+  const unsharedProjectTabIdsRef = useRef(new Set());
+  const remoteTabCloseNoticeRef = useRef(new Set());
   const initialGraphStatesRef = useRef(new Map());
   const [savedGraphs, setSavedGraphs] = useState([]);
   useEffect(() => {
@@ -766,6 +835,15 @@ export function App() {
   const [activePulseNodeIds, setActivePulseNodeIds] = useState([]);
   const [activePulseGraphId, setActivePulseGraphId] = useState(null);
   const [nodeFocusRequest, setNodeFocusRequest] = useState(null);
+  const followCollaborator = (userId, graphId) => {
+    if (!userId || !graphId) return;
+    const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+    setActiveTabId(graphId);
+    rememberUserGraph(graphId);
+    setFollowCollaboratorRequest({ userId, graphId, requestId });
+    window.setTimeout(() => setFollowCollaboratorRequest((current) => current?.requestId === requestId ? null : current), 5000);
+  };
+  const completeFollowCollaborator = useCallback((requestId) => setFollowCollaboratorRequest((current) => current?.requestId === requestId ? null : current), []);
   const handleCanvasNodeSelect = useCallback((nodeId) => setSelectedCanvasNodeId(nodeId || ''), []);
   useEffect(() => { setSelectedCanvasNodeId(''); setSelectedCanvasNodeCount(0); }, [activeTabId]);
   const traceRequestIdRef = useRef(0);
@@ -773,6 +851,8 @@ export function App() {
   const [logs, setLogs] = useState([]);
   const wsRef = useRef(null);
   const sendCollaborationAction = useCallback((action, immediate = false) => {
+    const activeSocket = wsRef.current;
+    if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
     const entry = { action, projectId: activeProjectId, graphId: activeTabId };
     const actionKey = `${action.kind}:${action.studioId || ''}`;
     pendingCollaborationActionRef.current.set(actionKey, entry);
@@ -790,6 +870,17 @@ export function App() {
     } else if (!collaborationActionTimerRef.current) {
       collaborationActionTimerRef.current = window.setTimeout(flush, 40);
     }
+  }, [activeProjectId, activeTabId]);
+  const requestNoteEditLock = useCallback((noteId) => {
+    const socket = wsRef.current;
+    if (!noteId || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
+      || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'NOTE_EDIT_LOCK_REQUEST', projectId: activeProjectId, graphId: activeTabId, noteId, clientId: collaborationClientIdRef.current }));
+  }, [activeProjectId, activeTabId]);
+  const releaseNoteEditLock = useCallback((noteId) => {
+    const socket = wsRef.current;
+    if (!noteId || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ type: 'NOTE_EDIT_LOCK_RELEASE', projectId: activeProjectId, graphId: activeTabId, noteId, clientId: collaborationClientIdRef.current }));
   }, [activeProjectId, activeTabId]);
   useEffect(() => {
     setRemoteCollaborationActions([]);
@@ -840,7 +931,7 @@ export function App() {
       const definition = BuiltInNodeDefinitions.find((item) => item.type === source.type);
       const type = definition?.outputs?.find((pin) => pin.id === sourcePinId)?.type;
       if (type !== 'object') return type || null;
-      if (['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type)) return 'array';
+      if (['data_array_create', 'data_array_append', 'data_array_concat'].includes(source.type) || source.type === 'data_regex' && ['captures', 'matches'].includes(sourcePinId)) return 'array';
       if (source.type === 'data_parse_json' && !graphConnections.some((item) => item.targetNodeId === source.id && item.targetPinId === 'json')) {
         try { return Array.isArray(JSON.parse(source.data?.json || '')) ? 'array' : 'object'; } catch {}
       }
@@ -853,7 +944,7 @@ export function App() {
       const inferredType = wire ? resolveNodeType(wire.sourceNodeId, wire.sourcePinId) : null;
       const type = ['string', 'number', 'boolean', 'array', 'object'].includes(inferredType) ? inferredType
         : ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
-      return [{ id: `nodevar_${node.id}`, name, type, initialValue: wire ? defaultValue(type) : node.data?.value ?? defaultValue(type), persist: true, nodeOwned: true, sourceNodeId: node.id }];
+      return [{ id: `nodevar_${node.id}`, name, type, initialValue: wire ? defaultValue(type) : node.data?.value ?? defaultValue(type), persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
     });
     const existingIds = new Set(savedVariables.map((item) => item.id));
     return [...savedVariables, ...createdVariables.filter((variable) => !existingIds.has(variable.id))];
@@ -1203,6 +1294,32 @@ export function App() {
       .then(async (system) => {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
+        if (desktopMode && workspaceMode === 'remote') {
+          const serverVersion = String(system.version || '').trim();
+          const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
+          const versionDistance = getArcVersionDistance(serverVersion, studioPackage.version);
+          if (versionOrder === null || versionDistance === null) throw new Error('This workspace does not report a version ARC Studio can verify.');
+          if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app. Update the workspace server before connecting.`);
+          if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app. Update the desktop app before connecting.`);
+          let serverNodeTypes = system.supportedNodeTypes;
+          if (!Array.isArray(serverNodeTypes)) {
+            const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-store' });
+            const registry = registryResponse.ok ? await registryResponse.json().catch(() => null) : null;
+            const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
+            serverNodeTypes = definitions?.map((definition) => definition?.type) || null;
+          }
+          if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
+          const serverNodeTypeSet = new Set(serverNodeTypes);
+          const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
+          const unsupportedCount = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type)).length;
+          if (unsupportedCount) throw new Error(`This workspace uses ${unsupportedCount} node feature${unsupportedCount === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
+          const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
+          setSupportedWorkspaceNodeTypes(serverNodeTypeSet);
+          setWorkspaceCompatibilityNotice(hiddenCount
+            ? `${hiddenCount} node type${hiddenCount === 1 ? ' is' : 's are'} hidden because this workspace does not support ${hiddenCount === 1 ? 'it' : 'them'}.`
+            : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}; some server features may be unavailable.`
+              : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}; some features may not be available in this desktop app.` : '');
+        }
         if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
         if (!desktopMode && typeof system.version === 'string' && system.version.trim()) setStudioVersion(system.version.trim());
         if (desktopMode && workspaceMode === 'local') {
@@ -1388,6 +1505,7 @@ export function App() {
 
     const connect = () => {
       if (!active) return;
+      collaborationClientIdRef.current = globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setCollaborationSocketStatus('connecting');
       socket = new WebSocket(wsUrl);
       wsRef.current = socket;
@@ -1492,6 +1610,11 @@ export function App() {
           if (msg.type === 'INIT_STATE') {
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
             setCollaborationSocketStatus('connected');
+            window.clearTimeout(collaborationActionTimerRef.current);
+            collaborationActionTimerRef.current = null;
+            pendingCollaborationActionRef.current.clear();
+            setRemoteCollaborationActions([]);
+            setNoteEditLockState({ roomKey: '', locks: {} });
             liveGraphRevisionRef.current.clear();
             liveGraphReadyRef.current.clear();
             lastLiveGraphSentRef.current.clear();
@@ -1521,27 +1644,35 @@ export function App() {
               setSavedGraphs(graphs);
               if (!graphsHydratedRef.current) {
                 graphsHydratedRef.current = true;
-                let storedIds = null;
-                try {
-                  const projectId = msg.payload.projects?.activeProjectId;
-                  const scopedKey = projectId ? `arc_project_${projectId}_arc_open_graph_ids` : 'arc_open_graph_ids';
-                  let rawIds = readAppStorage(scopedKey);
-                  if (rawIds === null && projectId) {
-                    rawIds = readAppStorage('arc_open_graph_ids');
-                    if (rawIds !== null) writeAppStorage(scopedKey, rawIds);
-                  }
-                  if (rawIds !== null) {
-                    const parsed = JSON.parse(rawIds);
-                    storedIds = Array.isArray(parsed) ? parsed : [];
-                  }
-                } catch { storedIds = []; }
-                const savedById = new Map(graphs.map((graph) => [graph.id, graph]));
-                const opened = (storedIds === null ? graphs : storedIds.map((id) => savedById.get(id)).filter(Boolean)).slice(0, MAX_OPEN_GRAPH_TABS);
-                const projectId = msg.payload.projects?.activeProjectId;
-                let preferredId = projectId
-                  ? safeStorageGet(`arc_project_${projectId}_arc_active_graph_id`, '')
-                  : safeStorageGet('arc_active_graph_id', '');
-                if (!opened.some((graph) => graph.id === preferredId)) preferredId = opened[0]?.id || null;
+                const projectId = msg.payload.projects?.activeProjectId || '';
+                let opened = [];
+                let preferredId = null;
+                if (localDesktopWorkspace) {
+                  let storedIds = null;
+                  try {
+                    const scopedKey = projectId ? `arc_project_${projectId}_arc_open_graph_ids` : 'arc_open_graph_ids';
+                    let rawIds = readAppStorage(scopedKey);
+                    if (rawIds === null && projectId) {
+                      rawIds = readAppStorage('arc_open_graph_ids');
+                      if (rawIds !== null) writeAppStorage(scopedKey, rawIds);
+                    }
+                    if (rawIds !== null) {
+                      const parsed = JSON.parse(rawIds);
+                      storedIds = Array.isArray(parsed) ? parsed : [];
+                    }
+                  } catch { storedIds = []; }
+                  const savedById = new Map(graphs.map((graph) => [graph.id, graph]));
+                  opened = (storedIds === null ? graphs : storedIds.map((id) => savedById.get(id)).filter(Boolean)).slice(0, MAX_OPEN_GRAPH_TABS);
+                  preferredId = projectId
+                    ? safeStorageGet(`arc_project_${projectId}_arc_active_graph_id`, '')
+                    : safeStorageGet('arc_active_graph_id', '');
+                  if (!opened.some((graph) => graph.id === preferredId)) preferredId = opened[0]?.id || null;
+                } else {
+                  projectTabStartupPendingRef.current = true;
+                  projectTabSafeRestorePendingRef.current = true;
+                  projectTabSafeRestoreProjectRef.current = projectId;
+                  projectTabStartupBaselineRef.current = new Set();
+                }
                 setTabs(opened);
                 setActiveTabId(preferredId);
               }
@@ -1574,19 +1705,66 @@ export function App() {
             setBotStatus('DISCONNECTED');
             setTabs([]);
             setActiveTabId(null);
+            if (!localDesktopWorkspace) {
+              projectTabStartupPendingRef.current = true;
+              projectTabSafeRestorePendingRef.current = true;
+              projectTabSafeRestoreProjectRef.current = nextProjectId;
+              projectTabStartupBaselineRef.current = new Set();
+            }
             historyRef.current.clear();
             graphsHydratedRef.current = true;
-            const graphs = Array.isArray(payload.graphs) ? payload.graphs : [];
-            const byId = new Map(graphs.map((graph) => [graph.id, graph]));
-            let ids = [];
-            try { ids = JSON.parse(safeStorageGet(`arc_project_${nextProjectId}_arc_open_graph_ids`, '[]')); } catch {}
-            const opened = (Array.isArray(ids) ? ids.map((id) => byId.get(id)).filter(Boolean) : []).slice(0, MAX_OPEN_GRAPH_TABS);
-            setTabs(opened);
-            const preferred = safeStorageGet(`arc_project_${nextProjectId}_arc_active_graph_id`, '');
-            setActiveTabId(opened.some((graph) => graph.id === preferred) ? preferred : opened[0]?.id || null);
+            if (localDesktopWorkspace) {
+              const graphs = Array.isArray(payload.graphs) ? payload.graphs : [];
+              const byId = new Map(graphs.map((graph) => [graph.id, graph]));
+              let ids = [];
+              try { ids = JSON.parse(safeStorageGet(`arc_project_${nextProjectId}_arc_open_graph_ids`, '[]')); } catch {}
+              const opened = (Array.isArray(ids) ? ids.map((id) => byId.get(id)).filter(Boolean) : []).slice(0, MAX_OPEN_GRAPH_TABS);
+              setTabs(opened);
+              const preferred = safeStorageGet(`arc_project_${nextProjectId}_arc_active_graph_id`, '');
+              setActiveTabId(opened.some((graph) => graph.id === preferred) ? preferred : opened[0]?.id || null);
+            } else {
+              projectTabStartupPendingRef.current = true;
+              projectTabSafeRestorePendingRef.current = true;
+              projectTabSafeRestoreProjectRef.current = nextProjectId;
+              projectTabStartupBaselineRef.current = new Set();
+              setTabs([]);
+              setActiveTabId(null);
+            }
             setWorkspaceRevision((revision) => revision + 1);
           } else if (msg.type === 'PROJECT_VARIABLES_UPDATED') {
             setProjectVariables(Array.isArray(msg.payload.variables) ? msg.payload.variables : []);
+          } else if (msg.type === 'NOTE_EDIT_LOCKS_UPDATED') {
+            const payload = msg.payload || {};
+            if (payload.projectId !== activeProjectIdRef.current || payload.graphId !== activeTabIdRef.current) return;
+            const locks = Object.fromEntries((Array.isArray(payload.locks) ? payload.locks : []).filter((lock) => lock && typeof lock.noteId === 'string').map((lock) => [lock.noteId, lock]));
+            setNoteEditLockState({ roomKey: `${payload.projectId}:${payload.graphId}`, locks });
+          } else if (msg.type === 'NOTE_EDIT_LOCK_REJECTED') {
+            const payload = msg.payload || {};
+            if (payload.projectId === activeProjectIdRef.current && payload.graphId === activeTabIdRef.current) {
+              arcEvents.emit('toast:notify', { title: 'Note edit unavailable', message: payload.message || 'This note is no longer available.', type: 'warning' });
+            }
+          } else if (msg.type === 'NOTE_EDIT_LOCK_LOST' || msg.type === 'NOTE_EDIT_REJECTED') {
+            const payload = msg.payload || {};
+            if (payload.projectId !== activeProjectIdRef.current || typeof payload.noteId !== 'string') return;
+            setTabs((previous) => previous.map((tab) => {
+              if (tab.id !== payload.graphId) return tab;
+              const notes = Array.isArray(tab.notes) ? tab.notes : [];
+              const nextNotes = payload.note && payload.note.id === payload.noteId
+                ? (notes.some((note) => note.id === payload.noteId) ? notes.map((note) => note.id === payload.noteId ? payload.note : note) : [...notes, payload.note])
+                : notes.filter((note) => note.id !== payload.noteId);
+              const next = { ...tab, notes: nextNotes };
+              const saved = savedGraphsRef.current.find((graph) => graph.id === tab.id);
+              return { ...next, isDirty: saved ? !sameGraphContent(next, saved) : true };
+            }));
+            if (msg.type === 'NOTE_EDIT_LOCK_LOST') {
+              arcEvents.emit('toast:notify', { title: 'Note edit lock expired', message: 'The shared note was restored before editing continued.', type: 'warning' });
+            } else {
+              const key = `${payload.graphId}:${payload.noteId}`;
+              if (!noteEditConflictToastRef.current.has(key)) {
+                noteEditConflictToastRef.current.add(key);
+                arcEvents.emit('toast:notify', { title: 'Note edit was not shared', message: 'This note is being edited by another collaborator. The shared note text has been restored.', type: 'warning' });
+              }
+            }
           } else if (msg.type === 'GRAPH_STATE_SYNC' && msg.payload?.graphId) {
             const payload = msg.payload;
             if (payload.projectId !== activeProjectIdRef.current) return;
@@ -1663,6 +1841,79 @@ export function App() {
             setCollaborators(Array.isArray(msg.payload) ? msg.payload : []);
           } else if (msg.type === 'PROJECT_USERS_UPDATED') {
             setProjectUsers(msg.payload && typeof msg.payload === 'object' ? msg.payload : {});
+          } else if (msg.type === 'PROJECT_TAB_GRAPH_UPDATED') {
+            const payload = msg.payload || {};
+            const graph = payload.graph;
+            if (payload.projectId !== activeProjectIdRef.current || !graph?.id || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) return;
+            remoteProjectTabGraphsRef.current.set(`${payload.projectId}:${graph.id}`, graph);
+            unsharedProjectTabIdsRef.current.delete(`${payload.projectId}:${graph.id}`);
+            if (!projectTabStartupPendingRef.current && !savedGraphsRef.current.some((item) => item.id === graph.id)) {
+              setTabs((previous) => previous.some((item) => item.id === graph.id) || previous.length >= MAX_OPEN_GRAPH_TABS
+                ? previous
+                : [...previous, { ...graph, isDirty: false }]);
+            }
+          } else if (msg.type === 'PROJECT_TAB_REJECTED') {
+            const payload = msg.payload || {};
+            if (payload.projectId !== activeProjectIdRef.current || typeof payload.graphId !== 'string') return;
+            const localTab = tabsRef.current.find((tab) => tab.id === payload.graphId);
+            const saved = savedGraphsRef.current.some((graph) => graph.id === payload.graphId);
+            if (payload.reason === 'limit' && localTab && saved && !localTab.isDirty) {
+              const remaining = tabsRef.current.filter((tab) => tab.id !== payload.graphId);
+              setTabs(remaining);
+              if (activeTabIdRef.current === payload.graphId) setActiveTabId(remaining[0]?.id || null);
+              if (projectTabSyncRef.current.projectId === payload.projectId) {
+                projectTabSyncRef.current.graphIds = projectTabSyncRef.current.graphIds.filter((id) => id !== payload.graphId);
+              }
+              arcEvents.emit('toast:notify', { title: 'Shared tab limit reached', message: payload.message || 'Close a shared graph tab before opening another.', type: 'warning' });
+              return;
+            }
+            unsharedProjectTabIdsRef.current.add(`${payload.projectId}:${payload.graphId}`);
+            if (projectTabSyncRef.current.projectId === payload.projectId) {
+              projectTabSyncRef.current.graphIds = projectTabSyncRef.current.graphIds.filter((id) => id !== payload.graphId);
+            }
+            arcEvents.emit('toast:notify', { title: 'Graph tab not shared', message: payload.message || 'Save this graph, then reopen it to share the tab.', type: 'warning' });
+          } else if (msg.type === 'PROJECT_COLLABORATION_UPDATED') {
+            const payload = msg.payload || {};
+            if (payload.projectId !== activeProjectIdRef.current) return;
+            const graphIds = [...new Set((Array.isArray(payload.graphIds) ? payload.graphIds : []).filter((id) => typeof id === 'string'))].slice(0, MAX_OPEN_GRAPH_TABS);
+            setProjectCollaboration({ ...payload, graphIds, users: Array.isArray(payload.users) ? payload.users : [] });
+            if (!payload.tabsInitialized) return;
+            if (!localDesktopWorkspace && projectTabStartupPendingRef.current) {
+              projectTabStartupBaselineRef.current = new Set(graphIds);
+              projectTabStartupPendingRef.current = false;
+              projectTabSyncRef.current = {
+                projectId: payload.projectId,
+                socketRevision: socketReadyRevisionRef.current,
+                graphIds: tabsRef.current.map((tab) => tab.id)
+              };
+              return;
+            }
+            const knownGraphs = new Map([...remoteProjectTabGraphsRef.current.values(), ...savedGraphsRef.current, ...tabsRef.current].map((graph) => [graph.id, graph]));
+            const dirtyTabsToPreserve = tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id));
+            let effectiveGraphIds = graphIds;
+            if (!localDesktopWorkspace) {
+              const previousSharedIds = projectTabStartupBaselineRef.current;
+              const newlySharedIds = graphIds.filter((id) => !previousSharedIds.has(id));
+              const closedSharedIds = new Set([...previousSharedIds].filter((id) => !graphIds.includes(id)));
+              const stillOpenLocalIds = tabsRef.current.filter((tab) => !closedSharedIds.has(tab.id)).map((tab) => tab.id);
+              effectiveGraphIds = [...new Set([...stillOpenLocalIds, ...newlySharedIds])];
+              projectTabStartupBaselineRef.current = new Set(graphIds);
+            }
+            effectiveGraphIds = [...effectiveGraphIds, ...dirtyTabsToPreserve.map((tab) => tab.id)];
+            projectTabSyncRef.current = { projectId: payload.projectId, socketRevision: socketReadyRevisionRef.current, graphIds: effectiveGraphIds };
+            const nextTabs = effectiveGraphIds.map((id) => knownGraphs.get(id)).filter(Boolean);
+            const retainedGraphIds = new Set(effectiveGraphIds);
+            const remoteGraphPrefix = `${payload.projectId}:`;
+            for (const key of remoteProjectTabGraphsRef.current.keys()) {
+              if (key.startsWith(remoteGraphPrefix) && !retainedGraphIds.has(key.slice(remoteGraphPrefix.length))) remoteProjectTabGraphsRef.current.delete(key);
+            }
+            for (const tab of dirtyTabsToPreserve) {
+              if (remoteTabCloseNoticeRef.current.has(tab.id)) continue;
+              remoteTabCloseNoticeRef.current.add(tab.id);
+              arcEvents.emit('toast:notify', { title: 'Unsaved graph kept open', message: `A collaborator closed “${tab.name || 'Untitled graph'}”, but your unsaved changes kept it open for everyone.`, type: 'warning' });
+            }
+            setTabs(nextTabs);
+            if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
           } else if (msg.type === 'COLLAB_ACTION_UPDATED') {
             const action = msg.payload;
             if (action?.projectId !== activeProjectIdRef.current || action?.graphId !== activeTabIdRef.current || action.userId === currentUser?.id) return;
@@ -1768,7 +2019,14 @@ export function App() {
       };
       socket.onclose = () => {
         window.clearInterval(heartbeatTimer);
+        window.clearTimeout(collaborationActionTimerRef.current);
+        collaborationActionTimerRef.current = null;
+        pendingCollaborationActionRef.current.clear();
         setRemoteCollaborationActions([]);
+        setCollaborators([]);
+        setProjectCollaboration({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
+        setNoteEditLockState({ roomKey: '', locks: {} });
+        setFollowCollaboratorRequest(null);
         if (active) setCollaborationSocketStatus('reconnecting');
         if (active) reconnectTimer = window.setTimeout(connect, 2500);
       };
@@ -1811,6 +2069,35 @@ export function App() {
   }, [activeProjectId, activeTabId, authToken, socketReadyRevision]);
 
   useEffect(() => {
+    if (!authToken || !activeProjectId || !graphsHydratedRef.current) return;
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const graphIds = tabs.map((tab) => tab.id).filter((id) => typeof id === 'string' && !unsharedProjectTabIdsRef.current.has(`${activeProjectId}:${id}`)).slice(0, MAX_OPEN_GRAPH_TABS);
+    const previous = projectTabSyncRef.current;
+    if (previous.projectId !== activeProjectId || previous.socketRevision !== socketReadyRevision) {
+      projectTabSyncRef.current = { projectId: activeProjectId, socketRevision: socketReadyRevision, graphIds };
+      socket.send(JSON.stringify({ type: 'PROJECT_TABS_SYNC', graphIds }));
+      return;
+    }
+    const previousIds = new Set(previous.graphIds);
+    const nextIds = new Set(graphIds);
+    projectTabSyncRef.current = { projectId: activeProjectId, socketRevision: socketReadyRevision, graphIds };
+    for (const graphId of previousIds) if (!nextIds.has(graphId)) socket.send(JSON.stringify({ type: 'PROJECT_TAB_CLOSE', graphId }));
+    for (const graphId of nextIds) if (!previousIds.has(graphId)) {
+      const graph = tabs.find((tab) => tab.id === graphId);
+      const isSaved = savedGraphsRef.current.some((item) => item.id === graphId);
+      let snapshot;
+      if (graph && !isSaved) {
+        try {
+          const candidate = snapshotGraph(graph);
+          if (JSON.stringify(candidate).length <= 30_000_000) snapshot = candidate;
+        } catch {}
+      }
+      socket.send(JSON.stringify({ type: 'PROJECT_TAB_OPEN', graphId, ...(snapshot ? { graph: snapshot } : {}) }));
+    }
+  }, [activeProjectId, authToken, socketReadyRevision, tabs, workspaceMode]);
+
+  useEffect(() => {
     if (!activeProjectId || !activeTabId) return undefined;
     const graph = tabs.find((tab) => tab.id === activeTabId);
     const socket = wsRef.current;
@@ -1835,11 +2122,41 @@ export function App() {
   }, [activeProjectId, activeTabId, liveSyncRevision, socketReadyRevision, tabs]);
 
   useEffect(() => {
-    if (!graphsHydratedRef.current || !activeProjectId) return;
+    if (!graphsHydratedRef.current || !activeProjectId || !localDesktopWorkspace) return;
     safeStorageSet(`arc_project_${activeProjectId}_arc_open_graph_ids`, JSON.stringify(tabs.map((tab) => tab.id)));
     if (activeTabId) safeStorageSet(`arc_project_${activeProjectId}_arc_active_graph_id`, activeTabId);
     else safeStorageRemove(`arc_project_${activeProjectId}_arc_active_graph_id`);
-  }, [tabs, activeTabId, activeProjectId]);
+  }, [tabs, activeTabId, activeProjectId, localDesktopWorkspace]);
+
+  useEffect(() => {
+    if (localDesktopWorkspace || !projectTabSafeRestorePendingRef.current || !activeProjectId || !currentUser?.id
+      || !graphsHydratedRef.current || projectTabSafeRestoreProjectRef.current !== activeProjectId
+      || !projectCollaboration.tabsInitialized || projectCollaboration.projectId !== activeProjectId) return;
+
+    const route = initialBrowserRouteRef.current;
+    if (route?.graphId || route?.emptyWorkspace || route?.studio?.kind) {
+      projectTabSafeRestorePendingRef.current = false;
+      return;
+    }
+
+    const restoreKey = `arc_project_${activeProjectId}_arc_user_${currentUser.id}_last_graph_id`;
+    const lastGraphId = safeStorageGet(restoreKey, '');
+    projectTabSafeRestorePendingRef.current = false;
+    if (!lastGraphId) return;
+
+    const anotherUserHasGraphOpen = projectCollaboration.users.some((user) => user.userId !== currentUser.id && user.graphIds?.includes(lastGraphId));
+    if (anotherUserHasGraphOpen) return;
+
+    const recentEditor = (projectCollaboration.graphActivity || []).find((entry) => entry.graphId === lastGraphId);
+    if (recentEditor?.userId && recentEditor.userId !== currentUser.id
+      && Date.now() - Number(recentEditor.updatedAt || 0) <= 30 * 60 * 1000) return;
+
+    const graph = savedGraphs.find((item) => item.id === lastGraphId)
+      || remoteProjectTabGraphsRef.current.get(`${activeProjectId}:${lastGraphId}`);
+    if (!graph || tabsRef.current.length >= MAX_OPEN_GRAPH_TABS) return;
+    setTabs([graph]);
+    setActiveTabId(graph.id);
+  }, [activeProjectId, currentUser?.id, localDesktopWorkspace, projectCollaboration, savedGraphs, socketReadyRevision]);
 
   useEffect(() => {
     if (!activeTabId) {
@@ -2049,6 +2366,7 @@ export function App() {
       });
       const data = response.data;
       if (!response.ok) throw new Error(data.error || 'Could not save graph.');
+      unsharedProjectTabIdsRef.current.delete(`${activeProjectId}:${graph.id}`);
       setTabs((previous) => previous.map((tab) => {
         if (tab.id !== graph.id) return tab;
         return sameGraphContent(tab, graphToSave) ? { ...data.graph, isDirty: false } : { ...tab, name: data.graph.name, isDirty: true };
@@ -2067,7 +2385,7 @@ export function App() {
       setGraphUploadProgress((current) => current?.graphId === graph.id ? null : current);
       setSavingGraphIds((current) => current.filter((id) => id !== graph.id));
     }
-  }, [authToken, graphLookup, notifyGraphCheckIssues, triggerLoadingBar]);
+  }, [activeProjectId, authToken, graphLookup, notifyGraphCheckIssues, triggerLoadingBar]);
 
   const saveGraphWithProgress = useCallback(async (graph) => {
     setSavingGraphIds((current) => current.includes(graph.id) ? current : [...current, graph.id]);
@@ -2083,6 +2401,7 @@ export function App() {
         onUploadProgress: hasAttachments ? (percent) => setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent }) : undefined
       });
       if (!response.ok) throw new Error(response.data.error || `Could not save ${graph.name || 'graph'}.`);
+      unsharedProjectTabIdsRef.current.delete(`${activeProjectId}:${graph.id}`);
       const validationLookup = new Map(graphLookup);
       validationLookup.set(response.data.graph.id, response.data.graph);
       notifyGraphCheckIssues(response.data.graph, validationLookup);
@@ -2091,7 +2410,7 @@ export function App() {
       setGraphUploadProgress((current) => current?.graphId === graph.id ? null : current);
       setSavingGraphIds((current) => current.filter((id) => id !== graph.id));
     }
-  }, [authToken, graphLookup, notifyGraphCheckIssues]);
+  }, [activeProjectId, authToken, graphLookup, notifyGraphCheckIssues]);
 
   useEffect(() => {
     if (!authToken || !networkOnline || settings.autoSave === false) return undefined;
@@ -2248,14 +2567,14 @@ export function App() {
   }, [nameDialog, persistGraph, savedGraphs, tabs, closeTabImmediately]);
 
   const handleAutoLayout = useCallback(() => {
-    if (!activeNodes.length) return;
+    if (!localDesktopWorkspace || !activeNodes.length) return;
     const nodes = activeNodes.map((node, index) => ({
       ...node,
       x: 72 + index * 286,
       y: 104 + (index % 2 ? 46 : 0)
     }));
     handleNodesChange(nodes);
-  }, [activeNodes, handleNodesChange]);
+  }, [activeNodes, handleNodesChange, localDesktopWorkspace]);
 
   const handleExportGraph = useCallback(() => {
     const graph = tabs.find((tab) => tab.id === activeTabId);
@@ -2288,6 +2607,12 @@ export function App() {
     }
   }, [authToken, savedGraphs, saveGraphWithProgress, tabs]);
 
+  const rememberUserGraph = useCallback((graphId, projectId = activeProjectId) => {
+    if (!localDesktopWorkspace && currentUser?.id && projectId && typeof graphId === 'string' && graphId) {
+      safeStorageSet(`arc_project_${projectId}_arc_user_${currentUser.id}_last_graph_id`, graphId);
+    }
+  }, [activeProjectId, currentUser?.id, localDesktopWorkspace]);
+
   const handleAddTab = useCallback((sourceGraph = null, { blank = false } = {}) => {
     if (tabs.length >= MAX_OPEN_GRAPH_TABS) {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph. Saved graphs remain available in the Library.', type: 'warning' });
@@ -2309,8 +2634,9 @@ export function App() {
     };
     setTabs((previous) => [...previous, graph]);
     setActiveTabId(id);
+    rememberUserGraph(id);
     return graph;
-  }, [defaultGraphId, graphTemplates, savedGraphs, tabs.length]);
+  }, [defaultGraphId, graphTemplates, rememberUserGraph, savedGraphs, tabs.length]);
 
   const handleAddBlankGraph = useCallback(() => handleAddTab(null, { blank: true }), [handleAddTab]);
 
@@ -2344,8 +2670,9 @@ export function App() {
     };
     setTabs((previous) => [...previous, graph]);
     setActiveTabId(graphId);
+    rememberUserGraph(graphId);
     setIsLibraryOpen(false);
-  }, [functionGraphs.length, tabs.length]);
+  }, [functionGraphs.length, rememberUserGraph, tabs.length]);
 
   const handleSaveGraphTemplate = useCallback(async (graph) => {
     if (!authToken || !graph) return;
@@ -2428,8 +2755,9 @@ export function App() {
     }
     if (!existing) setTabs((previous) => [...previous, { ...graph, isDirty: false }]);
     setActiveTabId(graph.id);
+    rememberUserGraph(graph.id);
     setIsLibraryOpen(false);
-  }, [tabs]);
+  }, [rememberUserGraph, tabs]);
 
   const traceGraphNode = useCallback((graphId, nodeId) => {
     const graph = graphLookup.get(graphId);
@@ -2532,15 +2860,16 @@ export function App() {
       }
       const graphNames = exportGraphs.map((graph) => graph.name || 'Untitled graph');
       const usesCryptoNodes = exportGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_crypto_encrypt', 'action_crypto_decrypt'].includes(node.type)));
-      const userPermissions = currentUser?.permissions || [];
-      const canIncludeBotToken = userPermissions.includes('*') || userPermissions.includes('bot:control');
+      let canIncludeBotToken = false;
       let hasBotToken = false;
-      if (canIncludeBotToken && exportProjectId === activeProjectId) {
-        try {
-          const response = await fetch(apiUrl('/api/bot/state'), { headers: { 'x-arc-token': authToken } });
-          if (response.ok) hasBotToken = Boolean((await response.json()).hasToken);
-        } catch {}
-      }
+      try {
+        const response = await fetch(apiUrl('/api/bot/state'), { headers: { 'x-arc-token': authToken } });
+        if (response.ok) {
+          const botState = await response.json();
+          canIncludeBotToken = botState.canExportBotToken === true;
+          hasBotToken = exportProjectId === activeProjectId && Boolean(botState.hasToken);
+        }
+      } catch {}
       const summary = {
         graphNames,
         graphCount: exportGraphs.length,
@@ -2560,6 +2889,7 @@ export function App() {
         ],
         usesCryptoNodes,
         canIncludeBotToken,
+        showBotTokenOption: canIncludeBotToken,
         hasBotToken,
         isActiveProject: exportProjectId === activeProjectId,
         included: ['graphs.json and project-variables.json', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env, .env.example, and LICENSE']
@@ -2678,6 +3008,7 @@ export function App() {
   const makeNode = useCallback((type, position = null, data = null, label = null) => {
     const definition = BuiltInNodeDefinitions.find((item) => item.type === type);
     if (!definition) return null;
+    if (supportedWorkspaceNodeTypes && !supportedWorkspaceNodeTypes.has(type)) return null;
     const nodeData = data ? structuredClone(data) : createDefaultNodeData(type);
     if (type === 'function_input' && data) nodeData.paramId = `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
     if (['variable_get', 'variable_set'].includes(type) && !availableVariables.some((variable) => variable.id === nodeData.variableId)) nodeData.variableId = '';
@@ -2690,7 +3021,7 @@ export function App() {
       y: position?.y ?? 150 + Math.random() * 24,
       data: nodeData
     };
-  }, [availableVariables]);
+  }, [availableVariables, supportedWorkspaceNodeTypes]);
 
   const appendNodeToGraph = useCallback((graph, node) => {
     if (!graph || !node) return;
@@ -2708,13 +3039,14 @@ export function App() {
   }, [activeNodes, activeTabId, handleNodesChange, recordHistory]);
 
   const handlePlaceNode = useCallback((type, position = null) => {
+    if (supportedWorkspaceNodeTypes && !supportedWorkspaceNodeTypes.has(type)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const center = position || paletteNodePosition || viewportCenterRef.current;
     const node = makeNode(type, nodeTopLeftAtCenter(type, center));
     appendNodeToGraph(targetGraph, node);
     setPaletteNodePosition(null);
-  }, [activeGraph, appendNodeToGraph, handleAddBlankGraph, makeNode, paletteNodePosition]);
+  }, [activeGraph, appendNodeToGraph, handleAddBlankGraph, makeNode, paletteNodePosition, supportedWorkspaceNodeTypes]);
 
   const openPaletteAt = useCallback((position = null) => {
     const validPosition = Number.isFinite(position?.x) && Number.isFinite(position?.y) ? position : null;
@@ -2723,6 +3055,10 @@ export function App() {
   }, []);
 
   const handleDropNode = useCallback((payload, position) => {
+    const requestedTypes = payload?.type === 'multi-node'
+      ? payload.nodeTypes || []
+      : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
+    if (supportedWorkspaceNodeTypes && !requestedTypes.some((type) => supportedWorkspaceNodeTypes.has(type))) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const placement = position || nodeTopLeftAtCenter(
@@ -2754,7 +3090,7 @@ export function App() {
     }
     if (nodesToAdd.length) appendNodeToGraph(targetGraph, nodesToAdd);
     else if (node) appendNodeToGraph(targetGraph, node);
-  }, [activeGraph, appendNodeToGraph, availableVariables, graphLookup, handleAddBlankGraph, makeNode, nodePrefabs]);
+  }, [activeGraph, appendNodeToGraph, availableVariables, graphLookup, handleAddBlankGraph, makeNode, nodePrefabs, supportedWorkspaceNodeTypes]);
 
   const handleRequestSaveNodePrefab = useCallback((node) => {
     if (!node) return;
@@ -2781,17 +3117,30 @@ export function App() {
     safeStorageSet('arc_node_prefabs', JSON.stringify(next));
   }, [nodePrefabs]);
 
-  const openDiscordTextStudio = useCallback((node, fieldKey, label, value, maxLength, applyValue, parentStudioId = '', parentBlockContext = null) => {
+  const openDiscordTextStudio = useCallback((node, fieldKey, label, value, maxLength, applyValue, parentStudioId = '', parentBlockContext = null, routeOverride = null) => {
     if ((!activeGraph && !applyValue) || !activeProjectId || (!applyValue && (!node?.id || !fieldKey))) return;
     if (node?.id) studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const graphId = activeGraph?.id || null;
     const collabId = `text:${activeProjectId}:${graphId || 'workspace'}:${parentStudioId || `${node?.id || 'inline'}:${fieldKey || label}`}`;
     const initialText = String(value ?? '');
+    const route = routeOverride || (parentBlockContext && embedStudio ? {
+      kind: 'embed-text', nodeId: embedStudio.nodeId || '', mode: embedStudio.mode,
+      assetId: embedStudio.mode === 'asset' ? embedStudio.id : '',
+      tab: embedStudio.route?.tab,
+      blockId: parentBlockContext.blockId, blockKey: parentBlockContext.blockKey,
+      label: String(label || ''), maxLength: Number(maxLength) || 0
+    } : parentBlockContext && node?.id ? {
+      kind: 'node-embed-text', nodeId: node.id, blockId: parentBlockContext.blockId,
+      blockKey: parentBlockContext.blockKey, label: String(label || ''), maxLength: Number(maxLength) || 0
+    } : node?.id ? {
+      kind: 'text-node', nodeId: node.id, fieldKey, label: String(label || ''), maxLength: Number(maxLength) || 0
+    } : null);
     textCollaborationRef.current.set(collabId, { baseText: initialText, localText: initialText, caret: 0 });
     setDiscordTextStudio({
       projectId: activeProjectId,
       graphId,
       collabId,
+      route,
       nodeId: node?.id || null,
       fieldKey,
       label,
@@ -2803,10 +3152,11 @@ export function App() {
       applyValue,
       parentBlockContext
     });
-  }, [activeGraph, activeProjectId, availableVariables]);
+  }, [activeGraph, activeProjectId, availableVariables, embedStudio]);
 
   const openVariableTextEditor = useCallback((variable, scope) => {
     const targetGraphId = activeTabId;
+    setVariableScope(scope === 'graph' ? 'graph' : 'project');
     const structured = variable.type === 'array' || variable.type === 'object';
     const initialValue = structured ? JSON.stringify(variable.initialValue ?? (variable.type === 'array' ? [] : {}), null, 2) : String(variable.initialValue ?? '');
     const applyValue = (text) => {
@@ -2832,18 +3182,21 @@ export function App() {
       }
       return true;
     };
-    openDiscordTextStudio(null, null, `${variable.name}${structured ? ' · JSON' : ''}`, initialValue, 12000, applyValue);
+    openDiscordTextStudio(null, null, `${variable.name}${structured ? ' · JSON' : ''}`, initialValue, 12000, applyValue, '', null, {
+      kind: 'text-variable', scope, variableId: variable.id, label: `${variable.name}${structured ? ' · JSON' : ''}`, maxLength: 12000
+    });
   }, [activeTabId, handleProjectVariablesChange, handleVariablesChange, openDiscordTextStudio, projectVariables, tabs]);
 
-  const openPermissionStudio = useCallback((node) => {
+  const openPermissionStudio = useCallback((node, routeMode = '') => {
     if (!node?.id || !activeGraph || !activeProjectId) return;
     studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const definition = BuiltInNodeDefinitions.find((item) => item.type === node.type);
-    const mode = node.type === 'data_permission_overwrites' ? 'overwrites' : node.type === 'event_slash_command' ? 'command' : 'role';
+    const mode = routeMode || (node.type === 'data_permission_overwrites' ? 'overwrites' : node.type === 'event_slash_command' ? 'command' : 'role');
     setPermissionStudio({
       projectId: activeProjectId,
       graphId: activeGraph.id,
       nodeId: node.id,
+      route: { kind: 'permission', nodeId: node.id, mode, label: node.label || definition?.label || node.type },
       mode,
       nodeName: node.label || definition?.label || node.type,
       data: mode === 'command'
@@ -2882,6 +3235,7 @@ export function App() {
       projectId: activeProjectId,
       graphId: activeGraph.id,
       nodeId: node.id,
+      route: { kind: 'arguments', nodeId: node.id },
       collabId,
       commandName: String(node.data?.commandName || ''),
       options,
@@ -2913,6 +3267,7 @@ export function App() {
       projectId: activeProjectId,
       graphId: activeGraph.id,
       nodeId: node.id,
+      route: { kind: 'popup-modal', nodeId: node.id },
       nodeName: node.label || BuiltInNodeDefinitions.find((item) => item.type === node.type)?.label || 'Show Popup Modal',
       modal: structuredClone(node.data?.modal || createDefaultModal())
     });
@@ -2971,7 +3326,7 @@ export function App() {
     return true;
   }, [activeProjectId, activeTabId, discordTextStudio, recordHistory, tabs, updateEmbedStudioBlockValue]);
 
-  const openEmbedStudioForNode = useCallback((node) => {
+  const openEmbedStudioForNode = useCallback((node, routeOverride = null) => {
     if (node?.id && activeTabId) studioFocusReturnRef.current = { graphId: activeTabId, nodeId: node.id };
     const isMessageComponentsNode = ['action_send_message', 'action_reply_interaction', 'action_edit_message', 'action_edit_interaction_reply'].includes(node.type);
 
@@ -3079,6 +3434,7 @@ export function App() {
       projectId: activeProjectId,
       collabId: `embed:${activeProjectId}:${activeTabId}:node:${node.id}`,
       mode: isMessageComponentsNode ? 'components-node' : 'node',
+      route: routeOverride || { kind: isMessageComponentsNode ? 'components' : 'embed', nodeId: node.id, mode: isMessageComponentsNode ? 'components-node' : 'node', tab: isMessageComponentsNode ? 'components' : 'embed' },
       nodeId: node.id,
       connectedEmbedNodeId: embedSourceNode?.id || null,
       connectedComponentsNodeId: compSourceNode?.id || null,
@@ -3113,14 +3469,14 @@ export function App() {
     });
   }, [sendCollaborationAction]);
 
-  const openEmbedAsset = useCallback((asset) => {
-    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', id: asset.id, nodeId: null, name: asset.name || 'Untitled embed', blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), attachments: structuredClone(asset.attachments || []), isDirty: false };
+  const openEmbedAsset = useCallback((asset, routeOverride = null) => {
+    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:asset:${asset.id}`, mode: 'asset', route: routeOverride || { kind: 'embed', mode: 'asset', assetId: asset.id, tab: 'embed' }, id: asset.id, nodeId: null, name: asset.name || 'Untitled embed', blocks: structuredClone(asset.blocks || []), components: structuredClone(asset.components || []), attachments: structuredClone(asset.attachments || []), isDirty: false };
     collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
     setEmbedStudio(studio);
   }, [activeProjectId, activeTabId]);
 
-  const createEmbedAsset = useCallback(() => {
-    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:new`, mode: 'new', id: null, nodeId: null, name: 'Untitled embed', blocks: [], components: [], attachments: [], isDirty: false };
+  const createEmbedAsset = useCallback((routeOverride = null) => {
+    const studio = { graphId: activeTabId, projectId: activeProjectId, collabId: `embed:${activeProjectId}:${activeTabId}:new`, mode: 'new', route: routeOverride || { kind: 'embed', mode: 'new', tab: 'embed' }, id: null, nodeId: null, name: 'Untitled embed', blocks: [], components: [], attachments: [], isDirty: false };
     collaborativeEmbedBaseRef.current.set(studio.collabId, collaborativeEmbedDraft(studio));
     setEmbedStudio(studio);
   }, [activeProjectId, activeTabId]);
@@ -3481,7 +3837,7 @@ export function App() {
       let response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export`), { headers: { 'x-arc-token': authToken } });
       if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
       let bundle = await response.json();
-      if (bundle.sensitiveData?.omittedFields > 0 && window.confirm(`This project contains ${bundle.sensitiveData.omittedFields} token, credential, or HTTP header field(s). These values are omitted by default. Include them in the exported file?\n\nChoose Cancel to export without them.`)) {
+      if (bundle.sensitiveData?.omittedFields > 0 && window.confirm(`This project contains ${bundle.sensitiveData.omittedFields} sensitive field(s). Eligible secrets are omitted by default. Include them in the exported file?\n\nDiscord bot tokens are always removed from .arcproject files.`)) {
         response = await fetch(apiUrl(`/api/projects/${encodeURIComponent(project.id)}/export?includeSecrets=1`), { headers: { 'x-arc-token': authToken } });
         if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not export the project.'); }
         bundle = await response.json();
@@ -3623,15 +3979,22 @@ export function App() {
       setLogs([]);
       setIsProjectsOpen(false);
       graphsHydratedRef.current = true;
-      const storedIds = safeStorageGet(`arc_project_${projectId}_arc_open_graph_ids`, null);
-      let openIds = [];
-      try { openIds = storedIds ? JSON.parse(storedIds) : []; } catch {}
-      const graphs = data.graphs || [];
-      const graphById = new Map(graphs.map((graph) => [graph.id, graph]));
-      const opened = (Array.isArray(openIds) ? openIds.map((id) => graphById.get(id)).filter(Boolean) : []).slice(0, MAX_OPEN_GRAPH_TABS);
-      setTabs(opened);
-      const preferred = safeStorageGet(`arc_project_${projectId}_arc_active_graph_id`, '');
-      setActiveTabId(opened.some((graph) => graph.id === preferred) ? preferred : opened[0]?.id || null);
+      if (localDesktopWorkspace) {
+        const storedIds = safeStorageGet(`arc_project_${projectId}_arc_open_graph_ids`, null);
+        let openIds = [];
+        try { openIds = storedIds ? JSON.parse(storedIds) : []; } catch {}
+        const graphs = data.graphs || [];
+        const graphById = new Map(graphs.map((graph) => [graph.id, graph]));
+        const opened = (Array.isArray(openIds) ? openIds.map((id) => graphById.get(id)).filter(Boolean) : []).slice(0, MAX_OPEN_GRAPH_TABS);
+        setTabs(opened);
+        const preferred = safeStorageGet(`arc_project_${projectId}_arc_active_graph_id`, '');
+        setActiveTabId(opened.some((graph) => graph.id === preferred) ? preferred : opened[0]?.id || null);
+      } else {
+        projectTabStartupPendingRef.current = true;
+        projectTabSafeRestorePendingRef.current = true;
+        projectTabSafeRestoreProjectRef.current = projectId;
+        projectTabStartupBaselineRef.current = new Set();
+      }
       setWorkspaceRevision((revision) => revision + 1);
       historyRef.current.clear();
       return true;
@@ -3645,6 +4008,8 @@ export function App() {
     if (!route) return;
     if (route.projectId && !projects.some((project) => project.id === route.projectId)) {
       browserRouteHandledRef.current = true;
+      browserInitialRouteSettledRef.current = true;
+      browserStudioRestorePendingRef.current = false;
       arcEvents.emit('toast:notify', { title: 'Project unavailable', message: 'This project is not available in the current workspace.', type: 'warning' });
       return;
     }
@@ -3656,10 +4021,18 @@ export function App() {
     }
     if (browserProjectSwitchRef.current) return;
     if (route.projectId && activeProjectId !== route.projectId) return;
+    if (route.emptyWorkspace && !route.graphId) {
+      setTabs([]);
+      setActiveTabId(null);
+      setActiveNodes([]);
+      setActiveConnections([]);
+    }
     if (route.graphId) {
       const graph = savedGraphs.find((item) => item.id === route.graphId);
       if (!graph) {
         browserRouteHandledRef.current = true;
+        browserInitialRouteSettledRef.current = true;
+        browserStudioRestorePendingRef.current = false;
         arcEvents.emit('toast:notify', { title: 'Graph unavailable', message: 'This graph is not available in the selected project.', type: 'warning' });
         return;
       }
@@ -3672,12 +4045,132 @@ export function App() {
     setIsPluginStoreOpen(panel === 'plugins');
     setIsBotSidebarOpen(panel === 'bot');
     setIsProjectsOpen(panel === 'projects');
+    if (route.variableScope === 'project' || route.variableScope === 'graph') setVariableScope(route.variableScope);
     if (['graphs', 'nodes', 'data', 'assets'].includes(route.librarySection)) setLibrarySection(route.librarySection);
     browserRouteHandledRef.current = true;
   }, [activeProjectId, authToken, desktopMode, handleOpenGraph, isReady, projects, savedGraphs, socketReadyRevision]);
 
   useEffect(() => {
-    if (desktopMode || !browserRouteHandledRef.current || !authToken || !activeProjectId) return;
+    if (desktopMode || !browserRouteHandledRef.current || !browserStudioRestorePendingRef.current || !authToken || !activeProjectId) return;
+    const route = initialBrowserRouteRef.current;
+    const studioRoute = route?.studio;
+    if (!studioRoute?.kind) {
+      browserStudioRestorePendingRef.current = false;
+      return;
+    }
+    if (route.projectId && route.projectId !== activeProjectId) return;
+    if (route.graphId && (activeTabId !== route.graphId || !activeGraph)) return;
+    if (route.graphId && activeGraph && (
+      activeNodes.length !== (activeGraph.nodes || []).length
+      || activeNodes.some((item, index) => item !== activeGraph.nodes[index])
+      || activeConnections.length !== (activeGraph.connections || []).length
+      || activeConnections.some((item, index) => item !== activeGraph.connections[index])
+    )) return;
+    if (!route.graphId && route.emptyWorkspace && activeTabId) return;
+
+    const matchesStudioRoute = (candidate) => {
+      if (!candidate || candidate.kind !== studioRoute.kind) return false;
+      for (const key of ['nodeId', 'fieldKey', 'scope', 'variableId', 'mode', 'assetId', 'blockId', 'blockKey', 'tab']) {
+        if (studioRoute[key] && candidate[key] !== studioRoute[key]) return false;
+      }
+      return true;
+    };
+    const alreadyRestored = [discordTextStudio, embedStudio, permissionStudio, slashCommandStudio, modalStudio]
+      .some((studio) => studio?.projectId === activeProjectId && studio.graphId === (route.graphId || null) && matchesStudioRoute(studio.route));
+    if (alreadyRestored) {
+      browserStudioRestorePendingRef.current = false;
+      return;
+    }
+
+    const finishRestore = (message) => {
+      if (message) {
+        browserStudioRestorePendingRef.current = false;
+        arcEvents.emit('toast:notify', { title: 'Studio could not be reopened', message, type: 'warning' });
+      }
+    };
+    const findNode = () => activeGraph?.nodes?.find((node) => node.id === studioRoute.nodeId);
+    const node = findNode();
+
+    if (studioRoute.kind === 'text-variable') {
+      const variables = studioRoute.scope === 'project' ? projectVariables : (activeGraph?.variables || []);
+      const variable = variables.find((item) => item.id === studioRoute.variableId);
+      if (!variable) { finishRestore('The selected variable is no longer available.'); return; }
+      openVariableTextEditor(variable, studioRoute.scope === 'project' ? 'project' : 'graph');
+      finishRestore();
+      return;
+    }
+    if (studioRoute.kind === 'text-node') {
+      if (!node || !studioRoute.fieldKey) { finishRestore('The selected text field is no longer available.'); return; }
+      openDiscordTextStudio(node, studioRoute.fieldKey, studioRoute.label || studioRoute.fieldKey, node.data?.[studioRoute.fieldKey] ?? '', studioRoute.maxLength || undefined, undefined, '', null, studioRoute);
+      finishRestore();
+      return;
+    }
+    if (studioRoute.kind === 'node-embed-text') {
+      const block = node?.data?.blocks?.find((item) => item.id === studioRoute.blockId);
+      if (!node || !block || !studioRoute.blockKey) { finishRestore('The selected embed text field is no longer available.'); return; }
+      const applyValue = (value) => {
+        const blocks = (node.data?.blocks || []).map((item) => item.id === studioRoute.blockId ? { ...item, [studioRoute.blockKey]: value } : item);
+        handleNodesChange(activeNodes.map((item) => item.id === node.id ? { ...item, data: { ...item.data, blocks } } : item));
+        return true;
+      };
+      openDiscordTextStudio(node, null, studioRoute.label || studioRoute.blockKey, block[studioRoute.blockKey] ?? '', studioRoute.maxLength || undefined, applyValue, '', { blockId: studioRoute.blockId, blockKey: studioRoute.blockKey }, studioRoute);
+      finishRestore();
+      return;
+    }
+    if (['embed', 'components', 'permission', 'arguments', 'popup-modal'].includes(studioRoute.kind)) {
+      if (studioRoute.mode === 'asset') {
+        const asset = embedAssets.find((item) => item.id === studioRoute.assetId);
+        if (!asset) { finishRestore('The selected embed asset is no longer available.'); return; }
+        openEmbedAsset(asset, studioRoute);
+      } else if (studioRoute.mode === 'new') {
+        createEmbedAsset(studioRoute);
+      } else {
+        if (!node) { finishRestore('The selected node is no longer available.'); return; }
+        if (studioRoute.kind === 'embed' || studioRoute.kind === 'components') openEmbedStudioForNode(node, studioRoute);
+        else if (studioRoute.kind === 'permission') openPermissionStudio({ ...node, label: studioRoute.label || node.label }, studioRoute.mode);
+        else if (studioRoute.kind === 'arguments') openSlashCommandStudio(node);
+        else openModalStudioForNode(node);
+      }
+      finishRestore();
+      return;
+    }
+    if (studioRoute.kind === 'embed-text') {
+      const parentMode = studioRoute.mode || 'node';
+      const parentMatches = embedStudio?.projectId === activeProjectId
+        && embedStudio.mode === parentMode
+        && (!studioRoute.tab || embedStudio.route?.tab === studioRoute.tab)
+        && (parentMode === 'asset' ? embedStudio.id === studioRoute.assetId : parentMode === 'new' || embedStudio.nodeId === studioRoute.nodeId);
+      if (!parentMatches) {
+        if (parentMode === 'asset') {
+          const asset = embedAssets.find((item) => item.id === studioRoute.assetId);
+          if (!asset) { finishRestore('The selected embed asset is no longer available.'); return; }
+          openEmbedAsset(asset, { kind: 'embed', mode: 'asset', assetId: asset.id, tab: studioRoute.tab || 'embed' });
+        } else if (parentMode === 'new') createEmbedAsset({ kind: 'embed', mode: 'new', tab: studioRoute.tab || 'embed' });
+        else if (node) openEmbedStudioForNode(node, { kind: parentMode === 'components-node' ? 'components' : 'embed', nodeId: node.id, mode: parentMode, tab: studioRoute.tab || 'embed' });
+        else { finishRestore('The selected embed node is no longer available.'); return; }
+        return;
+      }
+      const block = embedStudio.blocks?.find((item) => item.id === studioRoute.blockId);
+      if (!block || !studioRoute.blockKey) { finishRestore('The selected embed text field is no longer available.'); return; }
+      const value = block[studioRoute.blockKey] ?? '';
+      openDiscordTextStudio(null, null, studioRoute.label || studioRoute.blockKey, value, studioRoute.maxLength || undefined,
+        (next) => updateEmbedStudioBlockValue(studioRoute.blockId, studioRoute.blockKey, next),
+        embedStudio.collabId, { blockId: studioRoute.blockId, blockKey: studioRoute.blockKey }, studioRoute);
+      finishRestore();
+      return;
+    }
+    finishRestore('This studio link is not recognized.');
+  }, [activeConnections, activeGraph, activeNodes, activeProjectId, activeTabId, authToken, createEmbedAsset, desktopMode, discordTextStudio, embedAssets, embedStudio, modalStudio, openDiscordTextStudio, openEmbedAsset, openEmbedStudioForNode, openModalStudioForNode, openPermissionStudio, openSlashCommandStudio, openVariableTextEditor, permissionStudio, projectVariables, slashCommandStudio, updateEmbedStudioBlockValue]);
+
+  useEffect(() => {
+    if (desktopMode || !browserRouteHandledRef.current || browserStudioRestorePendingRef.current || !authToken || !activeProjectId) return;
+    if (!browserInitialRouteSettledRef.current) {
+      const initialRoute = initialBrowserRouteRef.current;
+      if (initialRoute?.projectId && initialRoute.projectId !== activeProjectId) return;
+      if (initialRoute?.graphId && (activeTabId !== initialRoute.graphId || !activeGraph)) return;
+      if (!initialRoute?.graphId && initialRoute?.emptyWorkspace && activeTabId) return;
+      browserInitialRouteSettledRef.current = true;
+    }
     const graphId = activeTabId && tabs.some((tab) => tab.id === activeTabId) ? activeTabId : '';
     const segments = ['/projects', encodeURIComponent(activeProjectId)];
     if (graphId) segments.push('graphs', encodeURIComponent(graphId));
@@ -3686,11 +4179,19 @@ export function App() {
     url.search = '';
     const selectedNode = graphId ? selectedCanvasNodeId : '';
     if (selectedNode) url.searchParams.set('node', selectedNode);
+    if (!graphId) url.searchParams.set('empty', '1');
     const panel = isLibraryOpen ? 'library' : isVariablesOpen ? 'variables' : isPluginStoreOpen ? 'plugins' : isBotSidebarOpen ? 'bot' : isProjectsOpen ? 'projects' : '';
     if (panel) url.searchParams.set('panel', panel);
     if (panel === 'library') url.searchParams.set('library', librarySection);
+    if (panel === 'variables') url.searchParams.set('variableScope', variableScope);
+    const studioRoute = discordTextStudioOpenForActiveGraph ? discordTextStudio.route
+      : embedStudioOpenForActiveGraph ? embedStudio.route
+        : permissionStudioOpenForActiveGraph ? permissionStudio.route
+          : slashCommandStudioOpenForActiveGraph ? slashCommandStudio.route
+            : modalStudioOpenForActiveGraph ? modalStudio.route : null;
+    writeStudioRouteParams(url.searchParams, studioRoute);
     if (url.pathname !== window.location.pathname || url.search !== window.location.search) window.history.replaceState(window.history.state, '', url);
-  }, [activeProjectId, activeTabId, desktopMode, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, librarySection, selectedCanvasNodeId, tabs, authToken]);
+  }, [activeProjectId, activeTabId, desktopMode, discordTextStudio, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, librarySection, modalStudio, modalStudioOpenForActiveGraph, permissionStudio, permissionStudioOpenForActiveGraph, selectedCanvasNodeId, slashCommandStudio, slashCommandStudioOpenForActiveGraph, tabs, variableScope, authToken]);
 
   useEffect(() => {
     const startupProjectId = window.__ARC_STUDIO_CONFIG__?.startupProjectId;
@@ -3843,6 +4344,8 @@ export function App() {
       if (mode === 'remote') localStorage.setItem('arc_remote_workspace_url', url);
     } catch {}
     setWorkspaceMode(mode);
+    setSupportedWorkspaceNodeTypes(null);
+    setWorkspaceCompatibilityNotice('');
     setWorkspaceSwitchOpen(false);
     if (mode === 'remote') setRemoteWorkspaceUrl(url);
     if (mode === 'remote') {
@@ -3875,16 +4378,47 @@ export function App() {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 12000);
     try {
-      const response = await fetch(`${url}/api/system/status`, { signal: controller.signal });
+      const response = await fetch(`${url}/api/system/status`, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error(`Workspace responded with HTTP ${response.status}.`);
       let status;
       try { status = await response.json(); }
       catch { throw new Error('This server did not return a valid ARC Studio response.'); }
       if (typeof status.isSetupCompleted !== 'boolean') throw new Error('This server is not an ARC Studio workspace.');
+      let compatibilityNotice = '';
+      let supportedNodeTypes = null;
+      if (desktopMode) {
+        const serverVersion = String(status.version || '').trim();
+        const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
+        const versionDistance = getArcVersionDistance(serverVersion, studioPackage.version);
+        if (versionOrder === null || versionDistance === null) throw new Error('This workspace does not report a version ARC Studio can verify. Update its server or use a compatible desktop build.');
+        if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app (${studioPackage.version}). Update the workspace server before connecting.`);
+        if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app (${studioPackage.version}). Update the desktop app before connecting.`);
+        let serverNodeTypes = status.supportedNodeTypes;
+        if (!Array.isArray(serverNodeTypes)) {
+          const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
+          if (!registryResponse.ok) throw new Error('Could not check which node features this workspace supports. Update the workspace server or use the matching desktop version.');
+          const registry = await registryResponse.json().catch(() => null);
+          const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
+          serverNodeTypes = definitions?.map((definition) => definition?.type) || null;
+        }
+        if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
+        const serverNodeTypeSet = new Set(serverNodeTypes);
+        const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
+        const unsupported = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type));
+        if (unsupported.length) throw new Error(`This workspace uses ${unsupported.length} node feature${unsupported.length === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
+        const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
+        supportedNodeTypes = serverNodeTypeSet;
+        if (hiddenCount) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. ${hiddenCount} node type${hiddenCount === 1 ? ' is' : 's are'} hidden because this workspace does not support ${hiddenCount === 1 ? 'it' : 'them'}.`;
+        else if (versionOrder < 0) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. Some server features may be unavailable in this desktop app.`;
+        else if (versionOrder > 0) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. Some features may not be available in this desktop app.`;
+      }
       const name = (typeof status.workspaceName === 'string' && status.workspaceName.trim() ? status.workspaceName.trim() : new URL(url).host).slice(0, 35);
       setRemoteWorkspaceName(name);
       try { localStorage.setItem('arc_remote_workspace_name', name); } catch {}
       activateWorkspace('remote', url);
+      setSupportedWorkspaceNodeTypes(supportedNodeTypes);
+      setWorkspaceCompatibilityNotice(compatibilityNotice);
+      return { notice: compatibilityNotice };
     } catch (error) {
       if (error.name === 'AbortError') throw new Error('The workspace did not respond in time.');
       if (error instanceof TypeError) throw new Error('Could not reach this workspace. Check the URL, network, and server CORS settings.');
@@ -4044,14 +4578,18 @@ export function App() {
         event.preventDefault();
         event.stopPropagation();
         const currentIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTabId));
-        setActiveTabId(tabs[(currentIndex + 1) % tabs.length].id);
+        const nextTabId = tabs[(currentIndex + 1) % tabs.length].id;
+        setActiveTabId(nextTabId);
+        rememberUserGraph(nextTabId);
         return;
       }
       if (shortcutMatches(event, shortcuts.switchTabPrevious) && tabs.length > 1) {
         event.preventDefault();
         event.stopPropagation();
         const currentIndex = Math.max(0, tabs.findIndex((tab) => tab.id === activeTabId));
-        setActiveTabId(tabs[(currentIndex - 1 + tabs.length) % tabs.length].id);
+        const nextTabId = tabs[(currentIndex - 1 + tabs.length) % tabs.length].id;
+        setActiveTabId(nextTabId);
+        rememberUserGraph(nextTabId);
         return;
       }
       const isTextEditingTarget = target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
@@ -4134,22 +4672,12 @@ export function App() {
         return;
       }
       if (isEditing) {
-        if (shortcutMatches(event, shortcuts.undo)) {
-          event.preventDefault();
-          document.execCommand('undo');
-          return;
-        }
-        if (shortcutMatches(event, shortcuts.redo)) {
-          event.preventDefault();
-          document.execCommand('redo');
-          return;
-        }
         return;
       }
       if (shortcutMatches(event, shortcuts.addNode)) {
         event.preventDefault();
         openPaletteAt();
-      } else if (shortcutMatches(event, shortcuts.arrangeNodes)) {
+      } else if (localDesktopWorkspace && shortcutMatches(event, shortcuts.arrangeNodes)) {
         event.preventDefault();
         handleAutoLayout();
       } else if (shortcutMatches(event, shortcuts.toggleLibrary)) {
@@ -4167,7 +4695,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, openNodeRename, openPaletteAt, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
+  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -4273,6 +4801,7 @@ export function App() {
           onBackToEditor={handleBackToLocalEditor}
           networkOnline={networkOnline}
           workspaceError={workspaceError}
+          workspaceCompatibilityNotice={workspaceCompatibilityNotice}
           onSelectWorkspace={handleSelectWorkspace}
           onConnectWorkspace={handleConnectWorkspace}
           onRetryWorkspace={handleRetryWorkspace}
@@ -4301,6 +4830,7 @@ export function App() {
     <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
       <TopBar
         tabs={tabs}
+        projectCollaborators={projectCollaboration.projectId === activeProjectId ? projectCollaboration.users : []}
         graphTabStatuses={graphTabStatuses}
         saveFeedbackGraphId={saveFeedback?.graphId}
         hideGraphSave={embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph}
@@ -4311,7 +4841,8 @@ export function App() {
         currentUser={currentUser}
         isLocked={isLocked || !canWriteGraphs}
         onToggleLock={canWriteGraphs ? handleToggleLock : undefined}
-        onSelectTab={setActiveTabId}
+        onSelectTab={(graphId) => { setFollowCollaboratorRequest(null); setActiveTabId(graphId); rememberUserGraph(graphId); }}
+        onFollowCollaborator={followCollaborator}
         onAddTab={handleAddTab}
         onAddBlankGraph={handleAddBlankGraph}
         onAddFunctionGraph={handleAddFunctionGraph}
@@ -4357,7 +4888,7 @@ export function App() {
           <button className={`rail-button ${isLibraryOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsLibraryOpen((open) => !open); }} title="Graph library (Shift + L)" aria-label="Graph library"><FolderTree size={17} /></button>
           <button className={`rail-button ${isPluginStoreOpen ? 'is-selected' : ''}`} onClick={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); setIsPluginStoreOpen((open) => !open); }} title="Plugin store" aria-label="Plugin store"><PackageOpen size={17} /></button>
           <button className="rail-button" onClick={() => setIsSettingsOpen(true)} title="Canvas settings" aria-label="Canvas settings"><SlidersHorizontal size={17} /></button>
-          <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>
+          {localDesktopWorkspace && <button className="rail-button" onClick={handleAutoLayout} title="Arrange nodes" aria-label="Arrange nodes"><LayoutGrid size={17} /></button>}
           <button className="rail-button" onClick={handleExportGraph} disabled={!activeGraph} title={activeGraph ? 'Export graph' : 'Open a graph to export it'} aria-label="Export graph"><Braces size={17} /></button>
           <div className="rail-spacer" />
           {!desktopMode && currentUser?.role === 'admin' && <button className="rail-button" onClick={() => setIsUserMgmtOpen(true)} title="Team access" aria-label="Team access"><Users size={17} /></button>}
@@ -4392,6 +4923,7 @@ export function App() {
             wiredFields={embedStudio.wiredFields || {}}
             components={embedStudio.components || []}
             componentsOnly={embedStudio.mode === 'components-node'}
+            initialTab={embedStudio.route?.tab}
             isEmbedWired={Boolean(embedStudio.isEmbedWired)}
             isComponentsWired={Boolean(embedStudio.isComponentsWired)}
             isContentWired={Boolean(embedStudio.isContentWired)}
@@ -4410,6 +4942,7 @@ export function App() {
             attachments={embedStudio.attachments || []}
             onAttachmentsChange={(attachments) => updateEmbedStudioDraft({ attachments })}
             onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => openDiscordTextStudio(null, null, label, value, maxLength, applyValue, embedStudio.collabId, parentBlockContext)}
+            onActiveTabChange={(tab) => setEmbedStudio((current) => current ? { ...current, route: { ...current.route, tab } } : current)}
             onContentChange={(content) => updateEmbedStudioDraft({ content })}
             onComponentsChange={(components) => updateEmbedStudioDraft({ components })}
             onSave={handleSaveEmbedStudio}
@@ -4482,6 +5015,8 @@ export function App() {
             graphId={activeTabId}
             projectId={activeProjectId}
             focusRequest={nodeFocusRequest}
+            followRequest={followCollaboratorRequest}
+            onFollowComplete={completeFollowCollaborator}
             nodes={activeNodes}
             connections={activeConnections}
             authToken={authToken}
@@ -4504,6 +5039,12 @@ export function App() {
             notes={activeGraph?.notes || []}
             currentUser={currentUser}
             onNotesChange={handleGraphNotesChange}
+            noteEditLocks={noteEditLockState.roomKey === `${activeProjectId}:${activeTabId}` ? noteEditLockState.locks : {}}
+            collaborationOnline={Boolean(authToken)}
+            collaborationReady={collaborationSocketStatus === 'connected' && liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)}
+            collaborationClientId={collaborationClientIdRef.current}
+            onRequestNoteEditLock={requestNoteEditLock}
+            onReleaseNoteEditLock={releaseNoteEditLock}
             onTagGroupsChange={handleTagGroupsChange}
             onRequestCreateTagGroup={(nodeIds, noteIds) => openTagGroupDialog(nodeIds, null, noteIds)}
             onRequestEditTagGroup={(group) => openTagGroupDialog(null, group)}
@@ -4532,12 +5073,13 @@ export function App() {
               <span className="context-separator">·</span> {graphValidation.errors.length ? `${graphValidation.errors.length} issues` : graphValidation.warnings.length ? 'Review' : 'Ready'}</>
               : 'Open a graph to run checks.'}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite"><span className="collaboration-connection-dot" />{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {desktopMode && workspaceMode === 'remote' && workspaceCompatibilityNotice && <span className="workspace-compatibility-status" title={workspaceCompatibilityNotice}>Compatibility limits apply</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -4615,7 +5157,7 @@ export function App() {
           </div>}
           <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
           <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" networkOnline={networkOnline} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
-          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" presentation="sidebar" sidebarWidth={sidebarWidths.variables} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
+          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
         </main>
       </div>
 
@@ -4648,10 +5190,10 @@ export function App() {
         onTraceIssue={traceGraphNode}
       />
 
-      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} />
+      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
       <LazyMountedFeature Component={CommandPalette} isOpen={isCommandPaletteOpen} loadingLabel="Opening search…"
         graphs={[...graphLookup.values()]}
-        definitions={[...BuiltInNodeDefinitions]}
+        definitions={availableNodeDefinitions}
         plugins={installedPlugins}
         onClose={() => setIsCommandPaletteOpen(false)}
         onAddNode={handlePlaceNode}
@@ -4694,7 +5236,8 @@ export function App() {
             ['Next / previous graph tab', `${formatShortcut((desktopMode ? settings.shortcuts?.switchTabNext : null) || DEFAULT_SHORTCUTS.switchTabNext, shortcutPlatform)} / ${formatShortcut((desktopMode ? settings.shortcuts?.switchTabPrevious : null) || DEFAULT_SHORTCUTS.switchTabPrevious, shortcutPlatform)}`],
             ['Close active graph tab', formatShortcut((desktopMode ? settings.shortcuts?.closeTab : null) || DEFAULT_SHORTCUTS.closeTab, shortcutPlatform)],
             ['Add node', formatShortcut((desktopMode ? settings.shortcuts?.addNode : null) || DEFAULT_SHORTCUTS.addNode, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
-            ['Arrange nodes', formatShortcut((desktopMode ? settings.shortcuts?.arrangeNodes : null) || DEFAULT_SHORTCUTS.arrangeNodes, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
+            ...(localDesktopWorkspace ? [['Arrange nodes', formatShortcut(settings.shortcuts?.arrangeNodes || DEFAULT_SHORTCUTS.arrangeNodes, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')]] : []),
+            ['Move nodes between colored sections', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + drag`],
             ['Toggle Library', formatShortcut((desktopMode ? settings.shortcuts?.toggleLibrary : null) || DEFAULT_SHORTCUTS.toggleLibrary, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open node search', formatShortcut((desktopMode ? settings.shortcuts?.openSearch : null) || DEFAULT_SHORTCUTS.openSearch, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
             ['Open emoji picker in a text field', formatShortcut((desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
@@ -4751,15 +5294,15 @@ export function App() {
               <input type="checkbox" checked={Boolean(exportReview.includeCryptoSecret)} onChange={(event) => setExportReview((current) => current ? { ...current, includeCryptoSecret: event.target.checked } : current)} />
               <span><strong>Include generated crypto secret in .env</strong><small>{exportReview.includeCryptoSecret ? 'Used by AES nodes with no passphrase. Keep it private and reuse it when replacing an export that has stored ciphertext.' : 'Without a saved secret, ciphertext made with the default key cannot be decrypted after the bot restarts.'}</small></span>
             </label>}
-            <label className={`export-secret-option${exportReview.summary.canIncludeBotToken && exportReview.summary.hasBotToken && exportReview.summary.isActiveProject ? '' : ' is-disabled'}`}>
+            {exportReview.summary.showBotTokenOption && <label className={`export-secret-option${exportReview.summary.hasBotToken && exportReview.summary.isActiveProject ? '' : ' is-disabled'}`}>
               <input
                 type="checkbox"
                 checked={Boolean(exportReview.includeBotToken)}
                 disabled={!exportReview.summary.canIncludeBotToken || !exportReview.summary.hasBotToken || !exportReview.summary.isActiveProject}
                 onChange={(event) => setExportReview((current) => current ? { ...current, includeBotToken: event.target.checked } : current)}
               />
-              <span><strong>Include bot token in .env</strong><small>{!exportReview.summary.canIncludeBotToken ? 'Requires bot control permission.' : !exportReview.summary.isActiveProject ? 'Switch to this project before including its bot token.' : !exportReview.summary.hasBotToken ? 'No bot token is configured for this project.' : 'Off by default. Anyone with this ZIP can use the token.'}</small></span>
-            </label>
+              <span><strong>Include bot token in .env</strong><small>{!exportReview.summary.isActiveProject ? 'Switch to this project before including its bot token.' : !exportReview.summary.hasBotToken ? 'No bot token is configured for this project.' : 'Off by default. Anyone with this ZIP can use the token.'}</small></span>
+            </label>}
           </div>
           {exportReview.summary.unsupportedNodeCount > 0 && <div className="export-preflight-runtime-warning" role="alert">{exportReview.summary.unsupportedNodeCount} node type{exportReview.summary.unsupportedNodeCount === 1 ? ' is' : 's are'} not supported by the bundled runtime.</div>}
         </div>}
@@ -4979,7 +5522,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
     const name = String(node.data?.name || '').trim();
     if (!/^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name) && !/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) return [];
     const type = ['string', 'number', 'boolean', 'array', 'object'].includes(node.data?.valueType) ? node.data.valueType : 'string';
-    return [{ id: `nodevar_${node.id}`, name, type, initialValue: node.data?.value ?? (type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : ''), persist: true, nodeOwned: true, sourceNodeId: node.id }];
+    return [{ id: `nodevar_${node.id}`, name, type, initialValue: node.data?.value ?? (type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : ''), persist: node.data?.persist !== false, nodeOwned: true, sourceNodeId: node.id }];
   });
   const graphVariables = [...declaredGraphVariables, ...nodeCreatedVariables.filter((variable) => !declaredGraphVariables.some((item) => item.id === variable.id))];
   const variableById = new Map([...graphVariables, ...projectVariables].map((variable) => [variable.id, variable]));
@@ -5457,6 +6000,18 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
       `option_${item.name}` === pinId && /^[a-z0-9_-]{1,32}$/.test(String(item.name || ''))
     );
     if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' };
+  }
+  if (['data_string_split', 'data_parse_prefix_command'].includes(node.type) && direction === 'outputs') {
+    const pinPrefix = node.type === 'data_string_split' ? 'part_' : 'argument_';
+    const pinMatch = new RegExp(`^${pinPrefix}(\\d+)$`).exec(pinId);
+    if (pinMatch) {
+      const highestConnectedPart = connections.reduce((highest, wire) => {
+        if (wire.sourceNodeId !== node.id) return highest;
+        const match = new RegExp(`^${pinPrefix}(\\d+)$`).exec(wire.sourcePinId);
+        return Math.max(highest, Number(match?.[1]) || 0);
+      }, 0);
+      if (Number(pinMatch[1]) <= Math.min(50, Math.max(1, highestConnectedPart + 1))) return { id: pinId, type: 'string' };
+    }
   }
   if (node.type === 'data_permission_overwrites' && direction === 'inputs') return getPermissionOverwritePins(node, connections).find((pin) => pin.id === pinId) || null;
   if (node.type === 'data_array_create' && direction === 'inputs') return getArrayCreatePins(node, connections).find((pin) => pin.id === pinId) || null;
