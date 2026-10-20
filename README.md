@@ -65,13 +65,14 @@ Open the address Vite prints in the terminal. Change `ARC_SETUP_KEY` in `.env` b
 
 ## Host it for your team
 
-Build the web client, then start the server:
+Install dependencies, then start the server:
 
 ```sh
 npm ci
-npm run build:client
 npm start
 ```
+
+On first startup, the server builds the web client if it has not been built yet.
 
 Put the server behind HTTPS. If you use a reverse proxy, make sure it passes WebSocket connections too. Keep `packages/studio-server/data` so projects and accounts survive restarts. The admin can add subusers and choose their roles. Everyone signs in to the same workspace, opens a project, and sees each other's graph edits live. Save the graph to keep those changes.
 
