@@ -247,6 +247,8 @@ This standalone bot contains the graphs selected at export time and does not req
 
 The bot reads graph definitions from \`graphs.json\`. Message content and member-join, and other event graphs need their privileged intents enabled in the Discord Developer Portal. Slash-command graphs handle incoming interactions, register those commands with Discord separately from ARC Studio or your App. Keep \`.env\` private and never commit your bot token.
 
+On startup, missing adapter packages are installed automatically. If an installed package does not meet the required version, startup reports an error and stops.
+
 This bot export cannot be imported into ARC Studio.
 `;
 
@@ -600,15 +602,49 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const dependencies = Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies });
 const missing = dependencies.filter((name) => !fs.existsSync(path.join(root, 'node_modules', ...name.split('/'), 'package.json')));
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 if (missing.length) {
   console.log('Installing bot packages for the first run...');
-  const result = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+  const result = spawnSync(npmCommand, ['install', '--omit=dev', '--no-audit', '--no-fund'], {
     cwd: root,
     stdio: 'inherit',
     shell: process.platform === 'win32'
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status || 1);
+}
+
+const check = spawnSync(npmCommand, ['ls', '--depth=0', '--json'], {
+  cwd: root,
+  encoding: 'utf8',
+  shell: process.platform === 'win32'
+});
+let tree;
+try { tree = JSON.parse(check.stdout || '{}'); }
+catch {
+  console.error('[ERROR] Could not verify installed bot package versions with npm.');
+  if (check.stderr) console.error(check.stderr.trim());
+  process.exit(check.status || 1);
+}
+if (check.error) {
+  console.error('[ERROR] Could not run npm to verify installed bot package versions.');
+  console.error(check.error.message);
+  process.exit(1);
+}
+const declaredDependencies = { ...manifest.dependencies, ...manifest.optionalDependencies };
+const versionProblems = Object.keys(declaredDependencies).flatMap((name) => {
+  const dependency = tree.dependencies?.[name];
+  if (!dependency?.invalid && !dependency?.missing && dependency?.version) return [];
+  return [{ name, dependency }];
+});
+if (versionProblems.length) {
+  console.error('[ERROR] Installed bot packages do not meet package.json requirements:');
+  for (const { name, dependency } of versionProblems) {
+    const required = typeof dependency?.invalid === 'string' ? dependency.invalid : declaredDependencies[name];
+    console.error('  - ' + name + ': installed ' + (dependency?.version || 'no version found') + ', requires ' + required);
+  }
+  console.error('Update the affected package with npm install, then run npm start again.');
+  process.exit(1);
 }
 `;
 
