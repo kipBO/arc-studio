@@ -1,23 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
-import { NodePalette } from './components/palette/NodePalette.jsx';
-import { CommandPalette } from './components/palette/CommandPalette.jsx';
-import { SplashScreen } from './components/splash/SplashScreen.jsx';
-import { UserManagementModal } from './components/modals/UserManagementModal.jsx';
-import { EditorSettingsModal } from './components/modals/EditorSettingsModal.jsx';
-import { GraphVariablesModal } from './components/modals/GraphVariablesModal.jsx';
-import { GraphLibraryPanel } from './components/panels/GraphLibraryPanel.jsx';
-import { EmbedStudioView } from './components/panels/EmbedStudioView.jsx';
-import { DiscordTextStudioView } from './components/panels/DiscordTextStudioView.jsx';
-import { PermissionStudioView } from './components/panels/PermissionStudioView.jsx';
-import { SlashCommandStudioView } from './components/panels/SlashCommandStudioView.jsx';
-import { PopupModalStudioView } from './components/panels/PopupModalStudioView.jsx';
-import { GraphValidationModal } from './components/modals/GraphValidationModal.jsx';
-import { BotSettingsModal } from './components/modals/BotSettingsModal.jsx';
-import { PluginStoreModal } from './components/modals/PluginStoreModal.jsx';
+const lazyNamed = (loader, name) => lazy(() => loader().then((module) => ({ default: module[name] })));
+const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
+const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
+const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
+const UserManagementModal = lazyNamed(() => import('./components/modals/UserManagementModal.jsx'), 'UserManagementModal');
+const EditorSettingsModal = lazyNamed(() => import('./components/modals/EditorSettingsModal.jsx'), 'EditorSettingsModal');
+const GraphVariablesModal = lazyNamed(() => import('./components/modals/GraphVariablesModal.jsx'), 'GraphVariablesModal');
+const GraphLibraryPanel = lazyNamed(() => import('./components/panels/GraphLibraryPanel.jsx'), 'GraphLibraryPanel');
+const EmbedStudioView = lazyNamed(() => import('./components/panels/EmbedStudioView.jsx'), 'EmbedStudioView');
+const DiscordTextStudioView = lazyNamed(() => import('./components/panels/DiscordTextStudioView.jsx'), 'DiscordTextStudioView');
+const PermissionStudioView = lazyNamed(() => import('./components/panels/PermissionStudioView.jsx'), 'PermissionStudioView');
+const SlashCommandStudioView = lazyNamed(() => import('./components/panels/SlashCommandStudioView.jsx'), 'SlashCommandStudioView');
+const PopupModalStudioView = lazyNamed(() => import('./components/panels/PopupModalStudioView.jsx'), 'PopupModalStudioView');
+const GraphValidationModal = lazyNamed(() => import('./components/modals/GraphValidationModal.jsx'), 'GraphValidationModal');
+const BotSettingsModal = lazyNamed(() => import('./components/modals/BotSettingsModal.jsx'), 'BotSettingsModal');
+const PluginStoreModal = lazyNamed(() => import('./components/modals/PluginStoreModal.jsx'), 'PluginStoreModal');
 import { ToastContainer } from './components/ui/ToastContainer.jsx';
 import { Modal } from './components/ui/Modal.jsx';
 import { TextInput } from './components/ui/Inputs.jsx';
@@ -73,6 +74,15 @@ const SIDEBAR_WIDTH_MAX = 480;
 const DEFAULT_SIDEBAR_WIDTHS = { projects: 320, library: 320, plugins: 360, bot: 360, variables: 320 };
 const APP_EMOJI_CACHE_TTL = 14 * 24 * 60 * 60 * 1000;
 const PROJECT_STARTER_ICONS = { blank: Plus, ticket: Ticket, leveling: TrendingUp, moderation: ShieldCheck, basic: Bot, utility: Braces };
+function LazyFeatureLoading({ label = 'Opening feature…' }) {
+  return <div className="studio-lazy-feature-loading" role="status" aria-live="polite"><span aria-hidden="true" />{label}</div>;
+}
+function LazyMountedFeature({ Component, isOpen, loadingLabel, ...props }) {
+  const [hasOpened, setHasOpened] = useState(isOpen);
+  useEffect(() => { if (isOpen) setHasOpened(true); }, [isOpen]);
+  if (!hasOpened) return null;
+  return <Suspense fallback={<LazyFeatureLoading label={loadingLabel} />}><Component {...props} isOpen={isOpen} /></Suspense>;
+}
 const TAG_GROUP_COLORS = [
   { id: 'blue', label: 'Blue', value: '#5798ee' },
   { id: 'purple', label: 'Purple', value: '#a77af4' },
@@ -4251,7 +4261,7 @@ export function App() {
   if (workspaceSwitchOpen || needsSetup || needsProjectOnboarding || !authToken || !currentUser) {
     return (
       <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
-        <SplashScreen
+        <Suspense fallback={<LazyFeatureLoading label="Loading ARC Studio…" />}><SplashScreen
           studioVersion={studioVersion}
           releaseChannel={currentUpdateChannel}
           needsSetup={needsSetup}
@@ -4282,7 +4292,7 @@ export function App() {
           }}
           onToggleTheme={toggleTheme}
           canResetPrimaryAdminWithMasterKey={canResetPrimaryAdminWithMasterKey}
-          onAuthComplete={async (...args) => { setWorkspaceSwitchOpen(false); return handleAuthComplete(...args); }} />
+          onAuthComplete={async (...args) => { setWorkspaceSwitchOpen(false); return handleAuthComplete(...args); }} /></Suspense>
         <ToastContainer />
         <TooltipLayer />
         <SelectionContextMenu />
@@ -4376,6 +4386,7 @@ export function App() {
           }}
           aria-label="Graph editor"
         >
+          <Suspense fallback={<LazyFeatureLoading label="Opening editor…" />}>
           {embedStudioOpenForActiveGraph && <EmbedStudioView
             key={`${embedStudio.graphId}:${embedStudio.nodeId || embedStudio.id || 'new'}`}
             name={embedStudio.name}
@@ -4467,6 +4478,7 @@ export function App() {
             onApply={applyModalStudio}
             onClose={() => setModalStudio(null)}
           />}
+          </Suspense>
 
           {!embedStudioOpenForActiveGraph && !discordTextStudioOpenForActiveGraph && !permissionStudioOpenForActiveGraph && !slashCommandStudioOpenForActiveGraph && !modalStudioOpenForActiveGraph && <>
           <NodeCanvas
@@ -4528,7 +4540,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <GraphLibraryPanel sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -4547,7 +4559,7 @@ export function App() {
             setActiveConnections(restored.connections || []);
             setTabs((previous) => previous.map((tab) => tab.id === activeGraph.id ? restored : tab));
             arcEvents.emit('toast:notify', { title: 'Snapshot restored', message: `${snapshot.name} · save to keep these changes`, type: 'success' });
-          }} />}
+          }} /></Suspense>}
           {isProjectsOpen && <aside className="project-sidebar" aria-label="Projects" style={{ '--arc-sidebar-width': `${sidebarWidths.projects}px` }}>
             <SidebarResizeHandle width={sidebarWidths.projects} defaultWidth={DEFAULT_SIDEBAR_WIDTHS.projects} onResize={(width) => handleSidebarResize('projects', width)} />
             <header className="graph-library-header">
@@ -4604,9 +4616,9 @@ export function App() {
             }}><Trash2 size={14} />Delete project</button>
             </>}
           </div>}
-          <BotSettingsModal presentation="sidebar" isOpen={isBotSidebarOpen} sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
-          <PluginStoreModal isOpen={isPluginStoreOpen} networkOnline={networkOnline} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
-          <GraphVariablesModal presentation="sidebar" isOpen={isVariablesOpen} sidebarWidth={sidebarWidths.variables} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
+          <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
+          <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" networkOnline={networkOnline} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
+          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" presentation="sidebar" sidebarWidth={sidebarWidths.variables} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
         </main>
       </div>
 
@@ -4639,9 +4651,8 @@ export function App() {
         onTraceIssue={traceGraphNode}
       />
 
-      <NodePalette isOpen={isPaletteOpen} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} />
-      <CommandPalette
-        isOpen={isCommandPaletteOpen}
+      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} />
+      <LazyMountedFeature Component={CommandPalette} isOpen={isCommandPaletteOpen} loadingLabel="Opening search…"
         graphs={[...graphLookup.values()]}
         definitions={[...BuiltInNodeDefinitions]}
         plugins={installedPlugins}
@@ -4652,8 +4663,7 @@ export function App() {
         onGoToNode={traceGraphNode}
       />
       <EmojiPickerOverlay appEmojis={appEmojis} shortcut={(desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker} />
-      <EditorSettingsModal
-        isOpen={isSettingsOpen}
+      <LazyMountedFeature Component={EditorSettingsModal} isOpen={isSettingsOpen} loadingLabel="Opening settings…"
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdateSettings={handleUpdateSettings}
@@ -4710,7 +4720,7 @@ export function App() {
           })}</span></div>)}
         </div>
       </Modal>
-      <BotSettingsModal isOpen={isBotSettingsOpen} onClose={() => setIsBotSettingsOpen(false)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
+      <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSettingsOpen} loadingLabel="Opening app settings…" onClose={() => setIsBotSettingsOpen(false)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
       <Modal
         isOpen={Boolean(exportReview)}
         onClose={() => setExportReview(null)}
@@ -4765,7 +4775,7 @@ export function App() {
           })}
         </div>
       </Modal>
-      <GraphValidationModal isOpen={Boolean(validationResult)} onClose={() => setValidationResult(null)} graphName={validationResult?.graphName || activeGraph?.name} result={validationResult} onTraceIssue={traceGraphNode} />
+      <LazyMountedFeature Component={GraphValidationModal} isOpen={Boolean(validationResult)} loadingLabel="Opening validation results…" onClose={() => setValidationResult(null)} graphName={validationResult?.graphName || activeGraph?.name} result={validationResult} onTraceIssue={traceGraphNode} />
       <Modal
         isOpen={gatewayIntentConfirm.length > 0}
         onClose={() => setGatewayIntentConfirm([])}
@@ -4868,7 +4878,7 @@ export function App() {
         <pre className="release-notes-content">{releaseNotesNotice?.notes}</pre>
       </Modal>
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
-      {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />}
+      <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
