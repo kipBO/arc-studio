@@ -32,6 +32,8 @@ ARC Studio is in development. Submit an issue for bugs or pull request to contri
 
 ![An embed being edited with a live Discord preview](docs/screenshots/embed-studio.jpg)
 
+![Real time collaboration](docs/screenshots/collab.png)
+
 ## Platforms
 
 Run it yourself in a browser, or install the desktop app:
