@@ -110,12 +110,13 @@ const badgeMarkdown = [
   ['node-version', 'Node.js version', 'https://nodejs.org/'],
   ['license', 'License', 'LICENSE'],
   ['ci', 'CI status', `https://github.com/${repository}/actions/workflows/ci.yml`],
+  ['desktop-builds', 'Desktop builds', `https://github.com/${repository}/actions/workflows/desktop-builds.yml`],
   ['commits', 'Commits', `https://github.com/${repository}/commits`],
   ['release-downloads', 'GitHub release downloads', `https://github.com/${repository}/releases`],
   ['stars', 'GitHub stars', `https://github.com/${repository}`],
   ['forks', 'GitHub forks', `https://github.com/${repository}/network/members`]
-].map(([filename, alt, href]) => filename === 'ci'
-  ? `[![${alt}](https://github.com/${repository}/actions/workflows/ci.yml/badge.svg)](${href})`
+].map(([filename, alt, href]) => ['ci', 'desktop-builds'].includes(filename)
+  ? `[![${alt}](https://github.com/${repository}/actions/workflows/${filename}.yml/badge.svg)](${href})`
   : `[![${alt}](docs/badges/${filename}.svg)](${href})`).join('\n');
 const updated = `${readme.slice(0, startIndex + start.length)}\n${badgeMarkdown}\n${readme.slice(endIndex)}`;
 await writeFile(readmePath, updated);
