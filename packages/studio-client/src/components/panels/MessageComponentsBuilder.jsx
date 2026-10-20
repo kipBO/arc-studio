@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Plus, Trash2, X } from 'lucide-react';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
@@ -32,18 +32,20 @@ const componentId = () => `component_${globalThis.crypto?.randomUUID?.() || `${D
 export function parseDiscordEmoji(input, appEmojis = []) {
   if (!input) return undefined;
   if (typeof input === 'object') {
-    if (input.name || input.id) {
+    const id = input.id == null ? '' : String(input.id);
+    const name = String(input.name || '');
+    if (id && name && /^[a-zA-Z0-9_~]{2,32}$/.test(name) && /^\d+$/.test(id)) {
       return {
-        id: input.id || null,
-        name: input.name || '',
+        id,
+        name,
         animated: Boolean(input.animated)
       };
     }
-    return undefined;
+    return isSingleUnicodeEmoji(name) ? { id: null, name, animated: false } : undefined;
   }
   const str = String(input).trim();
   if (!str) return undefined;
-  const match = /^<(a?):([a-zA-Z0-9_~]+):([0-9]+)>$/.exec(str);
+  const match = /^<(a?):([a-zA-Z0-9_~]{2,32}):(\d+)>$/.exec(str);
   if (match) {
     return {
       name: match[2],
@@ -51,7 +53,7 @@ export function parseDiscordEmoji(input, appEmojis = []) {
       animated: match[1] === 'a'
     };
   }
-  const unbracketed = /^(?:(a):)?([a-zA-Z0-9_~]+):([0-9]+)$/.exec(str);
+  const unbracketed = /^(?:(a):)?([a-zA-Z0-9_~]{2,32}):(\d+)$/.exec(str);
   if (unbracketed) {
     return {
       name: unbracketed[2],
@@ -59,18 +61,65 @@ export function parseDiscordEmoji(input, appEmojis = []) {
       animated: unbracketed[1] === 'a'
     };
   }
-  if (Array.isArray(appEmojis) && appEmojis.length) {
-    const clean = str.replace(/^:|:$/g, '').toLowerCase();
-    const found = appEmojis.find((e) => e?.name?.toLowerCase() === clean);
-    if (found) {
-      return {
-        id: found.id,
-        name: found.name,
-        animated: Boolean(found.animated)
-      };
-    }
+  const shortcode = /^:([a-zA-Z0-9_~]{2,32}):$/.exec(str);
+  const found = shortcode && Array.isArray(appEmojis)
+    ? appEmojis.find((emoji) => emoji?.name?.toLowerCase() === shortcode[1].toLowerCase())
+    : null;
+  if (found?.id && found.name) {
+    return { id: String(found.id), name: found.name, animated: Boolean(found.animated) };
   }
-  return { id: null, name: str };
+  return isSingleUnicodeEmoji(str) ? { id: null, name: str, animated: false } : undefined;
+}
+
+function isSingleUnicodeEmoji(value) {
+  const text = String(value || '').trim();
+  if (!text || !/[\p{Extended_Pictographic}\p{Regional_Indicator}\u20e3]/u.test(text)) return false;
+  if (typeof Intl.Segmenter !== 'function') return Array.from(text).length === 1;
+  return [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].length === 1;
+}
+
+function emojiFieldValue(value) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    if (value.id && value.name) return `<${value.animated ? 'a' : ''}:${value.name}:${value.id}>`;
+    return String(value.name || '');
+  }
+  return '';
+}
+
+function isEmojiFieldDraft(value, appEmojis) {
+  if (!value) return true;
+  if (parseDiscordEmoji(value, appEmojis)) return true;
+  return /^:[a-z\d_+-]*$/i.test(value)
+    || /^:[a-z\d_~]{2,32}:$/i.test(value)
+    || /^<(?:a)?(?::[a-z\d_~]{0,32}(?::\d{0,24}>?)?)?$/i.test(value);
+}
+
+function SingleEmojiField({ value, appEmojis = [], onChange, ...props }) {
+  const fieldValue = emojiFieldValue(value);
+  const updateValue = (rawValue) => {
+    const next = String(rawValue || '').trim();
+    if (isEmojiFieldDraft(next, appEmojis)) onChange?.(next);
+  };
+  useEffect(() => {
+    if (fieldValue && !isEmojiFieldDraft(fieldValue.trim(), appEmojis)) onChange?.('');
+  }, [appEmojis, fieldValue, onChange]);
+  const finishValue = () => {
+    if (fieldValue && !parseDiscordEmoji(fieldValue, appEmojis)) onChange?.('');
+  };
+  return <DiscordTextField
+    {...props}
+    as="input"
+    discordAutocomplete
+    appEmojis={appEmojis}
+    value={fieldValue}
+    maxLength={100}
+    autoCapitalize="none"
+    autoCorrect="off"
+    spellCheck={false}
+    onChange={(event) => updateValue(event.target.value)}
+    onBlur={finishValue}
+  />;
 }
 
 export function renderComponentEmoji(emoji, appEmojis = []) {
@@ -464,19 +513,13 @@ export function MessageComponentsBuilder({
                                 <div className="component-option-num" title={option.emoji ? (typeof option.emoji === 'string' ? option.emoji : option.emoji.name) : undefined}>
                                   {option.emoji ? renderComponentEmoji(option.emoji, appEmojis) : index + 1}
                                 </div>
-                                <DiscordTextField
-                                  as="input"
-                                  discordAutocomplete
-                                  templateAutocomplete
-                                  graphVariables={graphVariables}
-                                  appEmojis={appEmojis}
+                                <SingleEmojiField
                                   aria-label={`Option ${index + 1} emoji`}
                                   value={option.emoji || ''}
-                                  maxLength={100}
                                   className="component-option-emoji-input"
-                                  onChange={(event) => patchOption(row, component, option.id, { emoji: event.target.value })}
-                                  placeholder="Emoji"
-                                  title="Unicode or <:name:id>"
+                                  onChange={(emoji) => patchOption(row, component, option.id, { emoji })}
+                                  placeholder="Type : for emoji suggestions"
+                                  title="One Unicode or custom emoji"
                                 />
                                 <DiscordTextField
                                   templateAutocomplete
@@ -622,16 +665,12 @@ export function MessageComponentsBuilder({
 
                       <label className="component-field">
                         <span>Button Emoji</span>
-                        <DiscordTextField
-                          as="input"
-                          discordAutocomplete
-                          templateAutocomplete
-                          graphVariables={graphVariables}
+                        <SingleEmojiField
                           appEmojis={appEmojis}
                           value={component.emoji || ''}
-                          maxLength={100}
-                          onChange={(event) => patchComponent(row.id, component.id, { emoji: event.target.value })}
-                          placeholder="e.g. ⭐ or :emoji_name:"
+                          onChange={(emoji) => patchComponent(row.id, component.id, { emoji })}
+                          placeholder="Type : for emoji suggestions"
+                          title="One Unicode or custom emoji"
                         />
                       </label>
 
