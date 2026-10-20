@@ -20,6 +20,7 @@ function formatCompactLastSeen(value) {
   if (seconds < 30 * 86400) return `${Math.floor(seconds / 86400)}d ago`;
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
+const createEditorId = (prefix) => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`}`;
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -573,7 +574,10 @@ export function App() {
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
+  const [collaborationConnectionFlaky, setCollaborationConnectionFlaky] = useState(false);
+  const [transientCanvasMotionSupported, setTransientCanvasMotionSupported] = useState(false);
   const remoteGraphConflictsRef = useRef(new Set());
+  const deletedGraphsRef = useRef(new Set());
   const noteEditConflictToastRef = useRef(new Set());
   const [socketReadyRevision, setSocketReadyRevision] = useState(0);
   const socketReadyRevisionRef = useRef(socketReadyRevision);
@@ -735,7 +739,11 @@ export function App() {
   const autoSaveInFlightRef = useRef(new Set());
   const collaborationClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const collaborationActionTimerRef = useRef(null);
+  const collaborationMotionSendIntervalRef = useRef(16);
   const pendingCollaborationActionRef = useRef(new Map());
+  const latestRemoteCollaborationRevisionRef = useRef(new Map());
+  const localCanvasMotionRoomRef = useRef('');
+  const collaborationPresenceRef = useRef({ projectId: '', graphId: '' });
   const errorPulseUntilRef = useRef(new Map());
   const autoSnapshotInFlightRef = useRef(false);
   useEffect(() => {
@@ -1008,23 +1016,44 @@ export function App() {
     const activeSocket = wsRef.current;
     if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
     const entry = { action, projectId: activeProjectId, graphId: activeTabId };
-    const actionKey = `${action.kind}:${action.studioId || ''}`;
+    const actionKey = `${activeProjectId}:${activeTabId}:${action.kind}:${action.studioId || ''}`;
     pendingCollaborationActionRef.current.set(actionKey, entry);
+    const roomKey = `${entry.projectId}:${entry.graphId}`;
+    if (transientCanvasMotionSupported && (action.kind === 'node-drag' || action.kind === 'note-drag')) {
+      localCanvasMotionRoomRef.current = roomKey;
+      const graphKey = roomKey;
+      const timer = liveGraphSendTimersRef.current.get(graphKey);
+      if (timer) { window.clearTimeout(timer); liveGraphSendTimersRef.current.delete(graphKey); }
+    }
+    else if (localCanvasMotionRoomRef.current === roomKey && ['cursor', 'selection', 'idle'].includes(action.kind)) {
+      localCanvasMotionRoomRef.current = '';
+      setLiveSyncRevision((revision) => revision + 1);
+    }
     const flush = () => {
       collaborationActionTimerRef.current = null;
       const socket = wsRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (socket.bufferedAmount > 16 * 1024) {
+        collaborationActionTimerRef.current = window.setTimeout(flush, 16);
+        return;
+      }
       const pending = [...pendingCollaborationActionRef.current.values()];
       pendingCollaborationActionRef.current.clear();
-      for (const entry of pending) if (entry.projectId && entry.graphId) socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
+      let flushedMotionCommit = false;
+      for (const entry of pending) if (entry.projectId && entry.graphId) {
+        socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
+        if (Array.isArray(entry.action.nodePositions) || Array.isArray(entry.action.notePositions)) flushedMotionCommit = true;
+      }
+      if (flushedMotionCommit) setLiveSyncRevision((revision) => revision + 1);
     };
     if (immediate || action.kind === 'idle') {
       window.clearTimeout(collaborationActionTimerRef.current);
       flush();
     } else if (!collaborationActionTimerRef.current) {
-      collaborationActionTimerRef.current = window.setTimeout(flush, 40);
+      const motionAction = ['node-drag', 'note-drag', 'wire-drag'].includes(action.kind);
+      collaborationActionTimerRef.current = window.setTimeout(flush, motionAction ? collaborationMotionSendIntervalRef.current : 16);
     }
-  }, [activeProjectId, activeTabId]);
+  }, [activeProjectId, activeTabId, transientCanvasMotionSupported]);
   const sendGraphChatMessage = useCallback((content, position) => {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
@@ -1491,6 +1520,7 @@ export function App() {
               : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}; some features may not be available in this desktop app.` : '');
         }
         if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
+        setTransientCanvasMotionSupported(system.collaborationFeatures?.transientCanvasMotion === true);
         if (!desktopMode && typeof system.version === 'string' && system.version.trim()) setStudioVersion(system.version.trim());
         if (desktopMode && workspaceMode === 'local') {
           const ownerUsername = typeof system.localUsername === 'string' ? system.localUsername : '';
@@ -1677,17 +1707,60 @@ export function App() {
       if (!active) return;
       collaborationClientIdRef.current = globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       setCollaborationSocketStatus('connecting');
+      setCollaborationConnectionFlaky(false);
+      collaborationMotionSendIntervalRef.current = 16;
       socket = new WebSocket(wsUrl);
       wsRef.current = socket;
       let lastPongAt = Date.now();
+      let pingSequence = 0;
+      let pendingPing = null;
+      let missedPongs = 0;
+      let consecutiveBadSamples = 0;
+      let consecutiveGoodSamples = 0;
+      let previousRtt = null;
+      const rttSamples = [];
+      const recordConnectionSample = (rtt, missed = false) => {
+        if (Number.isFinite(rtt)) {
+          rttSamples.push(rtt);
+          if (rttSamples.length > 5) rttSamples.shift();
+        }
+        const averageRtt = rttSamples.length ? rttSamples.reduce((total, value) => total + value, 0) / rttSamples.length : 0;
+        const jitter = Number.isFinite(rtt) && Number.isFinite(previousRtt) ? Math.abs(rtt - previousRtt) : 0;
+        if (Number.isFinite(rtt)) previousRtt = rtt;
+        const congested = socket.readyState === WebSocket.OPEN && socket.bufferedAmount >= 32 * 1024;
+        const isBad = missed || congested || averageRtt >= 350 || jitter >= 180;
+        collaborationMotionSendIntervalRef.current = missed || congested || averageRtt >= 350 || jitter >= 180
+          ? 50
+          : averageRtt >= 180 || jitter >= 70 ? 32 : 16;
+        if (isBad) {
+          consecutiveBadSamples += 1;
+          consecutiveGoodSamples = 0;
+          if (consecutiveBadSamples >= 2 || missedPongs >= 2) setCollaborationConnectionFlaky(true);
+        } else {
+          consecutiveGoodSamples += 1;
+          consecutiveBadSamples = 0;
+          if (consecutiveGoodSamples >= 3) setCollaborationConnectionFlaky(false);
+        }
+      };
       socket.onopen = () => {
         if (socket.readyState === WebSocket.OPEN) {
+          collaborationPresenceRef.current = { projectId: '', graphId: '' };
           socket.send(JSON.stringify({ type: 'AUTH', token: authToken }));
           heartbeatTimer = window.setInterval(() => {
             if (socket.readyState !== WebSocket.OPEN) return;
+            if (document.visibilityState !== 'visible') { pendingPing = null; return; }
             if (Date.now() - lastPongAt > 45000) { socket.close(); return; }
-            socket.send(JSON.stringify({ type: 'PING' }));
-          }, 15000);
+            if (pendingPing && performance.now() - pendingPing.sentAt > 12_000) {
+              pendingPing = null;
+              missedPongs += 1;
+              recordConnectionSample(null, true);
+            }
+            if (!pendingPing && document.visibilityState === 'visible') {
+              const id = ++pingSequence;
+              pendingPing = { id, sentAt: performance.now() };
+              socket.send(JSON.stringify({ type: 'PING', pingId: id, clientSentAt: pendingPing.sentAt }));
+            }
+          }, 5000);
           let lastActivitySentAt = 0;
           const reportActivity = () => {
             const now = Date.now();
@@ -1697,7 +1770,12 @@ export function App() {
           };
           const activityEvents = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'];
           activityEvents.forEach((name) => window.addEventListener(name, reportActivity, { passive: true, capture: true }));
-          const reportVisibility = () => { if (document.visibilityState === 'visible') reportActivity(); };
+          const reportVisibility = () => {
+            if (document.visibilityState !== 'visible') return;
+            pendingPing = null;
+            lastPongAt = Date.now();
+            reportActivity();
+          };
           document.addEventListener('visibilitychange', reportVisibility);
           socket.addEventListener('close', () => {
             activityEvents.forEach((name) => window.removeEventListener(name, reportActivity, true));
@@ -1710,6 +1788,14 @@ export function App() {
           const msg = JSON.parse(event.data);
           if (msg.type === 'PONG') {
             lastPongAt = Date.now();
+            if (document.visibilityState !== 'visible') { pendingPing = null; return; }
+            const sample = pendingPing;
+            if (sample && (msg.pingId === undefined || msg.pingId === sample.id)) {
+              const rtt = Math.max(0, performance.now() - sample.sentAt);
+              pendingPing = null;
+              missedPongs = 0;
+              recordConnectionSample(rtt);
+            }
             return;
           }
           if (msg.type === 'SESSION_REPLACEMENT_PENDING') {
@@ -1780,10 +1866,13 @@ export function App() {
           if (msg.type === 'INIT_STATE') {
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
             setCollaborationSocketStatus('connected');
+            setTransientCanvasMotionSupported(msg.payload.collaborationFeatures?.transientCanvasMotion === true);
             setProjectLastSeen(msg.payload.projectLastSeen && typeof msg.payload.projectLastSeen === 'object' ? msg.payload.projectLastSeen : {});
             window.clearTimeout(collaborationActionTimerRef.current);
             collaborationActionTimerRef.current = null;
             pendingCollaborationActionRef.current.clear();
+            latestRemoteCollaborationRevisionRef.current.clear();
+            localCanvasMotionRoomRef.current = '';
             setRemoteCollaborationActions([]);
             setNoteEditLockState({ roomKey: '', locks: {} });
             liveGraphRevisionRef.current.clear();
@@ -1941,6 +2030,7 @@ export function App() {
           } else if (msg.type === 'GRAPH_STATE_SYNC' && msg.payload?.graphId) {
             const payload = msg.payload;
             if (payload.projectId !== activeProjectIdRef.current) return;
+            if (deletedGraphsRef.current.has(`${payload.projectId}:${payload.graphId}`)) return;
             liveGraphReadyRef.current.add(`${payload.projectId}:${payload.graphId}`);
             setLiveSyncRevision((revision) => revision + 1);
             if (!payload.graph?.id) return;
@@ -1952,6 +2042,30 @@ export function App() {
             const incomingRevision = Number(payload.revision);
             if (incomingRevision <= previousRevision && liveGraphBaseRef.current.has(incoming.id) && !isOwnUpdate && !payload.resync) return;
             liveGraphRevisionRef.current.set(incoming.id, Number.isInteger(incomingRevision) && incomingRevision >= 0 ? incomingRevision : previousRevision + 1);
+            if (Array.isArray(incoming.nodes) || Array.isArray(incoming.notes)) {
+              const nodePositions = new Map((incoming.nodes || []).map((node) => [node.id, node]));
+              const notePositions = new Map((incoming.notes || []).map((note) => [note.id, note]));
+              setRemoteCollaborationActions((previous) => previous.map((peer) => {
+                if (peer.projectId !== payload.projectId || peer.graphId !== payload.graphId || !peer.action
+                  || (payload.sourceUserId || payload.user?.id) !== peer.userId) return peer;
+                let action = peer.action;
+                if (Array.isArray(action.nodePositions)) {
+                  const remaining = action.nodePositions.filter((position) => {
+                    const synced = nodePositions.get(position.id);
+                    return !synced || synced.x !== position.x || synced.y !== position.y;
+                  });
+                  action = { ...action, nodePositions: remaining };
+                }
+                if (Array.isArray(action.notePositions)) {
+                  const remaining = action.notePositions.filter((position) => {
+                    const synced = notePositions.get(position.id);
+                    return !synced || synced.x !== position.x || synced.y !== position.y;
+                  });
+                  action = { ...action, notePositions: remaining };
+                }
+                return action === peer.action ? peer : { ...peer, action };
+              }));
+            }
             const base = liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
             const local = tabsRef.current.find((item) => item.id === incoming.id);
             const mergeBase = isOwnUpdate ? pending.graph : base;
@@ -1999,8 +2113,44 @@ export function App() {
               if (graphId) rejectedLiveGraphToastRef.current.add(graphId);
               arcEvents.emit('toast:notify', { title: 'Live edit not shared', message: msg.payload?.message || 'This workspace did not accept the graph update. Check your graph edit permissions and connection.', type: 'warning' });
             }
+          } else if (msg.type === 'GRAPH_DELETED') {
+            const payload = msg.payload || {};
+            const graphId = payload.graphId;
+            if (payload.projectId !== activeProjectIdRef.current || typeof graphId !== 'string') return;
+            const graphKey = `${payload.projectId}:${graphId}`;
+            if (deletedGraphsRef.current.has(graphKey)) return;
+            deletedGraphsRef.current.add(graphKey);
+            remoteProjectTabGraphsRef.current.delete(graphKey);
+            liveGraphBaseRef.current.delete(graphId);
+            liveGraphRevisionRef.current.delete(graphId);
+            lastLiveGraphSentRef.current.delete(graphId);
+            pendingLiveGraphRef.current.delete(graphId);
+            remoteGraphConflictsRef.current.delete(graphId);
+            rejectedLiveGraphToastRef.current.delete(graphId);
+            unsharedProjectTabIdsRef.current.delete(graphKey);
+            historyRef.current.delete(graphId);
+            recoveryDraftsRef.current = recoveryDraftsRef.current.filter((entry) => entry.graph?.id !== graphId);
+            const sendTimer = liveGraphSendTimersRef.current.get(graphKey);
+            if (sendTimer) window.clearTimeout(sendTimer);
+            liveGraphSendTimersRef.current.delete(graphKey);
+            if (projectTabSyncRef.current.projectId === payload.projectId) {
+              projectTabSyncRef.current.graphIds = projectTabSyncRef.current.graphIds.filter((id) => id !== graphId);
+            }
+            setSavedGraphs((current) => current.filter((graph) => graph.id !== graphId));
+            const remainingTabs = tabsRef.current.filter((tab) => tab.id !== graphId);
+            setTabs(remainingTabs);
+            if (activeTabIdRef.current === graphId) setActiveTabId(remainingTabs[0]?.id || null);
+            setRemoteCollaborationActions((current) => current.filter((item) => item.projectId !== payload.projectId || item.graphId !== graphId));
+            setGraphChatBubbles((current) => current.filter((bubble) => bubble.projectId !== payload.projectId || bubble.graphId !== graphId));
+            setNoteEditLockState((current) => current.roomKey === graphKey ? { roomKey: '', locks: {} } : current);
+            if (activeTabIdRef.current === graphId) {
+              setActiveNodes([]);
+              setActiveConnections([]);
+            }
+            arcEvents.emit('toast:notify', { title: 'Graph deleted', message: 'This graph was removed from the workspace.', type: 'info' });
           } else if (msg.type === 'GRAPH_UPDATED' && msg.payload?.graph?.id) {
             const incoming = msg.payload.graph;
+            if (deletedGraphsRef.current.has(`${activeProjectIdRef.current}:${incoming.id}`)) return;
             liveGraphBaseRef.current.set(incoming.id, snapshotGraph(incoming));
             liveGraphRevisionRef.current.delete(incoming.id);
             setSavedGraphs((current) => [incoming, ...current.filter((graph) => graph.id !== incoming.id)]);
@@ -2026,6 +2176,7 @@ export function App() {
             const payload = msg.payload || {};
             const graph = payload.graph;
             if (payload.projectId !== activeProjectIdRef.current || !graph?.id || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)) return;
+            if (deletedGraphsRef.current.has(`${payload.projectId}:${graph.id}`)) return;
             remoteProjectTabGraphsRef.current.set(`${payload.projectId}:${graph.id}`, graph);
             unsharedProjectTabIdsRef.current.delete(`${payload.projectId}:${graph.id}`);
             if (!projectTabStartupPendingRef.current && !savedGraphsRef.current.some((item) => item.id === graph.id)) {
@@ -2056,7 +2207,8 @@ export function App() {
           } else if (msg.type === 'PROJECT_COLLABORATION_UPDATED') {
             const payload = msg.payload || {};
             if (payload.projectId !== activeProjectIdRef.current) return;
-            const graphIds = [...new Set((Array.isArray(payload.graphIds) ? payload.graphIds : []).filter((id) => typeof id === 'string'))].slice(0, MAX_OPEN_GRAPH_TABS);
+            const graphIds = [...new Set((Array.isArray(payload.graphIds) ? payload.graphIds : []).filter((id) => typeof id === 'string'
+              && !deletedGraphsRef.current.has(`${payload.projectId}:${id}`)))].slice(0, MAX_OPEN_GRAPH_TABS);
             setProjectCollaboration({ ...payload, graphIds, users: Array.isArray(payload.users) ? payload.users : [] });
             if (payload.projectLastSeen && typeof payload.projectLastSeen === 'object') setProjectLastSeen(payload.projectLastSeen);
             if (!payload.tabsInitialized) return;
@@ -2071,7 +2223,8 @@ export function App() {
               return;
             }
             const knownGraphs = new Map([...remoteProjectTabGraphsRef.current.values(), ...savedGraphsRef.current, ...tabsRef.current].map((graph) => [graph.id, graph]));
-            const dirtyTabsToPreserve = tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id));
+            const dirtyTabsToPreserve = tabsRef.current.filter((tab) => tab.isDirty && !graphIds.includes(tab.id)
+              && !deletedGraphsRef.current.has(`${payload.projectId}:${tab.id}`));
             let effectiveGraphIds = graphIds;
             if (!localDesktopWorkspace) {
               const previousSharedIds = projectTabStartupBaselineRef.current;
@@ -2114,6 +2267,11 @@ export function App() {
           } else if (msg.type === 'COLLAB_ACTION_UPDATED') {
             const action = msg.payload;
             if (action?.projectId !== activeProjectIdRef.current || action?.graphId !== activeTabIdRef.current || action.userId === currentUser?.id) return;
+            const actionRevision = Number(action.revision);
+            const revisionKey = `${action.projectId}:${action.graphId}:${action.userId}`;
+            const lastRevision = latestRemoteCollaborationRevisionRef.current.get(revisionKey) || 0;
+            if (Number.isFinite(actionRevision) && actionRevision > 0 && actionRevision <= lastRevision) return;
+            if (Number.isFinite(actionRevision) && actionRevision > 0) latestRemoteCollaborationRevisionRef.current.set(revisionKey, actionRevision);
             setRemoteCollaborationActions((previous) => [...previous.filter((item) => item.userId !== action.userId), action]);
             if (action.action?.kind === 'studio-draft') {
               if (action.action.studioType === 'embed') {
@@ -2150,7 +2308,16 @@ export function App() {
               }
             }
           } else if (msg.type === 'COLLAB_ACTION_CLEARED') {
-            setRemoteCollaborationActions((previous) => previous.filter((item) => item.userId !== msg.payload?.userId));
+            const userId = msg.payload?.userId;
+            const projectId = msg.payload?.projectId;
+            const graphId = msg.payload?.graphId;
+            const clearRevision = Number(msg.payload?.revision);
+            const revisionKey = `${projectId}:${graphId}:${userId}`;
+            const lastRevision = latestRemoteCollaborationRevisionRef.current.get(revisionKey) || 0;
+            if (Number.isFinite(clearRevision) && clearRevision > 0 && clearRevision <= lastRevision) return;
+            if (Number.isFinite(clearRevision) && clearRevision > 0) latestRemoteCollaborationRevisionRef.current.set(revisionKey, clearRevision);
+            setRemoteCollaborationActions((previous) => previous.filter((item) => item.userId !== userId
+              || item.projectId !== projectId || item.graphId !== graphId));
           } else if (msg.type === 'LOGS_CLEARED') {
             setLogs([]);
           } else if (msg.type === 'EMBEDS_UPDATED' && Array.isArray(msg.payload?.embeds)) {
@@ -2220,6 +2387,10 @@ export function App() {
         collaborationActionTimerRef.current = null;
         pendingCollaborationActionRef.current.clear();
         setRemoteCollaborationActions([]);
+        latestRemoteCollaborationRevisionRef.current.clear();
+        localCanvasMotionRoomRef.current = '';
+        collaborationMotionSendIntervalRef.current = 16;
+        setCollaborationConnectionFlaky(false);
         setCollaborators([]);
         setProjectCollaboration({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
         setNoteEditLockState({ roomKey: '', locks: {} });
@@ -2251,18 +2422,28 @@ export function App() {
   useEffect(() => {
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    if (activeProjectId) {
-      liveGraphReadyRef.current.delete(`${activeProjectId}:${activeTabId}`);
-      socket.send(JSON.stringify({ type: 'PRESENCE', projectId: activeProjectId, graphId: activeTabId || '' }));
-      if (pendingCollaborationActionRef.current.size) {
-        window.clearTimeout(collaborationActionTimerRef.current);
-        collaborationActionTimerRef.current = null;
-        const pending = [...pendingCollaborationActionRef.current.values()];
-        pendingCollaborationActionRef.current.clear();
-        for (const entry of pending) if (entry.projectId && entry.graphId) socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
+    const nextPresence = { projectId: activeProjectId || '', graphId: activeProjectId ? activeTabId || '' : '' };
+    const previousPresence = collaborationPresenceRef.current;
+    const pending = [...pendingCollaborationActionRef.current.values()];
+    window.clearTimeout(collaborationActionTimerRef.current);
+    collaborationActionTimerRef.current = null;
+    pendingCollaborationActionRef.current.clear();
+
+    for (const entry of pending) {
+      if (entry.projectId === previousPresence.projectId && entry.graphId === previousPresence.graphId && entry.projectId && entry.graphId) {
+        socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
       }
     }
-    else { setCollaborators([]); socket.send(JSON.stringify({ type: 'PRESENCE', projectId: '', graphId: '' })); }
+    if (activeProjectId) liveGraphReadyRef.current.delete(`${activeProjectId}:${activeTabId}`);
+    else setCollaborators([]);
+    socket.send(JSON.stringify({ type: 'PRESENCE', ...nextPresence }));
+    collaborationPresenceRef.current = nextPresence;
+    for (const entry of pending) {
+      if (entry.projectId === nextPresence.projectId && entry.graphId === nextPresence.graphId && entry.projectId && entry.graphId
+        && (entry.projectId !== previousPresence.projectId || entry.graphId !== previousPresence.graphId)) {
+        socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
+      }
+    }
   }, [activeProjectId, activeTabId, authToken, socketReadyRevision]);
 
   useEffect(() => {
@@ -2273,7 +2454,23 @@ export function App() {
     const previous = projectTabSyncRef.current;
     if (previous.projectId !== activeProjectId || previous.socketRevision !== socketReadyRevision) {
       projectTabSyncRef.current = { projectId: activeProjectId, socketRevision: socketReadyRevision, graphIds };
-      socket.send(JSON.stringify({ type: 'PROJECT_TABS_SYNC', graphIds }));
+      let snapshotBytes = 0;
+      const snapshots = [];
+      const deferredSnapshots = [];
+      for (const graphId of graphIds) {
+        const graph = tabs.find((tab) => tab.id === graphId);
+        if (!graph || savedGraphsRef.current.some((item) => item.id === graphId)) continue;
+        try {
+          const snapshot = snapshotGraph(graph);
+          const size = JSON.stringify(snapshot).length;
+          if (size <= 30_000_000 && snapshotBytes + size <= 19_000_000) {
+            snapshots.push(snapshot);
+            snapshotBytes += size;
+          } else if (size <= 30_000_000) deferredSnapshots.push(snapshot);
+        } catch {}
+      }
+      socket.send(JSON.stringify({ type: 'PROJECT_TABS_SYNC', graphIds, ...(snapshots.length ? { graphs: snapshots } : {}) }));
+      for (const graph of deferredSnapshots) socket.send(JSON.stringify({ type: 'PROJECT_TAB_OPEN', graphId: graph.id, graph }));
       return;
     }
     const previousIds = new Set(previous.graphIds);
@@ -2300,7 +2497,10 @@ export function App() {
     const socket = wsRef.current;
     if (!graph?.isDirty || !socket || socket.readyState !== WebSocket.OPEN || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)) return undefined;
     if (pendingLiveGraphRef.current.has(graph.id)) return undefined;
+    if ([...pendingCollaborationActionRef.current.values()].some((entry) => entry.projectId === activeProjectId && entry.graphId === graph.id
+      && (Array.isArray(entry.action.nodePositions) || Array.isArray(entry.action.notePositions)))) return undefined;
     const graphKey = `${activeProjectId}:${graph.id}`;
+    if (localCanvasMotionRoomRef.current === graphKey) return undefined;
     if (liveGraphSendTimersRef.current.has(graphKey)) return undefined;
     const timer = window.setTimeout(() => {
       liveGraphSendTimersRef.current.delete(graphKey);
@@ -2309,6 +2509,9 @@ export function App() {
       const latestSocket = wsRef.current;
       if (!latestGraph?.isDirty || !latestSocket || latestSocket !== socket || latestSocket.readyState !== WebSocket.OPEN
         || !liveGraphReadyRef.current.has(`${activeProjectId}:${graph.id}`)) return;
+      if (localCanvasMotionRoomRef.current === graphKey) return;
+      if ([...pendingCollaborationActionRef.current.values()].some((entry) => entry.projectId === activeProjectId && entry.graphId === graph.id
+        && (Array.isArray(entry.action.nodePositions) || Array.isArray(entry.action.notePositions)))) return;
       if (pendingLiveGraphRef.current.has(graph.id)) return;
       const graphState = snapshotGraph(latestGraph);
       const serialized = JSON.stringify(graphState);
@@ -2585,7 +2788,7 @@ export function App() {
       const validationLookup = new Map(graphLookup);
       validationLookup.set(data.graph.id, data.graph);
       notifyGraphCheckIssues(data.graph, validationLookup);
-      return true;
+      return data.graph;
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Save failed', message: error.message, type: 'error' });
       return false;
@@ -2826,18 +3029,18 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph. Saved graphs remain available in the Library.', type: 'warning' });
       return null;
     }
-    const id = `graph_${Date.now()}`;
+    const id = createEditorId('graph');
     const selectedSource = blank ? null : sourceGraph || savedGraphs.find((graph) => graph.id === defaultGraphId) || graphTemplates.find((graph) => graph.id === defaultGraphId);
     const sourceNodes = selectedSource?.nodes || (blank ? [] : [{ id: `node_${Date.now()}`, type: 'event_slash_command', label: 'On Slash Command', x: 72, y: 104, data: { commandName: 'help', description: 'Show help and bot information.' } }]);
     const clonedNodes = structuredClone(sourceNodes);
-    const nodeIds = new Map(clonedNodes.map((node) => [node.id, `node_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`]));
+    const nodeIds = new Map(clonedNodes.map((node) => [node.id, createEditorId('node')]));
     const graph = {
       id,
       ...(selectedSource?.graphType ? { graphType: selectedSource.graphType } : {}),
       name: blank ? `Graph ${tabs.length + 1}` : sourceGraph ? `${sourceGraph.name || 'Template'} copy` : `Graph ${tabs.length + 1}`,
       variables: structuredClone(selectedSource?.variables || []),
       nodes: clonedNodes.map((node) => ({ ...node, id: nodeIds.get(node.id) })),
-      connections: structuredClone(selectedSource?.connections || []).map((connection) => ({ ...connection, id: `connection_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, sourceNodeId: nodeIds.get(connection.sourceNodeId) || connection.sourceNodeId, targetNodeId: nodeIds.get(connection.targetNodeId) || connection.targetNodeId })),
+      connections: structuredClone(selectedSource?.connections || []).map((connection) => ({ ...connection, id: createEditorId('connection'), sourceNodeId: nodeIds.get(connection.sourceNodeId) || connection.sourceNodeId, targetNodeId: nodeIds.get(connection.targetNodeId) || connection.targetNodeId })),
       isDirty: false
     };
     setTabs((previous) => [...previous, graph]);
@@ -2853,7 +3056,7 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Graph tab limit reached', message: 'Close a tab to open another graph.', type: 'warning' });
       return;
     }
-    const graphId = `function_${Date.now()}`;
+    const graphId = createEditorId('function');
     const graph = {
       id: graphId,
       graphType: 'function',
@@ -4556,6 +4759,7 @@ export function App() {
       if (mode === 'remote') localStorage.setItem('arc_remote_workspace_url', url);
     } catch {}
     setWorkspaceMode(mode);
+    setTransientCanvasMotionSupported(false);
     setSupportedWorkspaceNodeTypes(null);
     setWorkspaceCompatibilityNotice('');
     setWorkspaceSwitchOpen(false);
@@ -4628,6 +4832,7 @@ export function App() {
       setRemoteWorkspaceName(name);
       try { localStorage.setItem('arc_remote_workspace_name', name); } catch {}
       activateWorkspace('remote', url);
+      setTransientCanvasMotionSupported(status.collaborationFeatures?.transientCanvasMotion === true);
       setSupportedWorkspaceNodeTypes(supportedNodeTypes);
       setWorkspaceCompatibilityNotice(compatibilityNotice);
       return { notice: compatibilityNotice };
@@ -5258,6 +5463,7 @@ export function App() {
             noteEditLocks={noteEditLockState.roomKey === `${activeProjectId}:${activeTabId}` ? noteEditLockState.locks : {}}
             collaborationOnline={Boolean(authToken)}
             collaborationReady={collaborationSocketStatus === 'connected' && liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)}
+            collaborationMotionSupported={transientCanvasMotionSupported}
             collaborationClientId={collaborationClientIdRef.current}
             onRequestNoteEditLock={requestNoteEditLock}
             onReleaseNoteEditLock={releaseNoteEditLock}
@@ -5293,6 +5499,7 @@ export function App() {
               <span className="context-separator">·</span> {graphValidation.errors.length ? `${graphValidation.errors.length} issues` : graphValidation.warnings.length ? 'Review' : 'Ready'}</>
               : 'Open a graph to run checks.'}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite"><span className="collaboration-connection-dot" />{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite"><span className="collaboration-connection-dot" />Flaky connection</span>}
             {desktopMode && workspaceMode === 'remote' && workspaceCompatibilityNotice && <span className="workspace-compatibility-status" title={workspaceCompatibilityNotice}>Compatibility limits apply</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
