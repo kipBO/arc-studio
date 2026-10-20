@@ -4,7 +4,7 @@ import { getArcUiScale } from '../../core/uiScale.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { BookmarkPlus, Braces, Calculator, ChevronDown, ChevronRight, Clock3, Copy, Database, FileCode2, FileUp, FolderTree, GitCompare, MoreHorizontal, PackageOpen, Pencil, Play, Plus, Puzzle, RotateCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react';
-import { BuiltInNodeDefinitions, createDefaultNodeData, isNodeDefinitionNew } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
@@ -21,7 +21,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], definitions = BuiltInNodeDefinitions, defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -37,8 +37,18 @@ export function GraphLibraryPanel({
   const [showSnapshotName, setShowSnapshotName] = useState(false);
   const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [snapshotError, setSnapshotError] = useState('');
+  const [, setNewNodeRevision] = useState(0);
   const [compareSnapshot, setCompareSnapshot] = useState(null);
   const isSearching = Boolean(query.trim());
+  useEffect(() => {
+    if (activeSection !== 'nodes') return undefined;
+    markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions, newNodesUserKey), newNodesUserKey);
+    const timer = window.setInterval(() => {
+      markNewNodeDefinitionsSeen(getVisibleNewNodeDefinitions(definitions, newNodesUserKey), newNodesUserKey);
+      setNewNodeRevision((revision) => revision + 1);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, definitions, newNodesUserKey]);
   const projectExpansion = expandedByProject[usageScope || 'default'] || {};
   const expandedGroups = projectExpansion.graphs || DEFAULT_EXPANDED_GRAPH_GROUPS;
   const expandedNodeGroups = projectExpansion.nodes || {};
@@ -294,7 +304,7 @@ export function GraphLibraryPanel({
     return <button key={`${keyPrefix}${node.type}`} className={`graph-library-entry node-library-entry ${selected ? 'is-multi-selected' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, payload)} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, payload)} onDragEnd={finishNodeDrag} onClick={(event) => {
       if (event.metaKey || event.ctrlKey) { setSelectedLibraryNodeTypes((current) => current.includes(node.type) ? current.filter((type) => type !== node.type) : [...current, node.type]); return; }
       setSelectedLibraryNodeTypes([]); recordUsage('nodes', node.type); onAddNode?.(node.type);
-    }} title={`${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
+    }} title={`${node.description || ''}${selected ? ' · Drag to add selected nodes' : ''}`} aria-label={node.pluginAdapter ? `${node.label}. Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}` : undefined}><NodeTypeIcon type={node.type} color={node.color} size={14} /><span>{node.label}</span>{isNodeDefinitionNew(node, Date.now(), newNodesUserKey) && <i className="node-new-badge">NEW</i>}{node.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`} aria-label={`Plugin node from ${node.pluginName || node.pluginId || 'an installed plugin'}`}><Puzzle size={12} /></span>}</button>;
   };
 
   return <aside className="graph-library-panel" aria-label="Graph library" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }} onDragOver={previewLibraryDrag} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragGhost(null); }} onDrop={ignoreLibraryDrop}>
