@@ -220,7 +220,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const fieldId = String(node.data?.custom_id ?? '');
     const fieldOptions = [...new Map(modalFieldOptions.map((item) => [item.value, item])).values()];
     return <div className="node-config node-config-stack">
-      {!isConnected('submitted_values') && <span className="node-config-hint">Connect <strong>Submitted Values</strong> from On Modal Submitted.</span>}
+      {!isConnected('submitted_values') && <span className="node-config-warning" role="status"><AlertTriangle size={12} /><span>Connect submitted values.</span></span>}
       {!isConnected('custom_id') && <>
         {fieldOptions.length > 0 && <FallbackField label="Modal field"><AnimatedDropdown value={fieldId} options={fieldOptions} onChange={(value) => update('custom_id', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Popup modal field" placeholder="Choose a field" className="node-select" /></FallbackField>}
         <FallbackField label="Field Custom ID"><input value={fieldId} onChange={(event) => update('custom_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Enter the field's custom ID" aria-label="Field Custom ID" /></FallbackField>
