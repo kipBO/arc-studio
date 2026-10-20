@@ -129,7 +129,8 @@ export function EmbedNodeBuilder({
   connectedInputIds = new Set(),
   wiredFields = {},
   appEmojis = [],
-  graphVariables = []
+  graphVariables = [],
+  templatePreviewValues = {}
 }) {
   const blocks = getEmbedBlocks(data);
   const visibleBlocks = blocks.filter((block) => block.type !== 'color');
@@ -312,7 +313,7 @@ export function EmbedNodeBuilder({
             aria-invalid={message ? 'true' : undefined}
           />
         )}
-        {allowEmoji && <TemplateVariableHints value={block[key]} graphVariables={graphVariables} />}
+        {allowEmoji && <TemplateVariableHints value={block[key]} graphVariables={graphVariables} templatePreviewValues={templatePreviewValues} />}
         {message && <small className="embed-field-error">{message}</small>}
       </label>
     );
