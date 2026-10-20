@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataDir, logsDir } from '../storage.js';
+import { environmentStatus } from '../config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,6 +14,23 @@ export class StartupDiagnostics {
   static run() {
     const checks = [];
     let healthy = true;
+//
+    if (environmentStatus.requiredMissing.length) {
+      checks.push({
+        name: 'Environment Variables',
+        status: 'FAIL',
+        message: `Required setting(s) missing: ${environmentStatus.requiredMissing.join(', ')}`
+      });
+      healthy = false;
+    } else if (environmentStatus.optionalFallbacks.length) {
+      checks.push({
+        name: 'Environment Variables',
+        status: 'WARN',
+        message: `Optional defaults loaded from .env.example: ${environmentStatus.optionalFallbacks.join(', ')}`
+      });
+    } else {
+      checks.push({ name: 'Environment Variables', status: 'PASS', message: 'Required settings are present' });
+    }
 //
     const nodeVersion = process.versions.node;
     const majorVersion = parseInt(nodeVersion.split('.')[0], 10);
