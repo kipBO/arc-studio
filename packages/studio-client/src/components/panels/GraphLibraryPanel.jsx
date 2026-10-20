@@ -507,7 +507,7 @@ function groupNodes(nodes) {
 }
 
 function groupGraphs(graphs) {
-  const order = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
+  const order = ['Slash Commands', 'Messages', 'Message Events', 'Components', 'Member Events', 'Voice & Presence', 'Bot Events', 'Channel Events', 'Roles', 'Moderation Events', 'Invites', 'Cron Jobs', 'Scheduled Events', 'Functions', 'Other'];
   const groups = new Map(order.map((name) => [name, []]));
   for (const graph of graphs) {
     const eventTypes = (graph.nodes || []).filter((node) => String(node.type).startsWith('event_')).map((node) => node.type);
@@ -527,6 +527,7 @@ function groupGraphs(graphs) {
     else if (eventTypes.includes('event_cron')) group = 'Cron Jobs';
     else if (eventTypes.includes('event_bot_ready')) group = 'Bot Events';
     else if (eventTypes.some((type) => type.startsWith('event_scheduled_event_'))) group = 'Scheduled Events';
+    if (!groups.has(group)) groups.set(group, []);
     groups.get(group).push(graph);
   }
   return order.map((name) => [name, groups.get(name)]).filter(([, items]) => items.length);
