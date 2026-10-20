@@ -83,4 +83,10 @@ jobs:
         run: npm ci
 
       - name: Run Diagnostics Check
+        env:
+          ARC_SETUP_KEY: ci-preflight-only
+          SESSION_SECRET: ci-preflight-session-secret
+          ARC_BOT_TOKEN_ENCRYPTION_KEY: ci-preflight-token-encryption-key
+          ARC_ENV_FILE: ${{ runner.temp }}/arc-studio-ci.env
+          ARC_DATA_DIR: ${{ runner.temp }}/arc-studio-ci-data
         run: node -e "import('./packages/studio-server/src/engine/StartupDiagnostics.js').then(m => { const r = m.StartupDiagnostics.run(); console.log(r); if (!r.healthy) process.exit(1); })"
