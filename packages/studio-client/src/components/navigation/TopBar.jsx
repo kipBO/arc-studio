@@ -7,9 +7,9 @@ import {
 } from 'lucide-react';
 //
 export function TopBar({
-  tabs = [], graphTabStatuses = new Map(), activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [],
+  tabs = [], graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [],
   desktopMode = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
-  isLocked = false, onToggleLock, onSelectTab,
+  isLocked = false, onToggleLock, onSelectTab, onFollowCollaborator,
   onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onOpenSettings, onOpenUsers, onLogout,
   onOpenBotSettings, onStartBot, onStopBot, onUndo, onRedo, canUndo = false, canRedo = false, onValidate, validationStatus = 'warning', validationErrors = 0, validationWarnings = 0, onSwitchWorkspace, networkOnline = true, appUpdate = null, serverUpdateAvailable = false, onOpenStudioUpdate
 }) {
@@ -94,15 +94,23 @@ export function TopBar({
           const hasErrors = Boolean(graphStatus?.hasErrors);
           const unsaved = graphStatus ? graphStatus.unsaved : Boolean(tab.isDirty);
           const statusTitle = hasErrors ? `Graph has blocking issues${unsaved ? ' and unsaved changes' : ''}` : unsaved ? 'Unsaved changes' : '';
+          const tabCollaborators = projectCollaborators
+            .filter((peer) => peer.userId !== currentUser?.id && Array.isArray(peer.graphIds) && peer.graphIds.includes(tab.id))
+            .sort((left, right) => left.username.localeCompare(right.username));
+          const visibleCollaborators = tabCollaborators.slice(0, tabCollaborators.length >= 9 ? 2 : 3);
           return (
             <div key={tab.id} className={`graph-tab ${active ? 'is-active' : ''}`} role="presentation" onContextMenu={(event) => {
               event.preventDefault();
               setTabMenu({ tab, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198 * uiScale)) / uiScale, y: Math.max(8, Math.min(event.clientY, window.innerHeight - 120 * uiScale)) / uiScale });
             }}>
-              <button className="graph-tab-select" role="tab" aria-selected={active} onClick={() => onSelectTab?.(tab.id)} title={tab.name}>
+              <button className={`graph-tab-select${tabCollaborators.length ? ' has-collaborators' : ''}`} role="tab" aria-selected={active} onClick={() => onSelectTab?.(tab.id)} title={tab.name}>
                 {hasErrors ? <AlertTriangle className="graph-tab-status-error" size={13} aria-label={statusTitle} title={statusTitle} /> : unsaved ? <span className="graph-tab-dirty" role="img" aria-label={statusTitle} title={statusTitle} /> : null}
                 <span className="graph-tab-name">{tab.name || 'Untitled graph'}</span>
               </button>
+              {tabCollaborators.length > 0 && <span className="graph-tab-presence" aria-label={`${tabCollaborators.length} collaborator${tabCollaborators.length === 1 ? '' : 's'} viewing this graph`}>
+                {visibleCollaborators.map((peer) => <button key={peer.userId} type="button" style={{ '--collaborator-color': peer.color }} title={`Follow ${peer.username} in ${tab.name || 'this graph'}`} aria-label={`Follow ${peer.username} in ${tab.name || 'this graph'}`} onClick={() => onFollowCollaborator?.(peer.userId, tab.id)}>{String(peer.username || '?').slice(0, 1).toUpperCase()}</button>)}
+                {tabCollaborators.length >= 9 ? <b>9+</b> : tabCollaborators.length > 3 && <b>+{tabCollaborators.length - 3}</b>}
+              </span>}
               <button className="graph-tab-close" onClick={() => onCloseTab?.(tab.id)} title={`Close ${tab.name}`} aria-label={`Close ${tab.name}`}><X size={13} /></button>
             </div>
           );
