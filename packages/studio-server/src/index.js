@@ -41,8 +41,9 @@ const liveCollaborationActions = new Map();
 const liveGraphChatBubbles = new Map();
 const liveCollaborationStudioDrafts = new Map();
 const liveNoteEditLocks = new Map();
-const liveProjectTabs = new Map();
 const recentProjectGraphUse = new Map();
+let collaborationActionRevision = 0;
+const nextCollaborationActionRevision = () => ++collaborationActionRevision;
 const NOTE_EDIT_LOCK_TTL_MS = 15_000;
 const COLLAB_CURSOR_IDLE_MS = 30_000;
 const collaboratorColors = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
@@ -142,7 +143,7 @@ function publishPresence() {
   const payload = Object.fromEntries(projectUsers);
   for (const client of wss.clients) if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'PROJECT_USERS_UPDATED', payload }));
   const projectIds = new Set([...wss.clients].filter((client) => client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcProjectId).map((client) => client.arcProjectId));
-  for (const projectId of new Set([...projectIds, ...liveProjectTabs.keys()])) publishProjectCollaboration(projectId);
+  for (const projectId of projectIds) publishProjectCollaboration(projectId);
 }
 function publishProjectCollaboration(projectId) {
   if (!projectId) return;
@@ -171,16 +172,59 @@ function publishProjectCollaboration(projectId) {
     const previous = activity.get(entry.graphId);
     if (!previous || previous.updatedAt < entry.updatedAt) activity.set(entry.graphId, { graphId: entry.graphId, userId: entry.userId, updatedAt: entry.updatedAt });
   }
+  const openGraphIds = new Set();
+  let tabsInitialized = false;
+  for (const client of clients) {
+    tabsInitialized ||= client.arcTabsInitialized === true;
+    for (const graphId of client.arcOpenGraphIds || []) openGraphIds.add(graphId);
+  }
   const payload = {
     projectId,
-    graphIds: [...(liveProjectTabs.get(projectId) || [])].slice(0, 12),
-    tabsInitialized: liveProjectTabs.has(projectId),
+    graphIds: [...openGraphIds].slice(0, 12),
+    tabsInitialized,
     graphActivity: [...activity.values()],
     projectLastSeen: collaborationLastSeen.projectSnapshot(),
     users: [...users.values()]
   };
   const message = JSON.stringify({ type: 'PROJECT_COLLABORATION_UPDATED', payload });
   for (const client of clients) client.send(message);
+}
+
+function clearDeletedGraphCollaboration(projectId, graphId) {
+  if (!projectId || !graphId) return;
+  const key = `${projectId}:${graphId}`;
+  const room = collaborationRoomKey(projectId, graphId);
+  const actions = liveCollaborationActions.get(room);
+  if (actions) {
+    for (const userId of actions.keys()) sendToCollaborationRoom(room, {
+      type: 'COLLAB_ACTION_CLEARED',
+      payload: { userId, projectId, graphId, revision: nextCollaborationActionRevision() }
+    });
+    liveCollaborationActions.delete(room);
+  }
+  liveGraphStates.delete(key);
+  liveCollaborationStudioDrafts.delete(room);
+  const locks = liveNoteEditLocks.get(room);
+  if (locks) for (const lock of locks.values()) clearTimeout(lock.timer);
+  liveNoteEditLocks.delete(room);
+  const bubbles = liveGraphChatBubbles.get(room);
+  if (bubbles) for (const entry of bubbles.values()) clearTimeout(entry.timer);
+  liveGraphChatBubbles.delete(room);
+  recentProjectGraphUse.delete(key);
+
+  const message = JSON.stringify({ type: 'GRAPH_DELETED', payload: { projectId, graphId } });
+  for (const client of wss.clients) {
+    if (!client.arcAuthenticated || client.arcProjectId !== projectId) continue;
+    client.arcOpenGraphIds?.delete(graphId);
+    if (client.arcPresence?.projectId === projectId && client.arcPresence.graphId === graphId) {
+      client.arcPresence = null;
+      client.arcRoomKey = null;
+      clearTimeout(client.arcActionExpiry);
+      client.arcActionExpiry = null;
+    }
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  }
+  publishPresence();
 }
 function broadcastProjectLastSeen() {
   const serialized = JSON.stringify({ type: 'PROJECT_LAST_SEEN_UPDATED', payload: collaborationLastSeen.projectSnapshot() });
@@ -301,7 +345,8 @@ app.use('/api', createApiRouter(
   logger,
   managerForUser,
   broadcast,
-  (userId) => [...wss.clients].some((client) => client.arcAuthenticated && client.arcUser?.id === userId && client.readyState === WebSocket.OPEN)
+  (userId) => [...wss.clients].some((client) => client.arcAuthenticated && client.arcUser?.id === userId && client.readyState === WebSocket.OPEN),
+  clearDeletedGraphCollaboration
 ));
 
 const clientDistPath = resolve(__dirname, '../../studio-client/dist');
@@ -354,6 +399,8 @@ if (!serverOnlyMode && fs.existsSync(clientDistPath)) {
 //
 wss.on('connection', (ws) => {
   ws.arcAuthenticated = false;
+  ws.arcOpenGraphIds = new Set();
+  ws.arcTabsInitialized = false;
   const authTimeout = setTimeout(() => {
     if (!ws.arcAuthenticated && ws.readyState === WebSocket.OPEN) ws.close(1008, 'Authentication required.');
   }, 5000);
@@ -364,7 +411,8 @@ wss.on('connection', (ws) => {
     const roomKey = ws.arcRoomKey;
     if (!roomKey || !ws.arcUser?.id) return;
     const room = liveCollaborationActions.get(roomKey);
-    if (room?.delete(ws.arcUser.id)) sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_CLEARED', payload: { userId: ws.arcUser.id } }, ws);
+    const previous = room?.get(ws.arcUser.id);
+    if (room?.delete(ws.arcUser.id)) sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_CLEARED', payload: { userId: ws.arcUser.id, projectId: previous?.projectId || '', graphId: previous?.graphId || '', revision: nextCollaborationActionRevision() } }, ws);
     if (!room?.size) liveCollaborationActions.delete(roomKey);
     if (clearDrafts) {
       const drafts = liveCollaborationStudioDrafts.get(roomKey);
@@ -386,12 +434,13 @@ wss.on('connection', (ws) => {
         const selection = {
           ...active,
           action: { kind: 'selection', mode: 'select', selectedNodeIds: active.action.selectedNodeIds, ...(active.action.cursor ? { cursor: active.action.cursor, cursorIdle: true } : {}) },
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          revision: nextCollaborationActionRevision()
         };
         activeRoom.set(ws.arcUser.id, selection);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: selection }, ws);
       } else if (active?.action?.cursor) {
-        const idleCursor = { ...active, action: { kind: 'idle', cursor: active.action.cursor }, updatedAt: Date.now() };
+        const idleCursor = { ...active, action: { kind: 'idle', cursor: active.action.cursor }, updatedAt: Date.now(), revision: nextCollaborationActionRevision() };
         activeRoom.set(ws.arcUser.id, idleCursor);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: idleCursor }, ws);
       } else clearCollaborationAction(false, false);
@@ -466,6 +515,7 @@ wss.on('connection', (ws) => {
             projectVariables: ws.arcManager.getProjectVariables(),
             version: serverConfig.version,
             chezcordVersion: serverConfig.chezcordVersion,
+            collaborationFeatures: { transientCanvasMotion: true },
             diagnostics,
             projectLastSeen: collaborationLastSeen.projectSnapshot()
           }
@@ -480,8 +530,13 @@ wss.on('connection', (ws) => {
         }
         ws.arcUser = { id: currentUser.id, username: currentUser.username, role: currentUser.role, permissions: currentUser.permissions || [] };
         if (msg.type === 'PING') {
-        ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
-      } else if (msg.type === 'USER_ACTIVITY') {
+          ws.send(JSON.stringify({
+            type: 'PONG',
+            timestamp: Date.now(),
+            ...(Number.isInteger(msg.pingId) ? { pingId: msg.pingId } : {}),
+            ...(Number.isFinite(msg.clientSentAt) ? { clientSentAt: msg.clientSentAt } : {})
+          }));
+        } else if (msg.type === 'USER_ACTIVITY') {
         ws.arcLastActivityAt = Date.now();
         if (collaborationLastSeen.record(ws.arcProjectId, ws.arcPresence?.graphId || '', ws.arcUser)) {
           broadcastProjectLastSeen();
@@ -493,7 +548,7 @@ wss.on('connection', (ws) => {
           const action = { ...active.action };
           if (action.kind === 'idle') { action.kind = 'cursor'; action.mode = 'move'; }
           delete action.cursorIdle;
-          const resumed = { ...active, action, updatedAt: Date.now() };
+          const resumed = { ...active, action, updatedAt: Date.now(), revision: nextCollaborationActionRevision() };
           room.set(ws.arcUser.id, resumed);
           sendToCollaborationRoom(ws.arcRoomKey, { type: 'COLLAB_ACTION_UPDATED', payload: resumed }, ws);
           scheduleCollaborationActionExpiry();
@@ -502,11 +557,6 @@ wss.on('connection', (ws) => {
         const projectId = ws.arcProjectId;
         if (!projectId || !projectStore.projects.some((project) => project.id === projectId)) return;
         const availableGraphIds = new Set(ws.arcManager.getGraphs().map((graph) => graph.id));
-        let graphIds = liveProjectTabs.get(projectId);
-        if (!graphIds) {
-          graphIds = new Set();
-          liveProjectTabs.set(projectId, graphIds);
-        }
         const isSync = msg.type === 'PROJECT_TABS_SYNC';
         const requestedIds = isSync && Array.isArray(msg.graphIds) ? msg.graphIds.slice(0, 12) : [msg.graphId];
         const requestedSet = new Set(requestedIds.filter((id) => typeof id === 'string'));
@@ -518,7 +568,8 @@ wss.on('connection', (ws) => {
         let acceptedSnapshots = 0;
         for (const candidate of graphSnapshots) {
           if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) || !requestedSet.has(candidate.id)
-            || availableGraphIds.has(candidate.id) || typeof candidate.id !== 'string' || candidate.id.length > 100
+            || availableGraphIds.has(candidate.id) || ws.arcManager.deletedGraphIds?.has(candidate.id)
+            || typeof candidate.id !== 'string' || candidate.id.length > 100
             || !Array.isArray(candidate.nodes) || !Array.isArray(candidate.connections)
             || candidate.nodes.length > 2000 || candidate.connections.length > 10000) continue;
           if (!ws.arcUser?.permissions?.includes('*') && !ws.arcUser?.permissions?.includes('graphs:write')) continue;
@@ -540,25 +591,45 @@ wss.on('connection', (ws) => {
         }
         let changed = false;
         let rejectedForLimit = false;
+        if (isSync) {
+          ws.arcOpenGraphIds = new Set();
+          ws.arcTabsInitialized = true;
+        }
         for (const graphId of requestedIds) {
-          if (typeof graphId !== 'string' || graphId.length > 100 || !availableGraphIds.has(graphId)) continue;
-          if (msg.type === 'PROJECT_TAB_CLOSE') changed = graphIds.delete(graphId) || changed;
-          else if (!graphIds.has(graphId)) {
-            if (graphIds.size < 12) {
-              graphIds.add(graphId);
+          if (typeof graphId !== 'string' || graphId.length > 100 || ws.arcManager.deletedGraphIds?.has(graphId)) continue;
+          if (msg.type === 'PROJECT_TAB_CLOSE') {
+            changed = ws.arcOpenGraphIds.delete(graphId) || changed;
+            continue;
+          }
+          const available = availableGraphIds.has(graphId) || liveGraphStates.has(`${projectId}:${graphId}`);
+          if (!available) continue;
+          if (!ws.arcOpenGraphIds.has(graphId)) {
+            const projectOpenIds = new Set([...wss.clients]
+              .filter((client) => client.arcAuthenticated && client.arcProjectId === projectId)
+              .flatMap((client) => [...(client.arcOpenGraphIds || [])]));
+            if (projectOpenIds.size < 12 || projectOpenIds.has(graphId)) {
+              ws.arcOpenGraphIds.add(graphId);
               changed = true;
             } else rejectedForLimit = true;
           }
         }
-        for (const graphId of graphIds) {
+        for (const graphId of ws.arcOpenGraphIds) {
           if (availableGraphIds.has(graphId)) continue;
           const liveState = liveGraphStates.get(`${projectId}:${graphId}`);
           if (liveState?.graph) ws.send(JSON.stringify({ type: 'PROJECT_TAB_GRAPH_UPDATED', payload: { projectId, graph: liveState.graph } }));
-          else { graphIds.delete(graphId); changed = true; }
+          else { ws.arcOpenGraphIds.delete(graphId); changed = true; }
         }
-        if (msg.type === 'PROJECT_TAB_OPEN' && typeof msg.graphId === 'string' && rejectedForLimit) {
+        if (isSync) for (const graphId of requestedIds) {
+          if (typeof graphId === 'string' && ws.arcManager.deletedGraphIds?.has(graphId)) {
+            ws.send(JSON.stringify({ type: 'GRAPH_DELETED', payload: { projectId, graphId } }));
+          }
+        }
+        if (msg.type === 'PROJECT_TAB_OPEN' && typeof msg.graphId === 'string' && ws.arcManager.deletedGraphIds?.has(msg.graphId)) {
+          ws.send(JSON.stringify({ type: 'GRAPH_DELETED', payload: { projectId, graphId: msg.graphId } }));
+        } else if (msg.type === 'PROJECT_TAB_OPEN' && typeof msg.graphId === 'string' && rejectedForLimit) {
           ws.send(JSON.stringify({ type: 'PROJECT_TAB_REJECTED', payload: { projectId, graphId: msg.graphId, reason: 'limit', message: 'The shared workspace already has 12 open graphs. Close a shared tab before opening another.' } }));
-        } else if (msg.type === 'PROJECT_TAB_OPEN' && typeof msg.graphId === 'string' && !availableGraphIds.has(msg.graphId)) {
+        } else if (msg.type === 'PROJECT_TAB_OPEN' && typeof msg.graphId === 'string'
+          && (ws.arcManager.deletedGraphIds?.has(msg.graphId) || (!availableGraphIds.has(msg.graphId) && !liveGraphStates.has(`${projectId}:${msg.graphId}`)))) {
           ws.send(JSON.stringify({ type: 'PROJECT_TAB_REJECTED', payload: { projectId, graphId: msg.graphId, reason: 'unavailable', message: 'This unsaved graph could not be shared. Save it first, then reopen it.' } }));
         }
         if (changed || isSync || acceptedSnapshots) publishProjectCollaboration(projectId);
@@ -571,7 +642,8 @@ wss.on('connection', (ws) => {
           ws.arcManager = managerForUser({ ...ws.arcUser, activeProjectId: projectId });
           if (owner) userStore.saveState();
         }
-        const graphId = typeof msg.graphId === 'string' && msg.graphId.length <= 100 ? msg.graphId : '';
+        let graphId = typeof msg.graphId === 'string' && msg.graphId.length <= 100 ? msg.graphId : '';
+        if (graphId && ws.arcManager.deletedGraphIds?.has(graphId)) graphId = '';
         const nextRoomKey = projectId && graphId ? collaborationRoomKey(projectId, graphId) : null;
         if (ws.arcRoomKey !== nextRoomKey) {
           clearNoteEditLocksForSocket(ws, ws.arcRoomKey);
@@ -726,7 +798,9 @@ wss.on('connection', (ws) => {
         const roomKey = ws.arcRoomKey;
         const action = msg.action;
         const permissions = ws.arcUser?.permissions || [];
-        if (!roomKey || !ws.arcPresence || !action || typeof action !== 'object' || Array.isArray(action)) return;
+        if (!roomKey || !ws.arcPresence || msg.projectId !== ws.arcPresence.projectId || msg.graphId !== ws.arcPresence.graphId
+          || !action || typeof action !== 'object' || Array.isArray(action)) return;
+        if (ws.arcManager?.deletedGraphIds?.has(msg.graphId)) return;
         const now = Date.now();
         const kind = action.kind;
         if (!['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'library-drag', 'navigation', 'node-edit', 'studio-focus', 'studio-draft', 'studio-cursor', 'idle'].includes(kind)) return;
@@ -736,11 +810,16 @@ wss.on('connection', (ws) => {
         const limit = rateGroup === 'studio-draft' ? 30 : rateGroup === 'canvas' ? 90 : 35;
         if (ws.arcActionRates.counts[rateGroup] > limit) return;
         const point = (value) => value && Number.isFinite(value.x) && Number.isFinite(value.y) && Math.abs(value.x) <= 1_000_000 && Math.abs(value.y) <= 1_000_000 ? { x: value.x, y: value.y } : null;
+        const positions = (value) => Array.isArray(value) ? value.slice(0, 50).flatMap((item) => {
+          if (!item || typeof item.id !== 'string' || item.id.length > 100) return [];
+          const position = point(item);
+          return position ? [{ id: item.id, x: Math.round(position.x), y: Math.round(position.y) }] : [];
+        }) : [];
         if (kind === 'idle') {
           const cursor = point(action.cursor);
           if (!cursor) { clearCollaborationAction(false, true, typeof action.studioId === 'string' ? action.studioId : ''); return; }
           const room = liveCollaborationActions.get(roomKey) || new Map();
-          const envelope = { userId: ws.arcUser.id, username: ws.arcUser.username, color: ws.arcColor || collaboratorColor(ws.arcUser.id), projectId: ws.arcPresence.projectId, graphId: ws.arcPresence.graphId, action: { kind: 'idle', cursor }, updatedAt: now };
+          const envelope = { userId: ws.arcUser.id, username: ws.arcUser.username, color: ws.arcColor || collaboratorColor(ws.arcUser.id), projectId: ws.arcPresence.projectId, graphId: ws.arcPresence.graphId, action: { kind: 'idle', cursor }, updatedAt: now, revision: nextCollaborationActionRevision() };
           room.set(ws.arcUser.id, envelope);
           liveCollaborationActions.set(roomKey, room);
           sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: envelope }, ws);
@@ -749,6 +828,7 @@ wss.on('connection', (ws) => {
           return;
         }
         const readOnlyCollaboration = ['cursor', 'selection', 'navigation', 'studio-focus', 'studio-cursor'].includes(kind);
+        if ((Array.isArray(action.nodePositions) || Array.isArray(action.notePositions)) && !permissions.includes('*') && !permissions.includes('graphs:write')) return;
         if (!readOnlyCollaboration && !permissions.includes('*') && !permissions.includes('graphs:write')) return;
         let cleanAction;
         if (kind === 'navigation') {
@@ -758,6 +838,10 @@ wss.on('connection', (ws) => {
           if (kind !== 'selection' && !cursor) return;
           cleanAction = { kind, ...(cursor ? { cursor } : {}), mode: typeof action.mode === 'string' ? action.mode.slice(0, 24) : kind };
           if (Array.isArray(action.selectedNodeIds)) cleanAction.selectedNodeIds = action.selectedNodeIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 2000);
+          const nodePositions = positions(action.nodePositions);
+          const notePositions = positions(action.notePositions);
+          if (nodePositions.length) cleanAction.nodePositions = nodePositions;
+          if (notePositions.length) cleanAction.notePositions = notePositions;
           if (kind === 'selection' && action.selectionRect && typeof action.selectionRect === 'object') {
             const left = Number(action.selectionRect.left); const top = Number(action.selectionRect.top);
             const right = Number(action.selectionRect.right); const bottom = Number(action.selectionRect.bottom);
@@ -771,7 +855,12 @@ wss.on('connection', (ws) => {
             cleanAction.label = typeof action.label === 'string' ? action.label.slice(0, 80) : '';
           }
           if (kind === 'node-drag' && Array.isArray(action.nodeIds)) cleanAction.nodeIds = action.nodeIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 50);
-          if (kind === 'note-drag' && typeof action.noteId === 'string') cleanAction.noteId = action.noteId.slice(0, 100);
+          if (kind === 'note-drag') {
+            if (typeof action.noteId === 'string') cleanAction.noteId = action.noteId.slice(0, 100);
+            if (Array.isArray(action.noteIds)) cleanAction.noteIds = action.noteIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 50);
+            const notePositions = positions(action.notePositions);
+            if (notePositions.length) cleanAction.notePositions = notePositions;
+          }
           if (kind === 'wire-drag') {
             const start = point(action.start);
             if (!start) return;
@@ -800,7 +889,7 @@ wss.on('connection', (ws) => {
         const priorAction = room.get(ws.arcUser.id)?.action;
         if (kind !== 'idle' && !cleanAction.cursor && priorAction?.cursor) cleanAction.cursor = priorAction.cursor;
         if (kind !== 'idle' && !Array.isArray(cleanAction.selectedNodeIds) && Array.isArray(priorAction?.selectedNodeIds)) cleanAction.selectedNodeIds = priorAction.selectedNodeIds;
-        const envelope = { userId: ws.arcUser.id, username: ws.arcUser.username, color: ws.arcColor || collaboratorColor(ws.arcUser.id), projectId: ws.arcPresence.projectId, graphId: ws.arcPresence.graphId, action: cleanAction, updatedAt: now };
+        const envelope = { userId: ws.arcUser.id, username: ws.arcUser.username, color: ws.arcColor || collaboratorColor(ws.arcUser.id), projectId: ws.arcPresence.projectId, graphId: ws.arcPresence.graphId, action: cleanAction, updatedAt: now, revision: nextCollaborationActionRevision() };
         if (kind === 'studio-draft') {
           const drafts = liveCollaborationStudioDrafts.get(roomKey) || new Map();
           drafts.set(`${ws.arcUser.id}:${cleanAction.studioId}`, envelope);
@@ -809,7 +898,9 @@ wss.on('connection', (ws) => {
           const drafts = liveCollaborationStudioDrafts.get(roomKey);
           const requestedStudioId = cleanAction.studioId;
           if (drafts) for (const draft of drafts.values()) {
-            if (draft.userId !== ws.arcUser.id && draft.action.studioId === requestedStudioId) ws.send(JSON.stringify({ type: 'COLLAB_ACTION_UPDATED', payload: draft }));
+            if (draft.userId !== ws.arcUser.id && draft.action.studioId === requestedStudioId) {
+              ws.send(JSON.stringify({ type: 'COLLAB_ACTION_UPDATED', payload: { ...draft, updatedAt: now, revision: nextCollaborationActionRevision() } }));
+            }
           }
         }
         room.set(ws.arcUser.id, envelope);
@@ -832,12 +923,23 @@ wss.on('connection', (ws) => {
           rejectGraphState('Open the graph in this workspace before editing it collaboratively.');
           return;
         }
+        if (ws.arcManager?.deletedGraphIds?.has(payload.graphId)) {
+          rejectGraphState('This graph was deleted. Close the stale tab and open a current graph.');
+          return;
+        }
         if (!graph || graph.id !== payload.graphId || !Array.isArray(graph.nodes) || !Array.isArray(graph.connections)
           || graph.nodes.length > 2000 || graph.connections.length > 10000) {
           rejectGraphState('This graph update is invalid or exceeds the collaboration limits.');
           return;
         }
         const key = `${projectId}:${graph.id}`;
+        const graphExists = ws.arcOpenGraphIds?.has(graph.id)
+          || ws.arcManager.getGraphs().some((item) => item.id === graph.id)
+          || liveGraphStates.has(key);
+        if (!graphExists) {
+          rejectGraphState('This graph is no longer open in the workspace. Reopen it before editing.');
+          return;
+        }
         for (const [stateKey, stateValue] of liveGraphStates) {
           if (Date.now() - stateValue.updatedAt > 30 * 60 * 1000) liveGraphStates.delete(stateKey);
         }
@@ -914,7 +1016,7 @@ wss.on('connection', (ws) => {
           for (const rejected of rejectedNoteEdits) ws.send(JSON.stringify({ type: 'NOTE_EDIT_REJECTED', payload: { projectId, graphId: graph.id, ...rejected } }));
         };
         if (previous?.serializedGraph === serializedGraph) {
-          const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null };
+          const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
           delete syncPayload.serializedGraph;
           delete syncPayload.history;
           ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
@@ -935,7 +1037,7 @@ wss.on('connection', (ws) => {
         };
         liveGraphStates.set(key, state);
         reportRejectedNoteEdits();
-        const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null };
+        const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
         delete syncPayload.serializedGraph;
         delete syncPayload.history;
         const message = JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload });
