@@ -1,13 +1,19 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import emojiData from 'emoji-picker-react/dist/data/emojis-en.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { getCaretCoordinates } from '../../core/caretCoordinates.js';
 
-const emojiEntries = Object.values(emojiData.emojis || {}).flat().filter((item) => item?.u && Array.isArray(item.n)).map((item) => ({
-  emoji: String.fromCodePoint(...String(item.u).split('-').map((part) => Number.parseInt(part, 16))),
-  names: item.n || []
-})).filter((item) => item.emoji && item.names.length);
+let emojiEntriesPromise;
+function loadEmojiEntries() {
+  if (!emojiEntriesPromise) emojiEntriesPromise = import('emoji-picker-react/dist/data/emojis-en.js').then(({ default: emojiData }) => Object.values(emojiData.emojis || {}).flat().filter((item) => item?.u && Array.isArray(item.n)).map((item) => ({
+    emoji: String.fromCodePoint(...String(item.u).split('-').map((part) => Number.parseInt(part, 16))),
+    names: item.n || []
+  })).filter((item) => item.emoji && item.names.length)).catch((error) => {
+    emojiEntriesPromise = null;
+    throw error;
+  });
+  return emojiEntriesPromise;
+}
 
 function insertAtSelection(element, value, start, end, text) {
   const next = `${value.slice(0, start)}${text}${value.slice(end)}`;
@@ -23,6 +29,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   const [position, setPosition] = useState(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [textMenu, setTextMenu] = useState(null);
+  const [emojiEntries, setEmojiEntries] = useState(null);
   const onOpenTextEditor = props.onOpenTextEditor;
   const { onOpenTextEditor: _onOpenTextEditor, ...fieldProps } = props;
   useImperativeHandle(forwardedRef, () => inputRef.current);
@@ -44,7 +51,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
       return list.filter((item) => item.label.toLowerCase().includes(query) || item.insert.slice(0, -2).toLowerCase().includes(query)).slice(0, 8);
     }
     const query = match.query.toLowerCase();
-    const builtIn = emojiEntries
+    const builtIn = (emojiEntries || [])
       .filter((item) => item.names.some((name) => name.toLowerCase().includes(query)))
       .sort((left, right) => {
         const rank = (item) => item.names.some((name) => name.toLowerCase() === query) ? 0 : item.names.some((name) => name.toLowerCase().startsWith(query)) ? 1 : 2;
@@ -59,7 +66,14 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         image: `https://cdn.discordapp.com/emojis/${encodeURIComponent(item.id)}.${item.animated ? 'gif' : 'webp'}?size=48`
       }));
     return [...custom, ...builtIn].slice(0, 6);
-  }, [appEmojis, graphVariables, match, templateSuggestions, templateValuePaths]);
+  }, [appEmojis, emojiEntries, graphVariables, match, templateSuggestions, templateValuePaths]);
+
+  useEffect(() => {
+    if (!discordAutocomplete || !match || match.kind === 'template' || emojiEntries !== null) return undefined;
+    let current = true;
+    loadEmojiEntries().then((entries) => { if (current) setEmojiEntries(entries); }).catch(() => { if (current) setEmojiEntries([]); });
+    return () => { current = false; };
+  }, [discordAutocomplete, emojiEntries, match]);
 
 
   useEffect(() => {
@@ -186,6 +200,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
   };
 
   const Component = as;
+  const handleFocus = (event) => {
+    fieldProps.onFocus?.(event);
+    if (!discordAutocomplete || emojiEntries !== null) return;
+    loadEmojiEntries().then(setEmojiEntries).catch(() => setEmojiEntries([]));
+  };
   const handleContextMenu = (event) => {
     fieldProps.onContextMenu?.(event);
     if (!onOpenTextEditor || String(value ?? '').length > 500 || event.defaultPrevented) return;
@@ -194,7 +213,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     setTextMenu({ x: Math.min(event.clientX, window.innerWidth - 210), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
   return <>
-    <Component {...fieldProps} ref={inputRef} className={className} value={value} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
+    <Component {...fieldProps} ref={inputRef} className={className} value={value} onFocus={handleFocus} onChange={onInputChange} onKeyDown={handleKeyDown} onPointerDown={onPointerDown} onContextMenu={handleContextMenu} />
     {textMenu && <div className="discord-text-context-menu" style={{ left: textMenu.x, top: textMenu.y }} role="menu"><button type="button" role="menuitem" onPointerDown={(event) => event.preventDefault()} onClick={(event) => { event.stopPropagation(); setTextMenu(null); onOpenTextEditor?.(); }}>Open in text editor</button></div>}
     {(discordAutocomplete || templateAutocomplete) && match && position && createPortal(<div ref={pickerRef} className="discord-emoji-suggestions" style={{ left: position.left, top: position.top, width: position.width }} role="listbox" aria-label={match.kind === 'template' ? 'Template suggestions' : 'Emoji suggestions'}>
       <div className="discord-emoji-suggestion-heading">{match.kind === 'template' ? (match.filterStage ? 'FILTER' : match.pathStage ? 'VALUE PATH' : 'VARIABLE') : 'EMOJI'}{match.query ? ` · ${match.query}` : ''}</div>
@@ -202,7 +221,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         {match.kind === 'template' ? <span className="discord-emoji-suggestion-glyph">{match.filterStage ? 'ƒ' : '{{'}</span> : item.isCustom ? <img src={item.image} alt="" /> : <span className="discord-emoji-suggestion-glyph">{item.emoji}</span>}
         <span className="discord-emoji-suggestion-label">{match.kind === 'template' ? item.label : `:${item.label}:`}</span>
         {item.custom?.animated && <small>GIF</small>}
-      </button>) : <div className="discord-emoji-suggestion-empty">{match.kind === 'template' ? 'No matching suggestions' : 'No matching emoji'}</div>}
+      </button>) : <div className="discord-emoji-suggestion-empty">{match.kind === 'template' ? 'No matching suggestions' : emojiEntries === null ? 'Loading emoji suggestions…' : 'No matching emoji'}</div>}
       <div className="discord-emoji-suggestion-footer">↑ ↓ to browse <kbd>Enter</kbd> to insert</div>
     </div>, document.body)}
   </>;
