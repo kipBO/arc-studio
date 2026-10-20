@@ -55,6 +55,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   };
   const activityStore = new ActivityStore();
   const resetPasswordAttempts = new Map();
+  const releaseNotesCache = new Map();
   const recordTeamActivity = (req, action, summary, details) => {
     if (serverConfig.desktopMode || userStore.listUsers().length < 2) return;
     try { activityStore.record(req.user, action, summary, details); }
@@ -73,6 +74,53 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   const installerForResponse = (plugin) => installedPluginsForResponse().find((item) => item.id === plugin.id)?.installedBy || null;
 
   // Public Endpoints
+
+  router.get('/release-notes/:version', async (req, res) => {
+    const version = String(req.params.version || '');
+    if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+      return res.status(400).json({ error: 'Invalid ARC Studio version.' });
+    }
+
+    const cached = releaseNotesCache.get(version);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.set('Cache-Control', 'public, max-age=900');
+      return res.json(cached.payload);
+    }
+
+    const requestGitHub = async (url) => {
+      const response = await fetch(url, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'ARC-Studio-release-notes' },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status}.`);
+      return response.json();
+    };
+
+    try {
+      const tags = [`v${version}`, version];
+      let release = null;
+      for (const tag of tags) {
+        release = await requestGitHub(`https://api.github.com/repos/relentiousdragon/arc-studio/releases/tags/${encodeURIComponent(tag)}`);
+        if (release) break;
+      }
+      if (!release) return res.status(404).json({ error: 'No GitHub release exists for this ARC Studio version.' });
+
+      const payload = {
+        version,
+        title: String(release.name || `ARC Studio ${version}`).slice(0, 200),
+        notes: String(release.body || '').trim().slice(0, 12000) || 'This release does not include release notes.',
+        url: typeof release.html_url === 'string' ? release.html_url : `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(version)}`
+      };
+      releaseNotesCache.set(version, { payload, expiresAt: Date.now() + 15 * 60_000 });
+      while (releaseNotesCache.size > 32) releaseNotesCache.delete(releaseNotesCache.keys().next().value);
+      res.set('Cache-Control', 'public, max-age=900');
+      return res.json(payload);
+    } catch (error) {
+      logger.log('WARN', `Could not load GitHub release notes for ${version}: ${error.message}`);
+      return res.status(502).json({ error: 'Could not load release notes from GitHub.' });
+    }
+  });
 
   router.get('/health', (req, res) => {
     res.json({
