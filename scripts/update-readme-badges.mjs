@@ -116,7 +116,7 @@ const badgeMarkdown = [
   ['stars', 'GitHub stars', `https://github.com/${repository}`],
   ['forks', 'GitHub forks', `https://github.com/${repository}/network/members`]
 ].map(([filename, alt, href]) => ['ci', 'desktop-builds'].includes(filename)
-  ? `[![${alt}](https://github.com/${repository}/actions/workflows/${filename}.yml/badge.svg)](${href})`
+  ? `[![${alt}](https://github.com/${repository}/actions/workflows/${filename}.yml/badge.svg${filename === 'desktop-builds' ? '?event=push' : ''})](${href})`
   : `[![${alt}](docs/badges/${filename}.svg)](${href})`).join('\n');
 const updated = `${readme.slice(0, startIndex + start.length)}\n${badgeMarkdown}\n${readme.slice(endIndex)}`;
 await writeFile(readmePath, updated);
