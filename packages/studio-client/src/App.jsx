@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AppWindow, Bot, Braces, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -84,6 +84,15 @@ const TAG_GROUP_COLORS = [
 
 function getShortcutDisplayTokens(shortcut) {
   return String(shortcut).replace(/([⌘⇧⌥])/g, ' $1 ').trim().split(/\s+/).filter(Boolean);
+}
+
+function ExportReviewDisclosure({ title, summary, expanded, onToggle, children }) {
+  return <section className="export-preflight-disclosure">
+    <button type="button" className="export-preflight-disclosure-toggle" aria-expanded={expanded} onClick={onToggle}>
+      <span><strong>{title}</strong><small>{summary}</small></span><ChevronDown size={14} aria-hidden="true" />
+    </button>
+    {expanded && <div className="export-preflight-disclosure-content">{children}</div>}
+  </section>;
 }
 
 function collectTemplateValuePaths(value, root, depth = 0, output = [], seen = new Set()) {
@@ -430,7 +439,20 @@ export function App() {
   const [projectBusy, setProjectBusy] = useState(false);
   const [exportInProgress, setExportInProgress] = useState(false);
   const [exportReview, setExportReview] = useState(null);
+  const [exportReviewSections, setExportReviewSections] = useState({});
   const exportInFlightRef = useRef(false);
+  useEffect(() => {
+    if (desktopMode) return undefined;
+    const handleBrowserContextMenu = (event) => {
+      if (event.altKey) {
+        event.stopPropagation();
+        return;
+      }
+      event.preventDefault();
+    };
+    document.addEventListener('contextmenu', handleBrowserContextMenu, true);
+    return () => document.removeEventListener('contextmenu', handleBrowserContextMenu, true);
+  }, [desktopMode]);
   const [projectMenu, setProjectMenu] = useState(null);
   const [projectDelete, setProjectDelete] = useState(null);
   const [projectDeleteName, setProjectDeleteName] = useState('');
@@ -1417,6 +1439,11 @@ export function App() {
             return;
           }
           if (msg.type === 'USER_PERMISSIONS_UPDATED') {
+            const updatedUser = msg.payload?.user;
+            if (updatedUser?.id) setCurrentUser((current) => current?.id === updatedUser.id ? { ...current, ...updatedUser } : current);
+            return;
+          }
+          if (msg.type === 'USER_PROFILE_UPDATED') {
             const updatedUser = msg.payload?.user;
             if (updatedUser?.id) setCurrentUser((current) => current?.id === updatedUser.id ? { ...current, ...updatedUser } : current);
             return;
@@ -2465,7 +2492,7 @@ export function App() {
     }
   }, [activeTabId, authToken, tabs]);
 
-  const handleExportBot = useCallback(async (projectId = activeProjectId, skipReview = false) => {
+  const handleExportBot = useCallback(async (projectId = activeProjectId, skipReview = false, exportOptions = {}) => {
     if (!authToken || exportInFlightRef.current) return;
     const exportProjectId = typeof projectId === 'string' ? projectId : activeProjectId;
     if (!skipReview) {
@@ -2497,6 +2524,16 @@ export function App() {
         if (node.type === 'action_voice_state') permissions.add('Move Members');
       }
       const graphNames = exportGraphs.map((graph) => graph.name || 'Untitled graph');
+      const usesCryptoNodes = exportGraphs.some((graph) => (graph.nodes || []).some((node) => ['action_crypto_encrypt', 'action_crypto_decrypt'].includes(node.type)));
+      const userPermissions = currentUser?.permissions || [];
+      const canIncludeBotToken = userPermissions.includes('*') || userPermissions.includes('bot:control');
+      let hasBotToken = false;
+      if (canIncludeBotToken && exportProjectId === activeProjectId) {
+        try {
+          const response = await fetch(apiUrl('/api/bot/state'), { headers: { 'x-arc-token': authToken } });
+          if (response.ok) hasBotToken = Boolean((await response.json()).hasToken);
+        } catch {}
+      }
       const summary = {
         graphNames,
         graphCount: exportGraphs.length,
@@ -2510,12 +2547,24 @@ export function App() {
         }).length, 0),
         runtime: 'Node.js 22 or newer',
         configuration: [
-          'Set DISCORD_BOT_TOKEN in the generated .env file before starting the bot, credentials are not included in the archive.',
-          ...(exportGraphs.some((graph) => (graph.nodes || []).some((node) => String(node.type || '').startsWith('action_crypto_'))) ? ['Set a stable ARC_SESSION_SECRET in .env to keep encrypted values decryptable after restarts.'] : [])
+          'The ZIP includes a .env file and an .env.example listing all supported variables.',
+          'The bot token is left blank unless you choose to include it.',
+          ...(usesCryptoNodes ? ['You can include a generated ARC_CRYPTO_SECRET for AES nodes with no passphrase.'] : [])
         ],
-        included: ['graphs.json and project-variables.json', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env.example, and LICENSE']
+        usesCryptoNodes,
+        canIncludeBotToken,
+        hasBotToken,
+        isActiveProject: exportProjectId === activeProjectId,
+        included: ['graphs.json and project-variables.json', 'src/index.js, src/env.js, and src/engine/{GraphRunner,NodeRegistry,MathOperations,CronSchedule,SafeHttpRequest,PluginStore}.js', 'src/security/CryptoEngine.js', 'Chezcord source and package metadata under chezcord/', 'package.json, README.md, .env, .env.example, and LICENSE']
       };
-      setExportReview({ projectId: exportProjectId, issues, summary });
+      setExportReviewSections({});
+      setExportReview({
+        projectId: exportProjectId,
+        issues,
+        summary,
+        includeCryptoSecret: usesCryptoNodes,
+        includeBotToken: false
+      });
       return;
     }
     exportInFlightRef.current = true;
@@ -2534,7 +2583,12 @@ export function App() {
       const graphs = exportProjectId === activeProjectId
         ? tabs.map((graph) => exportGraphPayload(graph))
         : [];
-      const body = JSON.stringify({ projectId: exportProjectId, graphs });
+      const body = JSON.stringify({
+        projectId: exportProjectId,
+        graphs,
+        includeCryptoSecret: exportOptions.includeCryptoSecret === true,
+        includeBotToken: exportOptions.includeBotToken === true
+      });
       const blob = await new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
         request.open('POST', apiUrl('/api/graphs/export/bot.zip'));
@@ -2575,7 +2629,7 @@ export function App() {
       exportInFlightRef.current = false;
       setExportInProgress(false);
     }
-  }, [activeProjectId, authToken, botProfile?.intentSummary, graphLookup, projectVariables, savedGraphs, tabs]);
+  }, [activeProjectId, authToken, botProfile?.intentSummary, currentUser, graphLookup, projectVariables, savedGraphs, tabs]);
 
   const applyHistorySnapshot = useCallback((snapshot, graphId) => {
     const restored = { ...snapshot, isDirty: true };
@@ -4660,21 +4714,46 @@ export function App() {
       <Modal
         isOpen={Boolean(exportReview)}
         onClose={() => setExportReview(null)}
-        title="Bot export preflight"
+        title="Export Bot"
         subtitle={`${exportReview?.issues.length || 0} finding${exportReview?.issues.length === 1 ? '' : 's'} · review the package and runtime requirements before building.`}
         icon={PackageOpen}
         maxWidth="max-w-2xl"
-        footer={<><Button variant="secondary" onClick={() => setExportReview(null)}>Cancel</Button><Button disabled={exportInProgress || exportReview?.issues.some((issue) => issue.kind === 'error')} onClick={() => { const review = exportReview; setExportReview(null); if (review) handleExportBot(review.projectId, true); }}>Build bot ZIP</Button></>}
+        footer={<><Button variant="secondary" onClick={() => setExportReview(null)}>Cancel</Button><Button disabled={exportInProgress || exportReview?.issues.some((issue) => issue.kind === 'error')} onClick={() => { const review = exportReview; setExportReview(null); if (review) handleExportBot(review.projectId, true, { includeCryptoSecret: review.includeCryptoSecret, includeBotToken: review.includeBotToken }); }}>Build bot ZIP</Button></>}
       >
         {exportReview?.summary && <div className="export-preflight-summary">
           <div className="export-preflight-stats"><span><strong>{exportReview.summary.graphCount}</strong> graphs</span><span><strong>{exportReview.summary.nodeCount}</strong> nodes</span><span><strong>{exportReview.summary.variableCount}</strong> variables</span></div>
-          <div className="export-preflight-section"><strong>Included in the archive</strong>{exportReview.summary.included.map((item) => <span key={item}>{item}</span>)}</div>
-          {exportReview.summary.graphNames.length > 0 && <div className="export-preflight-section"><strong>Graphs</strong><span>{exportReview.summary.graphNames.join(' · ')}</span></div>}
-          <div className="export-preflight-columns">
-            <div className="export-preflight-section"><strong>Gateway intents</strong><span>{exportReview.summary.requiredIntents.length ? exportReview.summary.requiredIntents.join(', ') : 'Guilds (required)'}</span></div>
-            <div className="export-preflight-section"><strong>Permissions used by nodes</strong><span>{exportReview.summary.requiredPermissions.length ? exportReview.summary.requiredPermissions.join(', ') : 'No additional permissions inferred'}</span><span>Inferred from node types; verify the bot role has these in each server.</span></div>
+          <div className="export-preflight-disclosures">
+            <ExportReviewDisclosure title="Included in the archive" summary={`${exportReview.summary.included.length} files and folders`} expanded={Boolean(exportReviewSections.included)} onToggle={() => setExportReviewSections((current) => ({ ...current, included: !current.included }))}>
+              {exportReview.summary.included.map((item) => <span key={item}>{item}</span>)}
+            </ExportReviewDisclosure>
+            {exportReview.summary.graphNames.length > 0 && <ExportReviewDisclosure title="Graphs" summary={`${exportReview.summary.graphNames.length} included`} expanded={Boolean(exportReviewSections.graphs)} onToggle={() => setExportReviewSections((current) => ({ ...current, graphs: !current.graphs }))}>
+              <span>{exportReview.summary.graphNames.join(' · ')}</span>
+            </ExportReviewDisclosure>}
+            <ExportReviewDisclosure title="Gateway intents and permissions" summary={`${exportReview.summary.requiredIntents.length || 1} intents · ${exportReview.summary.requiredPermissions.length} permissions`} expanded={Boolean(exportReviewSections.requirements)} onToggle={() => setExportReviewSections((current) => ({ ...current, requirements: !current.requirements }))}>
+              <div className="export-preflight-columns">
+                <div className="export-preflight-section"><strong>Gateway intents</strong><span>{exportReview.summary.requiredIntents.length ? exportReview.summary.requiredIntents.join(', ') : 'Guilds (required)'}</span></div>
+                <div className="export-preflight-section"><strong>Permissions used by nodes</strong><span>{exportReview.summary.requiredPermissions.length ? exportReview.summary.requiredPermissions.join(', ') : 'No additional permissions inferred'}</span><span>Inferred from node types; verify the bot role has these in each server.</span></div>
+              </div>
+            </ExportReviewDisclosure>
+            <ExportReviewDisclosure title="Runtime and configuration" summary={exportReview.summary.runtime} expanded={Boolean(exportReviewSections.runtime)} onToggle={() => setExportReviewSections((current) => ({ ...current, runtime: !current.runtime }))}>
+              {exportReview.summary.configuration.map((item) => <span key={item}>{item}</span>)}
+            </ExportReviewDisclosure>
           </div>
-          <div className="export-preflight-section"><strong>Runtime and configuration</strong><span>{exportReview.summary.runtime}</span>{exportReview.summary.configuration.map((item) => <span key={item}>{item}</span>)}</div>
+          <div className="export-secret-options">
+            {exportReview.summary.usesCryptoNodes && <label className="export-secret-option">
+              <input type="checkbox" checked={Boolean(exportReview.includeCryptoSecret)} onChange={(event) => setExportReview((current) => current ? { ...current, includeCryptoSecret: event.target.checked } : current)} />
+              <span><strong>Include generated crypto secret in .env</strong><small>{exportReview.includeCryptoSecret ? 'Used by AES nodes with no passphrase. Keep it private and reuse it when replacing an export that has stored ciphertext.' : 'Without a saved secret, ciphertext made with the default key cannot be decrypted after the bot restarts.'}</small></span>
+            </label>}
+            <label className={`export-secret-option${exportReview.summary.canIncludeBotToken && exportReview.summary.hasBotToken && exportReview.summary.isActiveProject ? '' : ' is-disabled'}`}>
+              <input
+                type="checkbox"
+                checked={Boolean(exportReview.includeBotToken)}
+                disabled={!exportReview.summary.canIncludeBotToken || !exportReview.summary.hasBotToken || !exportReview.summary.isActiveProject}
+                onChange={(event) => setExportReview((current) => current ? { ...current, includeBotToken: event.target.checked } : current)}
+              />
+              <span><strong>Include bot token in .env</strong><small>{!exportReview.summary.canIncludeBotToken ? 'Requires bot control permission.' : !exportReview.summary.isActiveProject ? 'Switch to this project before including its bot token.' : !exportReview.summary.hasBotToken ? 'No bot token is configured for this project.' : 'Off by default. Anyone with this ZIP can use the token.'}</small></span>
+            </label>
+          </div>
           {exportReview.summary.unsupportedNodeCount > 0 && <div className="export-preflight-runtime-warning" role="alert">{exportReview.summary.unsupportedNodeCount} node type{exportReview.summary.unsupportedNodeCount === 1 ? ' is' : 's are'} not supported by the bundled runtime.</div>}
         </div>}
         <div className="validation-list">
@@ -4789,7 +4868,7 @@ export function App() {
         <pre className="release-notes-content">{releaseNotesNotice?.notes}</pre>
       </Modal>
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
-      {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} />}
+      {!desktopMode && <UserManagementModal isOpen={isUserMgmtOpen} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />}
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
@@ -5365,6 +5444,12 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
       const returned = called?.nodes?.find((item) => item.type === 'function_return');
       return returned ? { id: 'result', type: returned.data?.valueType || 'number' } : null;
     }
+  }
+  if (node.type === 'event_slash_command' && direction === 'outputs') {
+    const option = (Array.isArray(node.data?.options) ? node.data.options : []).find((item) =>
+      `option_${item.name}` === pinId && /^[a-z0-9_-]{1,32}$/.test(String(item.name || ''))
+    );
+    if (option) return { id: pinId, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' };
   }
   if (node.type === 'data_permission_overwrites' && direction === 'inputs') return getPermissionOverwritePins(node, connections).find((pin) => pin.id === pinId) || null;
   if (node.type === 'data_array_create' && direction === 'inputs') return getArrayCreatePins(node, connections).find((pin) => pin.id === pinId) || null;
