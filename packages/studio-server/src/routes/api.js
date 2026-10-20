@@ -44,7 +44,7 @@ function graphNodeChanges(previous, next) {
   return changes;
 }
 
-export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false) {
+export function createApiRouter(botManager, userStore, logger, managerForUser = () => botManager, broadcastWorkspace = () => {}, isUserOnline = () => false, clearDeletedGraphCollaboration = () => {}) {
   const router = Router();
   const authMiddleware = createAuthMiddleware(userStore);
   const embedStores = new Map();
@@ -141,6 +141,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       canResetPrimaryAdminWithMasterKey: userStore.isSetupCompleted() && !serverConfig.desktopMode && !serverConfig.isDefaultKey,
       version: serverConfig.version,
       chezcordVersion: serverConfig.chezcordVersion,
+      collaborationFeatures: { transientCanvasMotion: true },
       supportedNodeTypes: Object.values(NodeDefinitions).map((definition) => definition.type)
     });
   });
@@ -1095,6 +1096,9 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   router.post('/graphs/:tabId', requirePermission('graphs:write'), (req, res) => {
     try {
+      if (botManager.deletedGraphIds?.has(req.params.tabId)) {
+        return res.status(409).json({ error: 'This graph was deleted. Create a new graph instead of saving a stale tab.' });
+      }
       const previous = botManager.getGraphs().find((graph) => graph.id === req.params.tabId) || null;
       const saved = botManager.saveGraph(req.params.tabId, req.body);
       const changedNodes = graphNodeChanges(previous, saved);
@@ -1127,6 +1131,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   router.delete('/graphs/:tabId', requirePermission('graphs:write'), (req, res) => {
     const graph = botManager.getGraphs().find((item) => item.id === req.params.tabId);
     botManager.deleteGraph(req.params.tabId);
+    clearDeletedGraphCollaboration(botManager.project.id, req.params.tabId);
     if (graph) recordTeamActivity(req, 'graph.deleted', `Deleted graph “${graph.name || graph.id}”`, { graphId: graph.id, graphName: graph.name || graph.id, nodeCount: (graph.nodes || []).length });
     res.json({ success: true, ...botManager.getGraphLibrary() });
   });
