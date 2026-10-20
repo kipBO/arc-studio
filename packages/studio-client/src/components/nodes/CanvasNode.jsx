@@ -162,8 +162,7 @@ export function CanvasNode({
         onDoubleClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          if (direction === 'output') onPinStartConnect?.(event, node.id, pin.id, direction, pin.type, index);
-          else onPinDoubleClick?.(event, node.id, pin.id, direction, pin.type, index);
+          onPinDoubleClick?.(event, node.id, pin.id, direction, pin.type, index);
         }}
       >
         {direction === 'input' && <span className="pin-socket" style={{ '--pin-color': pinColor }} />}
@@ -230,8 +229,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'event_message_create') {
     return <div className="node-config node-config-stack">
-      <FallbackField label="Prefix command (blank accepts every message)"><input value={node.data?.prefix ?? ''} maxLength={8} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => update('prefix', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="!" aria-label="Prefix command trigger" /></FallbackField>
-      <span className="node-config-hint">With a prefix set, the event exposes the command, an Arguments array, and individual Argument sockets. Quoted arguments can contain spaces.</span>
+      <span className="node-config-hint">Use Split Text on Message Content to get parts as separate outputs.</span>
     </div>;
   }
   if (node.type === 'event_slash_command') {
@@ -343,6 +341,35 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       <span className="node-config-hint">Runs with the current Discord event. The target needs a matching trigger.</span>
     </div>;
   }
+  if (node.type === 'data_string_split') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('separator') && <FallbackField label="Separator"><input value={node.data?.separator ?? ','} onChange={(event) => update('separator', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="," aria-label="Split text separator" />
+      </FallbackField>}
+    </div>;
+  }
+  if (node.type === 'data_array_get' && !isConnected('index')) {
+    return <div className="node-config node-config-stack"><FallbackField label="Index"><NodeNumberInput min="0" step="1" value={node.data?.index ?? 0} onChange={(event) => update('index', Math.max(0, Math.trunc(Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} placeholder="0" aria-label="Array item index" /></FallbackField><span className="node-config-hint">Zero-based index</span></div>;
+  }
+  if (node.type === 'data_regex') {
+    const mode = ['test', 'match', 'replace'].includes(node.data?.mode) ? node.data.mode : 'test';
+    return <div className="node-config node-config-stack">
+      <FallbackField label="Operation"><AnimatedDropdown value={mode} options={[{ value: 'test', label: 'Test for a match' }, { value: 'match', label: 'Extract a match' }, { value: 'replace', label: 'Replace matches' }]} onChange={(value) => update('mode', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Regex operation" className="node-select" /></FallbackField>
+      {!isConnected('text') && <FallbackField label="Text"><textarea rows={2} maxLength={8192} value={node.data?.text ?? ''} onChange={(event) => update('text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Regex input text" /></FallbackField>}
+      {!isConnected('pattern') && <FallbackField label="Pattern"><input maxLength={256} value={node.data?.pattern ?? ''} onChange={(event) => update('pattern', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. (\\d+)" aria-label="Regular expression pattern" /></FallbackField>}
+      {!isConnected('flags') && <FallbackField label="Flags"><input maxLength={6} value={node.data?.flags ?? ''} onChange={(event) => update('flags', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="g, i, m, s, u, y" aria-label="Regular expression flags" /></FallbackField>}
+      {mode === 'replace' && !isConnected('replacement') && <FallbackField label="Replacement"><textarea rows={2} maxLength={2000} value={node.data?.replacement ?? ''} onChange={(event) => update('replacement', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Replacement text" aria-label="Regex replacement text" /></FallbackField>}
+      <span className="node-config-hint">Limits: 256-character pattern, 8,192-character input. Use Valid and Error to handle invalid patterns safely.</span>
+    </div>;
+  }
+  if (node.type === 'data_to_number' && !isConnected('text')) {
+    return <div className="node-config node-config-stack"><FallbackField label="Text"><input value={node.data?.text ?? ''} onChange={(event) => update('text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. 42.5" aria-label="Text to convert to a number" /></FallbackField></div>;
+  }
+  if (node.type === 'data_to_text' && !isConnected('value')) {
+    return <div className="node-config node-config-stack"><FallbackField label="Value"><input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Value to convert to text" /></FallbackField></div>;
+  }
+  if (node.type === 'data_to_boolean' && !isConnected('value')) {
+    return <div className="node-config node-config-stack"><FallbackField label="Value"><AnimatedDropdown value={String(node.data?.value ?? false)} options={[{ value: 'false', label: 'False' }, { value: 'true', label: 'True' }]} onChange={(value) => update('value', value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Value to convert to a boolean" className="node-select" /></FallbackField></div>;
+  }
   if (node.type.startsWith('math_')) {
     if (node.type === 'math_random') return <div className="node-config node-config-stack">
       {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
@@ -396,6 +423,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
                 ? <NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable fallback number" />
                 : <input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Variable fallback text" />}</FallbackField>}
         </>}
+      <FallbackCheckbox label="Persist between runs" checked={node.data?.persist !== false} onChange={(persist) => update('persist', persist)} />
+      <span className="node-config-hint">Create Variable makes a graph variable. Project variables are managed in Variables and always persist.</span>
     </div>;
   }
   if (node.type === 'variable_get' || node.type === 'variable_set') {
@@ -411,7 +440,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const openTextEditor = () => onOpenTextStudio?.(node, 'template', 'Text template', value);
     const valuePaths = graphVariables.flatMap((variable) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(variable.name || '') ? variableValuePaths(variable.initialValue, variable.name) : []);
     const templateSuggestions = nodeDef.inputs.filter((pin) => /^arg_\d+$/.test(pin.id)).map((pin) => ({ name: pin.id.replace(/^arg_/, 'arg'), label: pin.label }));
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} /></div>;
+    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text template" /> : <DiscordTextField onOpenTextEditor={openTextEditor} as="textarea" rows={2} value={value} appEmojis={appEmojis} graphVariables={graphVariables} discordAutocomplete templateAutocomplete templateValuePaths={valuePaths} templateSuggestions={templateSuggestions} onChange={(event) => update('template', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Type text with {{name}}" aria-label="Text template" />}<TemplateVariableHints value={node.data?.template} graphVariables={graphVariables} inputSlots={nodeDef.inputs.filter((pin) => pin.id.startsWith('slot_'))} connectedInputIds={connectedInputIds} /></div>;
   }
   if (node.type === 'data_permission_overwrites') {
     return <div className="node-config node-config-stack">
@@ -419,7 +448,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'build_embed') {
-    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue)} />;
+    return <EmbedNodeBuilder data={node.data || {}} connectedInputIds={connectedInputIds} appEmojis={appEmojis} graphVariables={graphVariables} onChange={(blocks) => update('blocks', blocks)} onOpenStudio={() => onOpenEmbedStudio?.(node)} onOpenTextStudio={(label, value, maxLength, applyValue, parentBlockContext) => onOpenTextStudio?.(node, null, label, value, maxLength, applyValue, '', parentBlockContext)} />;
   }
   if (node.type === 'build_modal') return <div className="node-config node-config-stack"><button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); onOpenModalStudio?.(node); }}><Plus size={12} /> Edit popup modal{node.data?.modal?.components?.length ? ` · ${node.data.modal.components.length} fields` : ''}</button></div>;
   if (node.type === 'action_send_message') {
@@ -427,6 +456,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
       {!isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}<TemplateVariableHints value={node.data?.content} graphVariables={graphVariables} /></label>}
+      {!isConnected('mention_replied_user') && <FallbackCheckbox label="Mention Replied User" checked={node.data?.mention_replied_user ?? (isConnected('reply_to_message_id') || Boolean(node.data?.reply_to_message_id))} onChange={(value) => update('mention_replied_user', value)} />}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
