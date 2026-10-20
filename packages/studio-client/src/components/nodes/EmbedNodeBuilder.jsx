@@ -84,7 +84,21 @@ export function createEmbedBlock(type) {
   return { ...block, value: '' };
 }
 
+export function getEmbedFieldSocketLabels(field, fieldIndex, fields = []) {
+  const configuredName = String(field?.name || '').trim().replace(/\s+/g, ' ');
+  const duplicateName = configuredName && fields.filter((item) => String(item?.name || '').trim().replace(/\s+/g, ' ').toLowerCase() === configuredName.toLowerCase()).length > 1;
+  const fieldLabel = configuredName
+    ? `${configuredName}${duplicateName ? ` · Field ${fieldIndex + 1}` : ''}`
+    : `Field ${fieldIndex + 1}`;
+  return {
+    name: configuredName ? fieldLabel : `${fieldLabel} name`,
+    value: `${fieldLabel} value`
+  };
+}
+
 export function embedBlockPins(blocks = []) {
+  const fields = blocks.filter((block) => block.type === 'field');
+  let fieldIndex = -1;
   return blocks.flatMap((block) => {
     const stringPin = (id, label) => ({ id: `block_${block.id}_${id}`, label, type: 'string', defaultValue: block[id] || '' });
     if (block.type === 'title') return [stringPin('value', 'Title')];
@@ -95,7 +109,11 @@ export function embedBlockPins(blocks = []) {
     if (block.type === 'author') return [stringPin('name', 'Author'), stringPin('url', 'Author URL'), stringPin('icon', 'Author icon')];
     if (block.type === 'footer') return [stringPin('text', 'Footer'), stringPin('icon', 'Footer icon')];
     if (block.type === 'image' || block.type === 'thumbnail') return [stringPin('url', block.type === 'image' ? 'Image URL' : 'Thumbnail URL')];
-    if (block.type === 'field') return [stringPin('name', 'Field name'), stringPin('value', 'Field value')];
+    if (block.type === 'field') {
+      fieldIndex += 1;
+      const labels = getEmbedFieldSocketLabels(block, fieldIndex, fields);
+      return [stringPin('name', labels.name), stringPin('value', labels.value)];
+    }
     return [];
   });
 }
