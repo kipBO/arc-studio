@@ -216,6 +216,10 @@ export function createDefaultNodeData(type) {
   if (type === 'variable_create') return { name: '', valueType: 'string', value: '', persist: true };
   if (type === 'data_to_number') return { text: '' };
   if (type === 'data_check_value') return { fallback: '' };
+  if (type === 'data_get_value_by_path') return { path: '', fallback: '' };
+  if (type === 'data_find_array_item') return { path: '', value: '' };
+  if (type === 'data_filter_array') return { path: '', operator: 'equals', value: '' };
+  if (type === 'branch_switch') return { value: '', ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`case_${index + 1}`, ''])) };
   if (type === 'data_format_number') return { locale: 'en-US', style: 'decimal', currency: 'USD', minimum_fraction_digits: 0, maximum_fraction_digits: 2 };
   if (type === 'data_to_text') return { value: '' };
   if (type === 'data_to_boolean') return { value: false };
@@ -453,6 +457,12 @@ export const BuiltInNodeDefinitions = [
       { id: 'true_exec', label: 'True', type: 'exec' },
       { id: 'false_exec', label: 'False', type: 'exec' }
     ]
+  },
+  {
+    type: 'branch_switch', category: NodeCategories.LOGIC, label: 'Switch / Case', color: '#8b5cf6', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Compares one value with five cases and runs the first matching branch, or Default when none match.',
+    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'value', label: 'Value', type: 'arg', defaultValue: '' }, ...Array.from({ length: 5 }, (_, index) => ({ id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' }))],
+    outputs: [...Array.from({ length: 5 }, (_, index) => ({ id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' })), { id: 'default_exec', label: 'Default', type: 'exec' }]
   },
   {
     type: 'compare_text',
@@ -874,12 +884,14 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'data_check_value', category: NodeCategories.VALUES, label: 'Check Value', color: '#06b6d4',
+    createdAt: '2026-10-20T16:53:56.000Z',
     description: 'Distinguishes missing, null, empty text, and real values. The Value output uses the fallback unless a real value is present.',
     inputs: [{ id: 'value', label: 'Value', type: 'arg', defaultValue: undefined }, { id: 'fallback', label: 'Fallback', type: 'arg', defaultValue: '' }],
     outputs: [{ id: 'value', label: 'Value or fallback', type: 'arg' }, { id: 'state', label: 'State', type: 'string' }, { id: 'is_missing', label: 'Missing', type: 'boolean' }, { id: 'is_null', label: 'Null', type: 'boolean' }, { id: 'is_empty', label: 'Empty text', type: 'boolean' }, { id: 'has_value', label: 'Has value', type: 'boolean' }]
   },
   {
     type: 'data_format_number', category: NodeCategories.VALUES, label: 'Format Number', color: '#06b6d4',
+    createdAt: '2026-10-20T16:53:56.000Z',
     description: 'Formats a finite number with locale grouping, decimal, percent, or currency style. Percent style scales the number by 100.',
     inputs: [{ id: 'value', label: 'Value', type: 'number', defaultValue: 0 }, { id: 'locale', label: 'Locale', type: 'string', defaultValue: 'en-US' }, { id: 'style', label: 'Style', type: 'string', defaultValue: 'decimal' }, { id: 'currency', label: 'Currency', type: 'string', defaultValue: 'USD' }, { id: 'minimum_fraction_digits', label: 'Minimum decimals', type: 'number', defaultValue: 0 }, { id: 'maximum_fraction_digits', label: 'Maximum decimals', type: 'number', defaultValue: 2 }],
     outputs: [{ id: 'text', label: 'Formatted', type: 'string' }, { id: 'valid', label: 'Valid', type: 'boolean' }]
@@ -933,6 +945,24 @@ export const BuiltInNodeDefinitions = [
     description: 'Reads an item by its zero-based index. Check Found before using the result.',
     inputs: [{ id: 'array', label: 'Array', type: 'object', defaultValue: [] }, { id: 'index', label: 'Index', type: 'number', defaultValue: 0 }],
     outputs: [{ id: 'value', label: 'Item', type: 'arg' }, { id: 'found', label: 'Found', type: 'boolean' }]
+  },
+  {
+    type: 'data_get_value_by_path', category: NodeCategories.VALUES, label: 'Get Value by Path', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Safely reads a nested object or array path such as user.profile.name or items[0].id. Check Exists when the path may be missing.',
+    inputs: [{ id: 'value', label: 'Object / Array', type: 'object', defaultValue: {} }, { id: 'path', label: 'Path', type: 'string', defaultValue: '' }, { id: 'fallback', label: 'Fallback', type: 'arg', defaultValue: '' }],
+    outputs: [{ id: 'value', label: 'Value or fallback', type: 'arg' }, { id: 'exists', label: 'Exists', type: 'boolean' }]
+  },
+  {
+    type: 'data_find_array_item', category: NodeCategories.VALUES, label: 'Find Array Item', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Finds the first item equal to Value. Set Path to compare a nested property, such as id or user.name.',
+    inputs: [{ id: 'array', label: 'Array', type: 'object', defaultValue: [] }, { id: 'path', label: 'Property path', type: 'string', defaultValue: '' }, { id: 'value', label: 'Match value', type: 'arg', defaultValue: '' }],
+    outputs: [{ id: 'item', label: 'Item', type: 'arg' }, { id: 'index', label: 'Index', type: 'number' }, { id: 'found', label: 'Found', type: 'boolean' }]
+  },
+  {
+    type: 'data_filter_array', category: NodeCategories.VALUES, label: 'Filter Array', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Keeps items whose value (or selected property path) matches the chosen comparison.',
+    inputs: [{ id: 'array', label: 'Array', type: 'object', defaultValue: [] }, { id: 'path', label: 'Property path', type: 'string', defaultValue: '' }, { id: 'operator', label: 'Comparison', type: 'string', defaultValue: 'equals' }, { id: 'value', label: 'Match value', type: 'arg', defaultValue: '' }],
+    outputs: [{ id: 'array', label: 'Filtered items', type: 'object' }, { id: 'count', label: 'Count', type: 'number' }]
   },
   {
     type: 'data_array_set', category: NodeCategories.VALUES, label: 'Edit Array Item', color: '#06b6d4',
@@ -1266,10 +1296,38 @@ export const BuiltInNodeDefinitions = [
   }
 ];
 //
-export function isNodeDefinitionNew(definition, now = Date.now()) {
-  const createdAt = Date.parse(definition?.introducedAt || definition?.createdAt || '');
+const NODE_NEW_MAX_AGE = 14 * 24 * 60 * 60 * 1000;
+const NODE_NEW_SEEN_DURATION = 10 * 60 * 1000;
+function nodeNewSeenKey(userKey = 'anonymous') { return `arc_new_nodes_seen_v1:${encodeURIComponent(String(userKey || 'anonymous'))}`; }
+function readNodeNewSeen(userKey) {
+  try { const value = JSON.parse(localStorage.getItem(nodeNewSeenKey(userKey)) || '{}'); return value && typeof value === 'object' ? value : {}; } catch { return {}; }
+}
+function nodeDefinitionCreatedAt(definition) { return Date.parse(definition?.createdAt || definition?.introducedAt || ''); }
+function nodeSeenId(definition) { return `${definition?.type || ''}@${definition?.createdAt || definition?.introducedAt || ''}`; }
+export function getVisibleNewNodeDefinitions(definitions = [], userKey = 'anonymous', now = Date.now()) {
+  const seen = readNodeNewSeen(userKey);
+  return definitions.filter((definition) => {
+    const createdAt = nodeDefinitionCreatedAt(definition); const age = now - createdAt;
+    if (!Number.isFinite(createdAt) || age < 0 || age >= NODE_NEW_MAX_AGE) return false;
+    const firstSeenAt = Number(seen[nodeSeenId(definition)]);
+    return !Number.isFinite(firstSeenAt) || now - firstSeenAt < NODE_NEW_SEEN_DURATION;
+  }).sort((a, b) => nodeDefinitionCreatedAt(b) - nodeDefinitionCreatedAt(a) || a.label.localeCompare(b.label)).slice(0, 5);
+}
+export function markNewNodeDefinitionsSeen(definitions = [], userKey = 'anonymous', now = Date.now()) {
+  const seen = readNodeNewSeen(userKey); let changed = false;
+  for (const definition of definitions) {
+    const createdAt = nodeDefinitionCreatedAt(definition); const age = now - createdAt;
+    const key = nodeSeenId(definition);
+    if (Number.isFinite(createdAt) && age >= 0 && age < NODE_NEW_MAX_AGE && !Number.isFinite(Number(seen[key]))) { seen[key] = now; changed = true; }
+  }
+  if (changed) { try { localStorage.setItem(nodeNewSeenKey(userKey), JSON.stringify(seen)); } catch {} }
+}
+export function isNodeDefinitionNew(definition, now = Date.now(), userKey = 'anonymous') {
+  const createdAt = nodeDefinitionCreatedAt(definition);
   const age = now - createdAt;
-  return Number.isFinite(createdAt) && age >= 0 && age < 14 * 24 * 60 * 60 * 1000;
+  if (!Number.isFinite(createdAt) || age < 0 || age >= NODE_NEW_MAX_AGE) return false;
+  const firstSeenAt = Number(readNodeNewSeen(userKey)[nodeSeenId(definition)]);
+  return !Number.isFinite(firstSeenAt) || now - firstSeenAt < NODE_NEW_SEEN_DURATION;
 }
 
 const adapterNodeTypes = new Set();
