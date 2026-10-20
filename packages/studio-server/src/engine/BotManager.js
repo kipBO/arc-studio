@@ -58,6 +58,8 @@ export class BotManager {
     this.restRateLimitListener = null;
     this.stopCronScheduler = null;
     this.graphRunAbortController = null;
+    this.startBotPromise = null;
+    this.botStartGeneration = 0;
     this.status = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | ONLINE | ERROR
     this.gatewayMetrics = { latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null, rateLimitedUntil: 0, rateLimitScope: null };
     this.gatewayLatencySamples = [];
@@ -1056,9 +1058,24 @@ export class BotManager {
   }
 
   async startBot(token = null) {
+    if (this.startBotPromise) return this.startBotPromise;
+    const pendingStart = this.startBotInternal(token);
+    this.startBotPromise = pendingStart;
+    try {
+      return await pendingStart;
+    } finally {
+      if (this.startBotPromise === pendingStart) this.startBotPromise = null;
+    }
+  }
+
+  async startBotInternal(token = null) {
+    const requestedToken = token ? String(token) : null;
+    const configuredToken = this.getBotToken();
+    if (this.client && ['CONNECTING', 'ONLINE'].includes(this.status) && (!requestedToken || requestedToken === configuredToken)) return this.client;
+    const startGeneration = ++this.botStartGeneration;
     this.stopCronScheduler?.();
     this.stopCronScheduler = null;
-    if (token) this.setBotToken(token);
+    if (requestedToken) this.setBotToken(requestedToken);
     const activeToken = this.getBotToken();
     if (!activeToken) {
       throw new Error('No Discord Bot Token configured. Provide one in setup.');
@@ -1071,6 +1088,7 @@ export class BotManager {
     }
 
     await this.refreshIntentPlan(true);
+    if (startGeneration !== this.botStartGeneration) return null;
 
     this.graphRunAbortController?.abort();
     this.graphRunAbortController = new AbortController();
@@ -1116,8 +1134,20 @@ export class BotManager {
     this.publishGatewayMetrics();
 
     const activeReadyGraphRuns = new Set();
+    const recentGatewayEvents = new Map();
     const dispatchGraphEvent = async (eventName, payload, onlyGraphId = null, sharedInteractionState = null) => {
       const normalizedEventName = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
+      const eventId = ['MESSAGE_CREATE', 'INTERACTION_CREATE'].includes(normalizedEventName)
+        ? payload?.id || payload?.message?.id || payload?.interaction?.id
+        : null;
+      if (eventId && !onlyGraphId) {
+        const dedupeKey = `${normalizedEventName}:${eventId}`;
+        const now = Date.now();
+        for (const [key, timestamp] of recentGatewayEvents) if (now - timestamp > 120000) recentGatewayEvents.delete(key);
+        if (recentGatewayEvents.has(dedupeKey)) return;
+        recentGatewayEvents.set(dedupeKey, now);
+        while (recentGatewayEvents.size > 5000) recentGatewayEvents.delete(recentGatewayEvents.keys().next().value);
+      }
       const interactionState = normalizedEventName === 'INTERACTION_CREATE'
         ? sharedInteractionState || { applicationId: payload?.application_id || '', acknowledged: false, deferred: false, pending: null }
         : null;
@@ -1344,6 +1374,7 @@ export class BotManager {
   }
 
   stopBot() {
+    this.botStartGeneration += 1;
     this.stopCronScheduler?.();
     this.stopCronScheduler = null;
     this.graphRunAbortController?.abort();
