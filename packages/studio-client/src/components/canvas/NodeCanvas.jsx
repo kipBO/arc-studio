@@ -117,12 +117,14 @@ function getWireCutSegments(pathElement, event) {
 }
 
 export function NodeCanvas({
-  nodes = [], connections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
+  nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
+  const nodes = useMemo(() => Array.isArray(suppliedNodes) ? suppliedNodes.filter((node) => node && typeof node === 'object' && typeof node.type === 'string') : [], [suppliedNodes]);
+  const connections = useMemo(() => Array.isArray(suppliedConnections) ? suppliedConnections.filter((connection) => connection && typeof connection === 'object') : [], [suppliedConnections]);
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const containerRef = useRef(null);
   const handledFocusRequestRef = useRef(null);
@@ -249,6 +251,20 @@ export function NodeCanvas({
   const rightPanOriginRef = useRef(null);
   const collaborationCursorRef = useRef(null);
   useEffect(() => { collaborationCursorRef.current = null; }, [graphId]);
+  const reportGraphChatCursorMode = (mode) => {
+    let cursor = collaborationCursorRef.current;
+    const pointer = pointerPositionRef.current;
+    const bounds = containerRef.current?.getBoundingClientRect();
+    if (pointer && bounds) {
+      const displayScale = getCanvasDisplayScale(containerRef.current);
+      cursor = {
+        x: ((pointer.x - bounds.left) / displayScale - viewportRef.current.pan.x) / viewportRef.current.zoom,
+        y: ((pointer.y - bounds.top) / displayScale - viewportRef.current.pan.y) / viewportRef.current.zoom
+      };
+      collaborationCursorRef.current = cursor;
+    }
+    if (cursor) onCollaborationAction?.({ kind: 'cursor', cursor, mode, selectedNodeIds }, true);
+  };
   const spaceDownRef = useRef(false);
   const altDownRef = useRef(false);
   const cancelConnectingWire = useCallback(() => {
@@ -774,6 +790,8 @@ export function NodeCanvas({
     observer.observe(container);
     const appRoot = container.closest('.app-root');
     if (appRoot) observer.observe(appRoot);
+    const controlDock = document.querySelector('.control-dock');
+    if (controlDock) observer.observe(controlDock);
     container.querySelectorAll('[data-node-card-id]').forEach((node) => observer.observe(node));
     return () => observer.disconnect();
   }, [nodes.length]);
@@ -1362,11 +1380,10 @@ export function NodeCanvas({
         const movingIds = new Set(draggingNote.noteIds || [draggingNote.id]);
         const deltaX = draggingNote.deltaX || 0;
         const deltaY = draggingNote.deltaY || 0;
-        const editedAt = new Date().toISOString();
         onNotesChange?.(notes.map((note) => {
           if (!movingIds.has(note.id)) return note;
           const initial = draggingNote.initialPositions[note.id] || { x: note.x, y: note.y };
-          return { ...note, x: initial.x + deltaX, y: initial.y + deltaY, editedAt, editedBy: currentUser?.username || 'Unknown' };
+          return { ...note, x: initial.x + deltaX, y: initial.y + deltaY };
         }));
       }
       setDraggingNote(null);
@@ -1381,8 +1398,8 @@ export function NodeCanvas({
       else if (targetRow && targetRow.dataset.nodeId !== connectingWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
       setConnectingWire(null);
     }
-    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds }, true);
-    else onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
+    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: collaborationCursorRef.current, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds }, true);
+    else if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
   };
 
   const finishCanvasPointer = (event) => {
@@ -1396,7 +1413,7 @@ export function NodeCanvas({
       setDraggingNode(null);
       setDraggingNote(null);
       onHistoryGroupEnd?.();
-      onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
+      if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
       return;
     }
     finishPointer(event);
@@ -1804,27 +1821,67 @@ const previewOutput = (node, outputId, seen = new Set()) => {
 
   const canvasWidth = containerRef.current?.clientWidth || 0;
   const canvasHeight = containerRef.current?.clientHeight || 0;
+  const canvasBounds = containerRef.current?.getBoundingClientRect();
+  const canvasDisplayScale = getCanvasDisplayScale(containerRef.current);
+  const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
+  const sidebar = containerRef.current?.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
+  if (sidebar && canvasBounds) {
+    const sidebarBounds = sidebar.getBoundingClientRect();
+    if (sidebarBounds.left <= canvasBounds.left + 1 && sidebarBounds.right > canvasBounds.left) {
+      visibleCanvas.left = Math.min(canvasWidth, Math.max(visibleCanvas.left, (sidebarBounds.right - canvasBounds.left) / canvasDisplayScale));
+    }
+  }
+  const dockBounds = document.querySelector('.control-dock')?.getBoundingClientRect();
+  if (dockBounds && canvasBounds && dockBounds.left < canvasBounds.right && dockBounds.right > canvasBounds.left && dockBounds.top < canvasBounds.bottom) {
+    visibleCanvas.bottom = Math.max(0, Math.min(canvasHeight, (dockBounds.top - canvasBounds.top) / canvasDisplayScale));
+  }
+  const safeMargin = Math.min(16, Math.max(1, (visibleCanvas.right - visibleCanvas.left) / 3), Math.max(1, (visibleCanvas.bottom - visibleCanvas.top) / 3));
+  const safeLeft = Math.min(visibleCanvas.right, visibleCanvas.left + safeMargin);
+  const safeRight = Math.max(safeLeft, visibleCanvas.right - safeMargin);
+  const safeTop = Math.min(visibleCanvas.bottom, visibleCanvas.top + safeMargin);
+  const safeBottom = Math.max(safeTop, visibleCanvas.bottom - safeMargin);
+  const canvasToolsBounds = document.querySelector('.canvas-tools')?.getBoundingClientRect();
+  const canvasToolsObstacle = canvasToolsBounds && canvasBounds ? {
+    left: (canvasToolsBounds.left - canvasBounds.left) / canvasDisplayScale - 10,
+    top: (canvasToolsBounds.top - canvasBounds.top) / canvasDisplayScale - 10,
+    right: (canvasToolsBounds.right - canvasBounds.left) / canvasDisplayScale + 10,
+    bottom: (canvasToolsBounds.bottom - canvasBounds.top) / canvasDisplayScale + 10
+  } : null;
   const remoteCursorViews = remoteActions.filter((peer) => peer.action?.cursor).map((peer) => {
     const cursor = peer.action.cursor;
     const screenX = pan.x + cursor.x * zoom;
     const screenY = pan.y + cursor.y * zoom;
-    const margin = Math.min(16, canvasWidth / 3, canvasHeight / 3);
-    const offscreen = canvasWidth > 0 && canvasHeight > 0 && (screenX < margin || screenX > canvasWidth - margin || screenY < margin || screenY > canvasHeight - margin);
+    const offscreen = canvasWidth > 0 && canvasHeight > 0 && (screenX < safeLeft || screenX > safeRight || screenY < safeTop || screenY > safeBottom);
     if (!offscreen) return { peer, offscreen: false };
-    const dx = screenX - canvasWidth / 2;
-    const dy = screenY - canvasHeight / 2;
-    const availableX = Math.max(1, canvasWidth / 2 - margin);
-    const availableY = Math.max(1, canvasHeight / 2 - margin);
+    const centerX = (safeLeft + safeRight) / 2;
+    const centerY = (safeTop + safeBottom) / 2;
+    const dx = screenX - centerX;
+    const dy = screenY - centerY;
+    const availableX = Math.max(1, (safeRight - safeLeft) / 2);
+    const availableY = Math.max(1, (safeBottom - safeTop) / 2);
     const xScale = dx ? availableX / Math.abs(dx) : Infinity;
     const yScale = dy ? availableY / Math.abs(dy) : Infinity;
     const scale = Math.min(xScale, yScale);
+    let left = centerX + dx * scale - 10;
+    let top = centerY + dy * scale - 10;
+    let edge = xScale <= yScale ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'top' : 'bottom');
+    const overlapsTools = canvasToolsObstacle && left < canvasToolsObstacle.right && left + 20 > canvasToolsObstacle.left && top < canvasToolsObstacle.bottom && top + 20 > canvasToolsObstacle.top;
+    if (overlapsTools) {
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const alternatives = [
+        { left: clamp(canvasToolsObstacle.left - 20, safeLeft - 10, safeRight - 10), top: safeTop - 10, edge: 'top' },
+        { left: safeRight - 10, top: clamp(canvasToolsObstacle.bottom, safeTop - 10, safeBottom - 10), edge: 'right' }
+      ].filter((point) => !(point.left < canvasToolsObstacle.right && point.left + 20 > canvasToolsObstacle.left && point.top < canvasToolsObstacle.bottom && point.top + 20 > canvasToolsObstacle.top));
+      alternatives.sort((a, b) => Math.hypot(a.left - left, a.top - top) - Math.hypot(b.left - left, b.top - top));
+      if (alternatives.length) ({ left, top, edge } = alternatives[0]);
+    }
     return {
       peer,
       offscreen: true,
-      left: canvasWidth / 2 + dx * scale,
-      top: canvasHeight / 2 + dy * scale,
+      left,
+      top,
       angle: Math.atan2(dy, dx) * 180 / Math.PI,
-      edge: xScale <= yScale ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'top' : 'bottom')
+      edge
     };
   });
 
@@ -1847,15 +1904,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           selectTagGroupNodes(group.id);
         }
       }}
-      onPointerLeave={() => {
-        if (connectingWire || draggingNode || draggingNote || isPanning || selectionStartRef.current) return;
-        onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
-      }}
       onPointerUp={finishCanvasPointer}
-      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true); onHistoryGroupEnd?.(); }}
+      onPointerCancel={() => { touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false); setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onHistoryGroupEnd?.(); }}
       onContextMenu={openContextMenu}
       onDragOver={updateLibraryDragPreview}
-      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) { setLibraryDragPreview(null); onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true); } }}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setLibraryDragPreview(null); }}
       onDrop={(event) => {
         const graphRaw = readTransferData(event.dataTransfer, 'application/x-arc-graph-call');
         const raw = readTransferData(event.dataTransfer, 'application/x-arc-node');
@@ -1874,7 +1927,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           else if (fallback.mimeType === 'application/x-arc-embed-asset') embedPayload = fallbackPayload;
         }
         setLibraryDragPreview(null);
-        onCollaborationAction?.({ kind: 'idle', cursor: collaborationCursorRef.current }, true);
+        if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
         window.__arcNodeDragPayload = null;
         window.__arcGraphDragPayload = null;
         window.__arcEmbedDragPayload = null;
@@ -1962,7 +2015,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           );
         })}
 
-        {/* selected wires layer: above other nodes, 1 below selected node )z-index: 9) */}
+        {/* selected wires layer: above other nodes (z-index: 13), below selected nodes (z-index: 14) */}
         <svg className="wire-layer wire-layer-selected" width="20000" height="20000" aria-label="Selected connections">
           {selectedConnections.map((connection) => renderWire(connection, true))}
           {primarySelectedConnections.map((connection) => renderWire(connection, true, true))}
@@ -2086,7 +2139,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             value={graphChatDraft}
             maxLength={280}
             rows={1}
+            onFocus={() => reportGraphChatCursorMode('text')}
+            onBlur={() => reportGraphChatCursorMode('move')}
             onChange={(event) => {
+              reportGraphChatCursorMode('text');
               setGraphChatDraft(event.target.value);
               event.currentTarget.style.height = '42px';
               event.currentTarget.style.height = `${Math.min(120, Math.max(42, event.currentTarget.scrollHeight))}px`;
