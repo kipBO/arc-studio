@@ -1,6 +1,6 @@
 {
   "name": "arc-studio-desktop",
-  "version": "2026.1.1-nightly.1",
+  "version": "2026.1.1-nightly.2",
   "private": true,
   "description": "Tauri desktop shell for ARC Studio",
   "license": "Apache-2.0",
