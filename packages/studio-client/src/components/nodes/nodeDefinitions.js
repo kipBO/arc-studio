@@ -190,6 +190,21 @@ export function getMathListPins(node, connections = []) {
   return Array.from({ length: count }, (_, index) => ({ id: pinIds[index] || `value_${index + 1}`, label: index < 4 ? String.fromCharCode(65 + index) : `Value ${index + 1}`, type: 'number', defaultValue: 0 }));
 }
 
+export function getSwitchCasePins(node, connections = [], direction = 'inputs') {
+  if (node?.type !== 'branch_switch') return [];
+  const storedCount = Number(node.data?.caseCount) || 0;
+  const storedCases = Object.keys(node.data || {}).reduce((highest, key) => Math.max(highest, Number(/^case_(\d+)$/.exec(key)?.[1]) || 0), 0);
+  const highestConnected = connections.reduce((highest, connection) => {
+    if (connection.targetNodeId === node.id) return Math.max(highest, Number(/^case_(\d+)$/.exec(connection.targetPinId)?.[1]) || 0);
+    if (connection.sourceNodeId === node.id) return Math.max(highest, Number(/^case_(\d+)_exec$/.exec(connection.sourcePinId)?.[1]) || 0);
+    return highest;
+  }, 0);
+  const count = Math.min(50, Math.max(2, storedCount, storedCases, highestConnected + 1));
+  return Array.from({ length: count }, (_, index) => direction === 'outputs'
+    ? { id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' }
+    : { id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' });
+}
+
 export function getPermissionOverwritePins(node, connections = []) {
   if (node?.type !== 'data_permission_overwrites') return [];
   const highestConnectedTarget = connections.reduce((highest, connection) => {
@@ -219,7 +234,7 @@ export function createDefaultNodeData(type) {
   if (type === 'data_get_value_by_path') return { path: '', fallback: '' };
   if (type === 'data_find_array_item') return { path: '', value: '' };
   if (type === 'data_filter_array') return { path: '', operator: 'equals', value: '' };
-  if (type === 'branch_switch') return { value: '', ...Object.fromEntries(Array.from({ length: 5 }, (_, index) => [`case_${index + 1}`, ''])) };
+  if (type === 'branch_switch') return { caseCount: 2, value: '', case_1: '', case_2: '' };
   if (type === 'data_format_number') return { locale: 'en-US', style: 'decimal', currency: 'USD', minimum_fraction_digits: 0, maximum_fraction_digits: 2 };
   if (type === 'data_to_text') return { value: '' };
   if (type === 'data_to_boolean') return { value: false };
@@ -460,9 +475,9 @@ export const BuiltInNodeDefinitions = [
   },
   {
     type: 'branch_switch', category: NodeCategories.LOGIC, label: 'Switch / Case', color: '#8b5cf6', createdAt: '2026-10-20T16:53:56.000Z',
-    description: 'Compares one value with five cases and runs the first matching branch, or Default when none match.',
-    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'value', label: 'Value', type: 'arg', defaultValue: '' }, ...Array.from({ length: 5 }, (_, index) => ({ id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' }))],
-    outputs: [...Array.from({ length: 5 }, (_, index) => ({ id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' })), { id: 'default_exec', label: 'Default', type: 'exec' }]
+    description: 'Compares one value with up to 50 cases and runs the first matching branch, or Default when none match.',
+    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'value', label: 'Value', type: 'arg', defaultValue: '' }, ...Array.from({ length: 2 }, (_, index) => ({ id: `case_${index + 1}`, label: `Case ${index + 1}`, type: 'string', defaultValue: '' }))],
+    outputs: [...Array.from({ length: 2 }, (_, index) => ({ id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: 'exec' })), { id: 'default_exec', label: 'Default', type: 'exec' }]
   },
   {
     type: 'compare_text',
