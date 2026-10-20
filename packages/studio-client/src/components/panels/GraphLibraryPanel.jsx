@@ -21,7 +21,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -67,6 +67,7 @@ export function GraphLibraryPanel({
   const filteredGraphs = graphs.filter((graph) => (graph.name || 'Untitled graph').toLowerCase().includes(query.trim().toLowerCase()));
   const filteredTemplates = templates.filter((graph) => (graph.name || 'Untitled template').toLowerCase().includes(query.trim().toLowerCase()));
   const graphGroups = groupGraphs(filteredGraphs);
+  const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
   const nodeGroups = groupNodes(definitions.filter((node) => !node.hidden).filter((node) => `${node.label} ${node.description} ${node.category}`.toLowerCase().includes(query.trim().toLowerCase())));
   const compatiblePrefabs = nodePrefabs.filter((prefab) => definitions.some((definition) => definition.type === prefab.node?.type));
   const filteredPrefabs = compatiblePrefabs.filter((prefab) => (prefab.name || '').toLowerCase().includes(query.trim().toLowerCase()));
@@ -323,7 +324,10 @@ export function GraphLibraryPanel({
       {activeSection === 'graphs' && <>
         {frequentGraphs.length > 0 && <section className="graph-library-frequent">
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentGraphs.length} / 3</small></div>
-          <div className="graph-library-frequent-list">{frequentGraphs.map((graph) => <button key={graph.id} className="graph-library-entry" onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} title="Open graph"><FileCode2 size={14} /><span>{graph.name || 'Untitled graph'}</span>{openGraphIds.includes(graph.id) && <i title="Open in a tab" />}</button>)}</div>
+          <div className="graph-library-frequent-list">{frequentGraphs.map((graph) => {
+            const lastSeen = graphLastSeen.get(graph.id);
+            return <button key={graph.id} className="graph-library-entry graph-library-entry-with-activity" onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} title={lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && <i title="Open in a tab" />}</button>;
+          })}</div>
         </section>}
         {graphGroups.map(([groupName, items]) => <section className="graph-library-group" key={groupName}>
           <button className="graph-library-root graph-library-subroot" onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
@@ -331,9 +335,10 @@ export function GraphLibraryPanel({
           </button>
           {(isSearching || expandedGroups[groupName]) && <div className="graph-library-children" role="group">{items.map((graph) => {
             const isOpen = openGraphIds.includes(graph.id);
+            const lastSeen = graphLastSeen.get(graph.id);
             return <div key={graph.id} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''} ${contextMenu?.kind === 'graph' && contextMenu.graph?.id === graph.id ? 'is-context-menu-open' : ''}`} role="treeitem" aria-current={graph.id === activeTabId ? 'page' : undefined}>
-              <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} onContextMenu={(event) => openContextMenu(event, graph)} title="Drag into the canvas to call this graph">
-                <FileCode2 size={14} /><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{isOpen && <i title="Open in a tab" />}
+              <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}>
+                <FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{isOpen && <i title="Open in a tab" />}
               </button>
               <button className="graph-library-more" onClick={(event) => openContextMenu(event, graph)} aria-label={`Actions for ${graph.name || 'graph'}`} title="Graph actions"><MoreHorizontal size={14} /></button>
             </div>;
@@ -515,6 +520,17 @@ function groupNodes(nodes) {
   const groups = new Map();
   for (const node of nodes) groups.set(node.category, [...(groups.get(node.category) || []), node]);
   return [...groups.entries()];
+}
+
+function formatGraphLastSeen(value) {
+  const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 30 * 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function groupGraphs(graphs) {
