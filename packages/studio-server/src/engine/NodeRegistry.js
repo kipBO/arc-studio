@@ -507,7 +507,7 @@ export const NodeDefinitions = {
       { id: 'content', label: 'Content', type: PinTypes.STRING, defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: PinTypes.EMBED },
       { id: 'components', label: 'Components (Optional)', type: PinTypes.OBJECT },
-      { id: 'files', label: 'Files (JSON, optional)', type: PinTypes.STRING, defaultValue: '[]' },
+      { id: 'files', label: 'Files (optional)', type: PinTypes.OBJECT, defaultValue: [] },
       { id: 'file_data', label: 'File Data URL / Base64', type: PinTypes.STRING, defaultValue: '' },
       { id: 'file_name', label: 'File Name', type: PinTypes.STRING, defaultValue: 'image.png' },
       { id: 'reply_to_message_id', label: 'Reply to Message ID', type: PinTypes.STRING, defaultValue: '' },
@@ -534,7 +534,7 @@ export const NodeDefinitions = {
       { id: 'content', label: 'Content', type: PinTypes.STRING, defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: PinTypes.EMBED },
       { id: 'components', label: 'Components (Optional)', type: PinTypes.OBJECT },
-      { id: 'files', label: 'Files (JSON, optional)', type: PinTypes.STRING, defaultValue: '[]' }
+      { id: 'files', label: 'Files (optional)', type: PinTypes.OBJECT, defaultValue: [] }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
@@ -555,7 +555,7 @@ export const NodeDefinitions = {
       { id: 'content', label: 'Reply Content', type: PinTypes.STRING, defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: PinTypes.EMBED },
       { id: 'components', label: 'Components (Optional)', type: PinTypes.OBJECT },
-      { id: 'files', label: 'Files (JSON, optional)', type: PinTypes.STRING, defaultValue: '[]' },
+      { id: 'files', label: 'Files (optional)', type: PinTypes.OBJECT, defaultValue: [] },
       { id: 'ephemeral', label: 'Ephemeral (Hidden)', type: PinTypes.BOOLEAN, defaultValue: false }
     ],
     outputs: [
@@ -630,7 +630,8 @@ export const NodeDefinitions = {
       { id: 'interaction_token', label: 'Interaction Token', type: PinTypes.STRING, defaultValue: '' },
       { id: 'content', label: 'New Content (Optional)', type: PinTypes.STRING, defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: PinTypes.EMBED },
-      { id: 'components', label: 'Components (Optional)', type: PinTypes.OBJECT }
+      { id: 'components', label: 'Components (Optional)', type: PinTypes.OBJECT },
+      { id: 'files', label: 'Files (optional)', type: PinTypes.OBJECT, defaultValue: [] }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: PinTypes.EXEC }
@@ -1180,6 +1181,7 @@ export const NodeDefinitions = {
       { id: 'url', label: 'URL', type: PinTypes.STRING, defaultValue: '' },
       { id: 'method', label: 'Method', type: PinTypes.STRING, defaultValue: 'GET' },
       { id: 'headers', label: 'Headers (JSON)', type: PinTypes.STRING, defaultValue: '{}' },
+      { id: 'user_agent', label: 'User-Agent', type: PinTypes.STRING, defaultValue: '' },
       { id: 'body', label: 'Body', type: PinTypes.STRING, defaultValue: '' },
       { id: 'timeout_ms', label: 'Timeout (ms)', type: PinTypes.NUMBER, defaultValue: 10000 },
       { id: 'max_bytes', label: 'Max response bytes', type: PinTypes.NUMBER, defaultValue: 1048576 }
@@ -1195,6 +1197,29 @@ export const NodeDefinitions = {
     ]
   },
 
+  action_http_download: {
+    type: 'action_http_download',
+    category: NodeCategories.NETWORK,
+    label: 'HTTP Download File',
+    color: '#0ea5e9',
+    description: 'Downloads a public file over HTTP or HTTPS as a bounded binary attachment. Connect File to a message or interaction reply Files input.',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'url', label: 'URL', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'user_agent', label: 'User-Agent', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'timeout_ms', label: 'Timeout (ms)', type: PinTypes.NUMBER, defaultValue: 20000 },
+      { id: 'max_bytes', label: 'Max file bytes', type: PinTypes.NUMBER, defaultValue: 20971520 }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'file', label: 'File', type: PinTypes.OBJECT },
+      { id: 'filename', label: 'File Name', type: PinTypes.STRING },
+      { id: 'content_type', label: 'Content Type', type: PinTypes.STRING },
+      { id: 'byte_size', label: 'Bytes', type: PinTypes.NUMBER },
+      { id: 'error', label: 'Error', type: PinTypes.STRING }
+    ]
+  },
+
   action_web_retry: {
     type: 'action_web_retry',
     category: NodeCategories.NETWORK,
@@ -1206,6 +1231,7 @@ export const NodeDefinitions = {
       { id: 'url', label: 'URL', type: PinTypes.STRING, defaultValue: '' },
       { id: 'method', label: 'Method', type: PinTypes.STRING, defaultValue: 'GET' },
       { id: 'headers', label: 'Headers (JSON)', type: PinTypes.STRING, defaultValue: '{}' },
+      { id: 'user_agent', label: 'User-Agent', type: PinTypes.STRING, defaultValue: '' },
       { id: 'body', label: 'Body', type: PinTypes.STRING, defaultValue: '' },
       { id: 'timeout_ms', label: 'Timeout (ms)', type: PinTypes.NUMBER, defaultValue: 10000 },
       { id: 'max_bytes', label: 'Max response bytes', type: PinTypes.NUMBER, defaultValue: 1048576 },
