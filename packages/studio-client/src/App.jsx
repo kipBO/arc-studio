@@ -48,6 +48,7 @@ import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
 import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
+import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
 //
 const LEGACY_EMBED_PIN_FIELDS = {
   title: ['title', 'value'], description: ['description', 'value'], url: ['url', 'url'], color: ['color', 'value'],
@@ -149,6 +150,105 @@ function getNodeOutputSample(source, pinId, variables, graphNodes) {
   if (direct !== undefined && typeof direct !== 'string') return direct;
   if (pinId === 'value' && source.data?.value !== undefined) return source.data.value;
   return undefined;
+}
+
+function getTemplatePreviewInputs(graph, node, variables) {
+  if (!graph || !node) return {};
+  const byId = new Map((graph.nodes || []).map((item) => [item.id, item]));
+  const connections = graph.connections || [];
+  const sample = (source, pinId, seen = new Set()) => {
+    if (!source || seen.has(source.id) || seen.size > 24) return undefined;
+    const direct = getNodeOutputSample(source, pinId, variables, graph.nodes || []);
+    if (direct !== undefined) return direct;
+    const nextSeen = new Set(seen).add(source.id);
+    const input = (id, fallback) => {
+      const wire = connections.find((item) => item.targetNodeId === source.id && item.targetPinId === id);
+      return wire ? sample(byId.get(wire.sourceNodeId), wire.sourcePinId, nextSeen) : source.data?.[id] ?? fallback;
+    };
+    if (source.type.startsWith('math_')) {
+      if (pinId !== 'result') return undefined;
+      const definition = BuiltInNodeDefinitions.find((item) => item.type === source.type);
+      const inputs = Object.fromEntries((definition?.inputs || []).map((pin) => [pin.id, input(pin.id, pin.defaultValue)]));
+      return evaluateMathNode(source.type, inputs, source.data || {});
+    }
+    if (source.type === 'data_array_get') {
+      const array = input('array', []); const index = Math.trunc(Number(input('index', 0)));
+      if (pinId === 'found') return Array.isArray(array) && index >= 0 && index < array.length;
+      return Array.isArray(array) && index >= 0 && index < array.length ? array[index] : null;
+    }
+    if (source.type === 'data_check_value') {
+      const value = input('value', undefined); const fallback = input('fallback', '');
+      const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && !value.trim() ? 'empty' : 'value';
+      return ({ value: state === 'value' ? value : fallback, state, is_missing: state === 'missing', is_null: state === 'null', is_empty: state === 'empty', has_value: state === 'value' })[pinId];
+    }
+    if (source.type === 'data_object_get' || source.type === 'data_get_value_by_path') {
+      const object = input(source.type === 'data_object_get' ? 'object' : 'value', {});
+      const path = String(input(source.type === 'data_object_get' ? 'key' : 'path', '') || '');
+      let result = { exists: false, value: undefined };
+      if (source.type === 'data_object_get') {
+        if (path && object != null && Object.hasOwn(Object(object), path)) result = { exists: true, value: object[path] };
+      } else {
+        const parts = []; let offset = 0; let valid = Boolean(path) && path.length <= 512;
+        while (valid && offset < path.length) {
+          if (path[offset] === '.') { if (offset === 0 || offset === path.length - 1 || path[offset + 1] === '.' || path[offset + 1] === '[') { valid = false; break; } offset += 1; continue; }
+          const remaining = path.slice(offset);
+          const bracket = /^\[(?:(\d+)|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')\]/.exec(remaining);
+          const property = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(remaining);
+          if (bracket) { parts.push(bracket[1] !== undefined ? bracket[1] : (bracket[2] ?? bracket[3]).replace(/\\([\\"'])/g, '$1')); offset += bracket[0].length; }
+          else if (property) { parts.push(property[0]); offset += property[0].length; }
+          else { valid = false; break; }
+          if (parts.length > 64) { valid = false; break; }
+        }
+        let value = object;
+        if (valid) for (const key of parts) {
+          if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string') || !Object.hasOwn(Object(value), key)) { valid = false; break; }
+          value = value[key];
+        }
+        if (valid && parts.length) result = { exists: true, value };
+      }
+      return ({ value: result.exists ? result.value : source.type === 'data_get_value_by_path' ? input('fallback', '') : null, exists: result.exists })[pinId];
+    }
+    if (source.type === 'data_find_array_item' || source.type === 'data_filter_array') {
+      const array = input('array', []); const items = Array.isArray(array) ? array.slice(0, 10000) : [];
+      const path = String(input('path', '') || ''); const wanted = input('value', '');
+      const matches = items.map((item, index) => {
+        let actual = { exists: true, value: item };
+        if (path) {
+          const parts = []; let offset = 0; let valid = path.length <= 512;
+          while (valid && offset < path.length) {
+            if (path[offset] === '.') { if (offset === 0 || offset === path.length - 1 || path[offset + 1] === '.' || path[offset + 1] === '[') { valid = false; break; } offset += 1; continue; }
+            const remaining = path.slice(offset); const bracket = /^\[(?:(\d+)|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')\]/.exec(remaining); const property = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(remaining);
+            if (bracket) { parts.push(bracket[1] !== undefined ? bracket[1] : (bracket[2] ?? bracket[3]).replace(/\\([\\"'])/g, '$1')); offset += bracket[0].length; }
+            else if (property) { parts.push(property[0]); offset += property[0].length; } else { valid = false; break; }
+            if (parts.length > 64) valid = false;
+          }
+          let value = item;
+          if (valid) for (const key of parts) { if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string') || !Object.hasOwn(Object(value), key)) { valid = false; break; } value = value[key]; }
+          actual = valid && parts.length ? { exists: true, value } : { exists: false, value: undefined };
+        }
+        const operator = source.type === 'data_filter_array' ? input('operator', 'equals') : 'equals';
+        const value = actual.value;
+        const matched = operator === 'exists' ? actual.exists
+          : operator === 'is_empty' ? actual.exists && (value == null || value === '' || Array.isArray(value) && !value.length || typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length)
+            : !actual.exists ? false
+              : operator === 'not_equals' ? !Object.is(value, wanted)
+                : operator === 'contains' ? typeof value === 'string' ? value.includes(String(wanted ?? '')) : Array.isArray(value) && value.some((entry) => Object.is(entry, wanted))
+                  : operator === 'starts_with' ? typeof value === 'string' && value.startsWith(String(wanted ?? ''))
+                    : operator === 'ends_with' ? typeof value === 'string' && value.endsWith(String(wanted ?? ''))
+                      : operator === 'greater_than' ? value > wanted
+                        : operator === 'greater_or_equal' ? value >= wanted
+                          : operator === 'less_than' ? value < wanted
+                            : operator === 'less_or_equal' ? value <= wanted
+                              : Object.is(value, wanted);
+        return { item, index, matched };
+      }).filter((entry) => entry.matched);
+      if (source.type === 'data_find_array_item') { const found = matches[0]; return ({ item: found?.item ?? null, index: found?.index ?? -1, found: Boolean(found) })[pinId]; }
+      if (pinId === 'count') return matches.length;
+      return pinId === 'array' ? matches.map(({ item }) => item) : undefined;
+    }
+    return undefined;
+  };
+  return Object.fromEntries(connections.filter((wire) => wire.targetNodeId === node.id).map((wire) => [wire.targetPinId, sample(byId.get(wire.sourceNodeId), wire.sourcePinId)]).filter(([, value]) => value !== undefined));
 }
 
 function getTemplateValuePaths(graph, node, variables) {
@@ -3004,6 +3104,7 @@ export function App() {
   }, [activeGraph, graphLookup, botProfile?.intentSummary, projectVariables]);
 
   const validationStatus = graphValidation.errors.length ? 'error' : graphValidation.warnings.length ? 'warning' : 'success';
+  const newNodesUserKey = `${globalThis.location?.origin || 'arc'}:${apiUrl('/api/system/status')}:${desktopMode ? workspaceMode : 'web'}:${currentUser?.id || currentUser?.username || 'guest'}`;
 
   const makeNode = useCallback((type, position = null, data = null, label = null) => {
     const definition = BuiltInNodeDefinitions.find((item) => item.type === type);
@@ -3121,6 +3222,8 @@ export function App() {
     if ((!activeGraph && !applyValue) || !activeProjectId || (!applyValue && (!node?.id || !fieldKey))) return;
     if (node?.id) studioFocusReturnRef.current = { graphId: activeGraph.id, nodeId: node.id };
     const graphId = activeGraph?.id || null;
+    const previewNode = node || activeNodes.find((item) => item.id === embedStudio?.nodeId);
+    const previewGraph = { nodes: activeNodes, connections: activeConnections };
     const collabId = `text:${activeProjectId}:${graphId || 'workspace'}:${parentStudioId || `${node?.id || 'inline'}:${fieldKey || label}`}`;
     const initialText = String(value ?? '');
     const route = routeOverride || (parentBlockContext && embedStudio ? {
@@ -3148,11 +3251,12 @@ export function App() {
       localDraft: initialText,
       maxLength,
       templateValuePaths: getTemplateValuePaths(activeGraph, node, availableVariables),
+      templatePreviewValues: getTemplatePreviewInputs(previewGraph, previewNode, availableVariables),
       templateSuggestions: getTemplateSocketSuggestions(activeGraph, node).filter((item) => !availableVariables.some((variable) => variable.name?.toLowerCase() === item.name.toLowerCase())),
       applyValue,
       parentBlockContext
     });
-  }, [activeGraph, activeProjectId, availableVariables, embedStudio]);
+  }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, embedStudio]);
 
   const openVariableTextEditor = useCallback((variable, scope) => {
     const targetGraphId = activeTabId;
@@ -4932,6 +5036,7 @@ export function App() {
             componentsSourceLabel={embedStudio.componentsSourceLabel}
             appEmojis={appEmojis}
             graphVariables={availableVariables}
+            templatePreviewValues={getTemplatePreviewInputs({ nodes: activeNodes, connections: activeConnections }, activeNodes.find((item) => item.id === embedStudio.nodeId), availableVariables)}
             templateSuggestions={embedTemplateSuggestions}
             botProfile={botProfile}
             botStatus={botStatus}
@@ -4960,6 +5065,7 @@ export function App() {
             maxLength={discordTextStudio.maxLength}
             appEmojis={appEmojis}
             graphVariables={availableVariables}
+            templatePreviewValues={getTemplatePreviewInputs({ nodes: activeNodes, connections: activeConnections }, activeNodes.find((item) => item.id === (discordTextStudio.nodeId || embedStudio?.nodeId)), availableVariables)}
             templateValuePaths={discordTextStudio.templateValuePaths || []}
             templateSuggestions={discordTextStudio.templateSuggestions || []}
             collaborators={studioCollaborators}
@@ -5079,7 +5185,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -5190,7 +5296,7 @@ export function App() {
         onTraceIssue={traceGraphNode}
       />
 
-      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
+      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" newNodesUserKey={newNodesUserKey} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
       <LazyMountedFeature Component={CommandPalette} isOpen={isCommandPaletteOpen} loadingLabel="Opening search…"
         graphs={[...graphLookup.values()]}
         definitions={availableNodeDefinitions}
