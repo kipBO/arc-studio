@@ -102,6 +102,7 @@ export function EmbedStudioView({
   attachments = EMPTY_ATTACHMENTS,
   components = [],
   componentsOnly = false,
+  initialTab = '',
   isContentWired = false,
   isEmbedWired = false,
   isComponentsWired = false,
@@ -120,6 +121,7 @@ export function EmbedStudioView({
   onBlocksChange,
   onAttachmentsChange,
   onOpenTextStudio,
+  onActiveTabChange,
   onComponentsChange,
   onSave,
   onSaveAs,
@@ -129,7 +131,7 @@ export function EmbedStudioView({
   showSaveAs = true,
   showSave = true
 }) {
-  const [activeTab, setActiveTab] = useState(componentsOnly ? 'components' : 'embed');
+  const [activeTab, setActiveTab] = useState(initialTab || (componentsOnly ? 'components' : 'embed'));
   const [selectedComponentId, setSelectedComponentId] = useState(null);
   const [expandedSelectMenuId, setExpandedSelectMenuId] = useState(null);
   const [selectedMenuValues, setSelectedMenuValues] = useState({});
@@ -140,6 +142,7 @@ export function EmbedStudioView({
   const [failedThumbnailUrl, setFailedThumbnailUrl] = useState('');
   const [failedImageUrl, setFailedImageUrl] = useState('');
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
+  const selectTab = (tab) => { setActiveTab(tab); onActiveTabChange?.(tab); };
   const initialDraftRef = React.useRef(JSON.stringify({ name, content, blocks, components, attachments }));
   const closeStudio = () => {
     const currentDraft = JSON.stringify({ name, content, blocks, components, attachments: attachedFiles });
@@ -151,6 +154,10 @@ export function EmbedStudioView({
   useEffect(() => {
     setPreviewTheme(theme === 'light' ? 'light' : 'dark');
   }, [theme]);
+
+  useEffect(() => {
+    if (initialTab === 'embed' || initialTab === 'components') setActiveTab(initialTab);
+  }, [initialTab]);
 
   useEffect(() => { setAttachedFiles(attachments || []); }, [attachments]);
 
@@ -326,7 +333,7 @@ export function EmbedStudioView({
   );
 
   const focusEditorBlock = (blockType) => {
-    setActiveTab('embed');
+    selectTab('embed');
     setTimeout(() => {
       const el = document.getElementById(`embed_block_${blockType}`);
       el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -334,7 +341,7 @@ export function EmbedStudioView({
   };
 
   const focusComponent = (componentId) => {
-    setActiveTab('components');
+    selectTab('components');
     setSelectedComponentId(componentId);
   };
 
@@ -427,7 +434,7 @@ export function EmbedStudioView({
                   role="tab"
                   aria-selected={activeTab === 'components'}
                   className={`embed-tab-btn ${activeTab === 'components' ? 'is-active' : ''}`}
-                  onClick={() => setActiveTab('components')}
+                  onClick={() => selectTab('components')}
                 >
                   <MessageSquare size={13} />
                   <span>Components</span>
@@ -438,7 +445,7 @@ export function EmbedStudioView({
                   role="tab"
                   aria-selected={activeTab === 'embed'}
                   className={`embed-tab-btn ${activeTab === 'embed' ? 'is-active' : ''}`}
-                  onClick={() => setActiveTab('embed')}
+                  onClick={() => selectTab('embed')}
                 >
                   <Layers size={13} />
                   <span>Embed Content</span>
