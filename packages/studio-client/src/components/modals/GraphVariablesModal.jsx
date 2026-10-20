@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Braces, FileCode2, Plus, Search, Trash2, X } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
@@ -12,8 +12,8 @@ const VARIABLE_TYPES = [
   { value: 'object', label: 'Object' }
 ];
 
-export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit }) {
-  const [activeScope, setActiveScope] = useState('project');
+export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
+  const [activeScope, setActiveScope] = useState(requestedScope);
   const [name, setName] = useState('');
   const [type, setType] = useState('string');
   const [jsonDrafts, setJsonDrafts] = useState({});
@@ -24,6 +24,8 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
   const [expandedValueIds, setExpandedValueIds] = useState(() => new Set());
   const [searchByScope, setSearchByScope] = useState({ project: '', graph: '' });
   const createRowRef = useRef(null);
+
+  useEffect(() => { setActiveScope(requestedScope === 'graph' ? 'graph' : 'project'); }, [requestedScope]);
 
   const currentVariables = activeScope === 'project' ? projectVariables : variables;
   const currentSearch = searchByScope[activeScope];
@@ -108,7 +110,8 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
       {nameError && <small className="variable-form-error" role="alert">{nameError}</small>}
     </form>
   </>;
-  const scopeTabs = <><div className="graph-variable-tabs" role="tablist" aria-label="Variable scope"><button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => { setActiveScope('project'); setNameError(''); }}>Project <span>{projectVariables.length}</span></button><button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => { setActiveScope('graph'); setNameError(''); }}>Graph <span>{variables.length}</span></button></div><small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small></>;
+  const selectScope = (scope) => { setActiveScope(scope); onScopeChange?.(scope); setNameError(''); };
+  const scopeTabs = <><div className="graph-variable-tabs" role="tablist" aria-label="Variable scope"><button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button><button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button></div><small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small></>;
   if (presentation === 'sidebar') return isOpen ? <aside className="graph-variables-sidebar" aria-label="Variables" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
     <header className="graph-library-header">
