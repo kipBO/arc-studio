@@ -14,8 +14,6 @@
 [![GitHub forks](docs/badges/forks.svg)](https://github.com/relentiousdragon/arc-studio/network/members)
 <!-- ARC_BADGES:END -->
 
-ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
-
 ARC Studio is a Visual Node Based Discord bot Creator, built with Node, Tauri Rust, React, Vite and the chezcord lib for Discord API.
 Create your Discord bot then export code to run it anywhere on the node.js runtime!
 
@@ -26,6 +24,8 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 - Make slash commands, messages, embeds, buttons, menus, and modals
 - Collaborate on projects and edit graphs live with your team
 - Export project as a standalone bot
+
+ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
 
 ![A Discord command graph in ARC Studio](docs/screenshots/graph-editor.jpg)
 
