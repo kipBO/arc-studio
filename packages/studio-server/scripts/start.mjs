@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../../..');
 const clientIndex = path.join(repositoryRoot, 'packages/studio-client/dist/index.html');
+const nightlyIcon = path.join(repositoryRoot, 'packages/studio-client/dist/nightly-icon.png');
 //
-if (!fs.existsSync(clientIndex)) {
-  console.log('[ARC Studio] Web client build is missing, building it before startup...');
+if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) {
+  console.log('[ARC Studio] Web client assets are missing, building them before startup...');
   const isWindows = process.platform === 'win32';
   const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:client'], {
     cwd: repositoryRoot,
@@ -18,7 +19,7 @@ if (!fs.existsSync(clientIndex)) {
 
   if (result.error) throw new Error(`Could not build the web client: ${result.error.message}`);
   if (result.status !== 0) process.exit(result.status ?? 1);
-  if (!fs.existsSync(clientIndex)) throw new Error('Web client build completed without producing packages/studio-client/dist/index.html.');
+  if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) throw new Error('Web client build did not produce the expected Studio assets.');
 }
 
 await import('../src/index.js');
