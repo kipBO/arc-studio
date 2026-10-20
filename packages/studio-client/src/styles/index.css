@@ -389,7 +389,7 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .canvas-surface::after { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 48%, transparent 22%, color-mix(in srgb, var(--canvas) 40%, transparent) 100%); content: ""; pointer-events: none; }
 .canvas-world { position: absolute; inset: 0; transform-origin: top left; will-change: transform; }
 .canvas-selection-box { position: absolute; z-index: 20; border: 1px solid color-mix(in srgb, var(--accent) 88%, white); border-radius: 2px; background: color-mix(in srgb, var(--accent) 13%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent); pointer-events: none; }
-.canvas-remote-selection-box { position: absolute; z-index: 20; border: 1px solid color-mix(in srgb, var(--collaborator-color) 88%, white); border-radius: 2px; background: color-mix(in srgb, var(--collaborator-color) 11%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--collaborator-color) 18%, transparent); pointer-events: none; }
+.canvas-remote-selection-box { position: absolute; z-index: 20; border: 1px solid color-mix(in srgb, var(--collaborator-color) 88%, white); border-radius: 2px; background: color-mix(in srgb, var(--collaborator-color) 11%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--collaborator-color) 18%, transparent); pointer-events: none; transition: left 80ms linear, top 80ms linear, width 80ms linear, height 80ms linear; }
 .canvas-remote-selection-box > span { position: absolute; left: -1px; top: -20px; padding: 2px 6px; border-radius: 4px 4px 4px 0; color: #101318; background: var(--collaborator-color); font: 600 10px/1.4 Inter, system-ui, sans-serif; white-space: nowrap; }
 .canvas-tag-group { position: absolute; z-index: 0; border: 1px solid color-mix(in srgb, var(--tag-group-color) 55%, transparent); border-radius: 12px; background: color-mix(in srgb, var(--tag-group-color) 7%, transparent); box-shadow: inset 0 0 36px color-mix(in srgb, var(--tag-group-color) 4%, transparent); pointer-events: none; transition: left .12s ease, top .12s ease, width .12s ease, height .12s ease; }
 .canvas-tag-group-label-layer { position: absolute; z-index: 12; inset: 0; overflow: visible; pointer-events: none; }
@@ -464,13 +464,17 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .node-position.is-selected { z-index: 14; }
 .node-position:has(.node-pin-row:hover) { z-index: 13; }
 .node-position.is-collaborator-active > .canvas-node { box-shadow: 0 0 0 2px color-mix(in srgb, var(--collaborator-color) 86%, transparent), 0 0 18px color-mix(in srgb, var(--collaborator-color) 30%, transparent); transition: box-shadow 120ms ease-out; }
+.node-position.is-collaborator-dragging > .canvas-node { transition: transform 45ms linear, box-shadow 120ms ease-out; }
+.node-position.is-remote-moving > .canvas-node { transition: transform 45ms linear; }
 .node-position.is-collaborator-selected > .canvas-node { outline: 2px solid color-mix(in srgb, var(--collaborator-color) 84%, transparent); outline-offset: 3px; }
 .node-position.is-collaborator-selected > .canvas-node { outline: 2px solid color-mix(in srgb, var(--collaborator-color) 84%, transparent); outline-offset: 3px; }
 .collaboration-wire-preview { pointer-events: none; }
 .collaboration-wire-preview path { fill: none; stroke: var(--collaborator-color); stroke-width: 2.5; stroke-dasharray: 7 5; stroke-linecap: round; opacity: .85; animation: collaborator-wire-flow 600ms linear infinite; }
 .collaboration-wire-preview circle { fill: var(--collaborator-color); stroke: var(--panel); stroke-width: 2; }
+.canvas-note-card.is-remote-moving { transition: left 45ms linear, top 45ms linear; }
+.canvas-note-card.is-collaborator-dragging { transition: left 90ms cubic-bezier(.2,.75,.3,1), top 90ms cubic-bezier(.2,.75,.3,1); }
 .canvas-collaborator-cursors { position: absolute; inset: 0; z-index: 30; pointer-events: none; overflow: visible; }
-.canvas-collaborator-cursor { position: absolute; display: grid; grid-template-columns: 18px auto; align-items: start; gap: 2px 4px; width: max-content; color: var(--collaborator-color); filter: drop-shadow(0 1px 2px #0009); pointer-events: auto; transition: left 55ms linear, top 55ms linear, opacity .12s ease; will-change: left, top; }
+.canvas-collaborator-cursor { position: absolute; left: 0; top: 0; display: grid; grid-template-columns: 18px auto; align-items: start; gap: 2px 4px; width: max-content; color: var(--collaborator-color); filter: drop-shadow(0 1px 2px #0009); pointer-events: auto; transition: opacity .12s ease; will-change: transform; }
 .canvas-collaborator-cursor.is-idle, .canvas-collaborator-offscreen.is-idle { opacity: .62; }
 .canvas-collaborator-cursor:hover, .canvas-collaborator-offscreen:hover { opacity: .68; }
 .canvas-collaborator-cursor > svg { margin: -2px 0 0 -2px; fill: color-mix(in srgb, var(--collaborator-color) 26%, transparent); }
@@ -2362,6 +2366,7 @@ a.embed-preview-title:hover { text-decoration: underline; }
 .node-drag-preview { z-index: 100; pointer-events: none; }
 .node-drag-preview .canvas-node { opacity: .42; filter: drop-shadow(0 10px 20px rgba(0, 0, 0, .22)); cursor: grabbing; }
 .node-drag-preview.is-remote .canvas-node { opacity: .28; border-color: color-mix(in srgb, var(--collaborator-color) 70%, var(--line-strong)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--collaborator-color) 50%, transparent), 0 8px 22px #0003; }
+.node-drag-preview.is-remote { transition: transform 90ms linear; }
 .library-drag-ghost { position: fixed; z-index: 1000; display: flex; align-items: center; gap: 8px; min-width: 150px; max-width: 230px; height: 30px; padding: 0 9px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--node-accent) 35%, var(--line)); border-radius: 5px; color: var(--text-secondary); background: color-mix(in srgb, var(--chrome) 94%, transparent); box-shadow: var(--shadow-soft); font-size: 10px; pointer-events: none; backdrop-filter: blur(10px); }
 .library-drag-ghost > svg { flex: 0 0 auto; }
 .library-drag-ghost > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2478,6 +2483,7 @@ a.embed-preview-title:hover { text-decoration: underline; }
 .canvas-context-label .context-dot { animation: statusPulse 1.7s ease infinite; }
 .canvas-context-label .canvas-collaborators { max-width: min(320px, 34vw); overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
 .canvas-context-label .collaboration-connection { display: inline-flex; align-items: center; gap: 5px; color: var(--warning); white-space: nowrap; }
+.canvas-context-label .collaboration-connection.is-flaky { color: var(--warning); }
 .canvas-context-label .workspace-compatibility-status { color: var(--warning); white-space: nowrap; }
 .collaboration-connection-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: statusPulse 1.2s ease infinite; }
 .canvas-chat-bubble-layer { position: absolute; z-index: 40; inset: 0; overflow: visible; pointer-events: none; }
