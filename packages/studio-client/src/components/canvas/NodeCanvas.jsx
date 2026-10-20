@@ -15,6 +15,7 @@ const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
 const LARGE_GRAPH_NODE_LIMIT = 48;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
+const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const getCanvasDisplayScale = (element) => {
   if (!element) return 1;
   const appRoot = element.closest('.app-root');
@@ -363,6 +364,10 @@ export function NodeCanvas({
         const canScrollX = event.deltaX !== 0 && horizontal && (event.deltaX < 0 ? scrollArea.scrollLeft > 0 : scrollArea.scrollLeft + scrollArea.clientWidth < scrollArea.scrollWidth - 1);
         if ((canScrollY || canScrollX) && !event.ctrlKey && !event.metaKey && !event.shiftKey) return;
         scrollArea = scrollArea.parentElement;
+      }
+      if (textInputPopupOpen()) {
+        event.preventDefault();
+        return;
       }
       event.preventDefault();
       const zoomWithWheel = settings.zoomCanvasWithScroll && !event.shiftKey;
@@ -958,7 +963,9 @@ export function NodeCanvas({
   const startPan = (event) => {
     if (contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) return;
     const isCanvasTarget = event.target === containerRef.current || event.target.classList?.contains('canvas-surface') || event.target.classList?.contains('canvas-world');
-    if (event.pointerType === 'touch' && isCanvasTarget) {
+    const textPopupOpen = textInputPopupOpen();
+    if (textPopupOpen && event.pointerType === 'touch' && isCanvasTarget) return;
+    if (event.pointerType === 'touch' && isCanvasTarget && !textPopupOpen) {
       touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (touchPointersRef.current.size >= 2) {
         const pointers = [...touchPointersRef.current.values()].slice(-2);
@@ -988,6 +995,7 @@ export function NodeCanvas({
     const rightPan = event.button === 2;
     const spacePan = event.button === 0 && spaceDownRef.current;
     if (rightPan && !isCanvasTarget) return;
+    if (textPopupOpen && (rightPan || spacePan || event.button === 1)) return;
     if (rightPan || spacePan) {
       event.preventDefault();
       setIsPanning(true);
@@ -1019,6 +1027,13 @@ export function NodeCanvas({
 
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+    if (textInputPopupOpen() && (isPanning || touchPinchRef.current)) {
+      setIsPanning(false);
+      rightPanOriginRef.current = null;
+      touchPinchRef.current = null;
+      touchPointersRef.current.clear();
+      return;
+    }
     if (event.pointerType === 'touch' && touchPointersRef.current.has(event.pointerId)) {
       touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (touchPinchRef.current && touchPointersRef.current.size >= 2) {
@@ -1362,6 +1377,7 @@ export function NodeCanvas({
   };
 
   const fitView = () => {
+    if (textInputPopupOpen()) return;
     const bounds = containerRef.current?.getBoundingClientRect();
     if (!bounds || !nodes.length) { setZoom(1); setPan({ x: 22, y: 18 }); return; }
     const displayScale = getCanvasDisplayScale(containerRef.current);
@@ -1452,6 +1468,11 @@ export function NodeCanvas({
 
   const gridSize = Math.max(12, GRID_SIZE * zoom);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const inputWiresByNode = useMemo(() => {
+    const result = new Map();
+    for (const wire of connections) { if (!result.has(wire.targetNodeId)) result.set(wire.targetNodeId, []); result.get(wire.targetNodeId).push(wire); }
+    return result;
+  }, [connections]);
   const tagGroupLayouts = useMemo(() => tagGroups.map((group) => {
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
     const noteMembers = notes.filter((note) => (group.noteIds || []).includes(note.id));
@@ -1521,19 +1542,24 @@ export function NodeCanvas({
     }
     return byNode;
   }, [connections]);
-  const { baseConnections, selectedConnections } = useMemo(() => {
-    if (!selectedNodeIds.length) return { baseConnections: connections, selectedConnections: [] };
+  const { baseConnections, selectedConnections, primarySelectedConnections } = useMemo(() => {
+    if (!selectedNodeIds.length) return { baseConnections: connections, selectedConnections: [], primarySelectedConnections: [] };
+    const selectedIds = new Set(selectedNodeIds);
+    const primaryId = selectedIds.has(selectedNodeId) ? selectedNodeId : selectedNodeIds[selectedNodeIds.length - 1];
     const base = [];
     const selected = [];
+    const primary = [];
     for (const connection of connections) {
-      if (selectedNodeIds.includes(connection.sourceNodeId) || selectedNodeIds.includes(connection.targetNodeId)) {
+      if (connection.sourceNodeId === primaryId || connection.targetNodeId === primaryId) {
+        primary.push(connection);
+      } else if (selectedIds.has(connection.sourceNodeId) || selectedIds.has(connection.targetNodeId)) {
         selected.push(connection);
       } else {
         base.push(connection);
       }
     }
-    return { baseConnections: base, selectedConnections: selected };
-  }, [connections, selectedNodeIds]);
+    return { baseConnections: base, selectedConnections: selected, primarySelectedConnections: primary };
+  }, [connections, selectedNodeId, selectedNodeIds]);
   const connectedSelectedNodeIds = useMemo(() => {
     if (!selectedNodeIds.length) return new Set();
     const selectedIds = new Set(selectedNodeIds);
@@ -1546,42 +1572,81 @@ export function NodeCanvas({
     return connectedIds;
   }, [connections, selectedNodeIds]);
 
-  const renderWire = (connection, isSelectedNodeWire) => {
+const previewOutput = (node, outputId, seen = new Set()) => {
+  if (!node || seen.has(node.id) || seen.size > 24) return undefined;
+  const nextSeen = new Set(seen).add(node.id);
+  const data = node.data || {};
+  if (node.type.startsWith('event_') || node.type === 'function_input' || node.type === 'function_call') return undefined;
+  if (node.type === 'value_text' || node.type === 'value_number' || node.type === 'value_boolean') return data.value ?? (node.type === 'value_boolean');
+  if (node.type === 'variable_get') return graphVariables.find((item) => item.id === data.variableId)?.initialValue;
+  const definition = getNodeDefinition(node);
+  const input = (id, fallback) => {
+    const wire = connections.find((item) => item.targetNodeId === node.id && item.targetPinId === id);
+    if (wire) return previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId, nextSeen);
+    return data[id] ?? fallback;
+  };
+  if (node.type.startsWith('math_')) {
+    const a = Number(input('a', 0)); const b = Number(input('b', 0)); const value = Number(input('value', 0));
+    const operations = { math_add: a + b, math_subtract: a - b, math_multiply: a * b, math_divide: b ? a / b : 0, math_modulo: b ? a % b : 0, math_power: a ** b, math_min: Math.min(a, b), math_max: Math.max(a, b), math_abs: Math.abs(value), math_sqrt: value >= 0 ? Math.sqrt(value) : 0, math_round: Number(value.toFixed(Math.max(0, Math.min(12, Number(data.precision) || 0)))), math_floor: Math.floor(value), math_ceil: Math.ceil(value), math_sin: Math.sin(value), math_cos: Math.cos(value), math_tan: Math.tan(value), math_asin: Math.asin(value), math_acos: Math.acos(value), math_atan: Math.atan(value), math_log: value > 0 ? Math.log(value) : 0, math_log10: value > 0 ? Math.log10(value) : 0, math_exp: Math.exp(value), math_sign: Math.sign(value), math_clamp: Math.min(Number(input('max', 1)), Math.max(Number(input('min', 0)), value)), math_lerp: Number(input('a', 0)) + (Number(input('b', 1)) - Number(input('a', 0))) * Number(input('t', 0.5)), math_compare: ({ less_than: a < b, less_or_equal: a <= b, equal: a === b, not_equal: a !== b, greater_or_equal: a >= b, greater_than: a > b }[data.operation || 'less_than']) };
+    if (node.type === 'math_constant') return ({ pi: Math.PI, tau: Math.PI * 2, e: Math.E, golden_ratio: (1 + Math.sqrt(5)) / 2, sqrt_two: Math.SQRT2 }[data.constant || 'pi']);
+    const result = operations[node.type];
+    return Number.isFinite(result) ? result : undefined;
+  }
+  if (node.type === 'logic_not') return !input('value', false);
+  if (node.type === 'logic_and') return Boolean(input('a', false)) && Boolean(input('b', false));
+  if (node.type === 'logic_or') return Boolean(input('a', false)) || Boolean(input('b', false));
+  if (node.type === 'logic_xor') return Boolean(input('a', false)) !== Boolean(input('b', false));
+  if (node.type === 'data_text_uppercase') return String(input('text', '')).toLocaleUpperCase();
+  if (node.type === 'data_text_lowercase') return String(input('text', '')).toLocaleLowerCase();
+  if (node.type === 'data_text_trim') return String(input('text', '')).trim();
+  if (node.type === 'data_check_value') {
+    const value = input('value', undefined); const fallback = input('fallback', '');
+    const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && !value.trim() ? 'empty' : 'value';
+    return ({ value: state === 'value' ? value : fallback, state, is_missing: state === 'missing', is_null: state === 'null', is_empty: state === 'empty', has_value: state === 'value' })[outputId];
+  }
+  if (node.type === 'data_array_get') {
+    const array = input('array', []); const index = Math.trunc(Number(input('index', 0))); const found = Array.isArray(array) && index >= 0 && index < array.length;
+    return ({ value: found ? array[index] : null, found })[outputId];
+  }
+  if (node.type === 'data_object_get' || node.type === 'data_get_value_by_path') {
+    const source = input(node.type === 'data_object_get' ? 'object' : 'value', {});
+    const path = node.type === 'data_object_get' ? String(input('key', '')) : String(input('path', ''));
+    if (node.type === 'data_object_get') {
+      const exists = Boolean(path) && source != null && Object.hasOwn(Object(source), path);
+      return ({ value: exists ? source[path] : null, exists })[outputId];
+    }
+    const keys = path.match(/(?:^|\.)([A-Za-z_$][A-Za-z0-9_$-]*)|\[(?:([0-9]+)|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')\]/g);
+    let current = source; let exists = Boolean(path);
+    if (!keys || keys.join('').replace(/^\./, '') !== path.replace(/^\./, '')) exists = false;
+    for (const token of keys || []) {
+      const key = /\[(\d+)\]/.exec(token)?.[1] ?? /\["((?:\\.|[^"\\])*)"\]/.exec(token)?.[1] ?? /\['((?:\\.|[^'\\])*)'\]/.exec(token)?.[1] ?? token.replace(/^\./, '');
+      if (['__proto__', 'prototype', 'constructor'].includes(key) || current == null || !Object.hasOwn(Object(current), key)) { exists = false; break; }
+      current = current[key];
+    }
+    const fallback = input('fallback', '');
+    return ({ value: exists ? current : fallback, exists })[outputId];
+  }
+  if (node.type === 'data_find_array_item' || node.type === 'data_filter_array') {
+    const array = input('array', []); const items = Array.isArray(array) ? array : []; const path = String(input('path', '') || ''); const wanted = input('value', '');
+    const select = (item) => {
+      if (!path) return { exists: true, value: item };
+      const tokens = path.replace(/\[(\d+)\]/g, '.$1').split('.').filter(Boolean); let value = item;
+      for (const key of tokens) { if (['__proto__', 'prototype', 'constructor'].includes(key) || value == null || !Object.hasOwn(Object(value), key)) return { exists: false, value: undefined }; value = value[key]; }
+      return { exists: true, value };
+    };
+    if (node.type === 'data_find_array_item') { const index = items.findIndex((item) => { const found = select(item); return found.exists && Object.is(found.value, wanted); }); return ({ item: index >= 0 ? items[index] : null, index, found: index >= 0 })[outputId]; }
+    const operator = String(input('operator', 'equals')); const filtered = items.filter((item) => { const actual = select(item); const value = actual.value; if (operator === 'exists') return actual.exists; if (!actual.exists) return false; if (operator === 'not_equals') return !Object.is(value, wanted); if (operator === 'contains') return typeof value === 'string' ? value.includes(String(wanted)) : Array.isArray(value) && value.some((entry) => Object.is(entry, wanted)); if (operator === 'starts_with') return typeof value === 'string' && value.startsWith(String(wanted)); if (operator === 'ends_with') return typeof value === 'string' && value.endsWith(String(wanted)); if (operator === 'greater_than') return value > wanted; if (operator === 'greater_or_equal') return value >= wanted; if (operator === 'less_than') return value < wanted; if (operator === 'less_or_equal') return value <= wanted; if (operator === 'is_empty') return value == null || value === '' || Array.isArray(value) && !value.length || typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length; return Object.is(value, wanted); }); return ({ array: filtered, count: filtered.length })[outputId];
+  }
+  if (definition?.inputs?.some((pin) => pin.id === outputId)) return undefined;
+  return undefined;
+};
+
+  const renderWire = (connection, isSelectedNodeWire, isPrimarySelectedWire = false) => {
     const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
     const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
     const path = computePath(start.x, start.y, end.x, end.y);
     const sourceNode = nodeById.get(connection.sourceNodeId);
     const targetNode = nodeById.get(connection.targetNodeId);
-    const previewOutput = (node, outputId, seen = new Set()) => {
-      if (!node || seen.has(node.id) || seen.size > 24) return undefined;
-      const nextSeen = new Set(seen).add(node.id);
-      const data = node.data || {};
-      if (node.type.startsWith('event_') || node.type === 'function_input' || node.type === 'function_call') return undefined;
-      if (node.type === 'value_text' || node.type === 'value_number' || node.type === 'value_boolean') return data.value ?? (node.type === 'value_boolean');
-      if (node.type === 'variable_get') return graphVariables.find((item) => item.id === data.variableId)?.initialValue;
-      const definition = getNodeDefinition(node);
-      const input = (id, fallback) => {
-        const wire = connections.find((item) => item.targetNodeId === node.id && item.targetPinId === id);
-        if (wire) return previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId, nextSeen);
-        return data[id] ?? fallback;
-      };
-      if (node.type.startsWith('math_')) {
-        const a = Number(input('a', 0)); const b = Number(input('b', 0)); const value = Number(input('value', 0));
-        const operations = { math_add: a + b, math_subtract: a - b, math_multiply: a * b, math_divide: b ? a / b : 0, math_modulo: b ? a % b : 0, math_power: a ** b, math_min: Math.min(a, b), math_max: Math.max(a, b), math_abs: Math.abs(value), math_sqrt: value >= 0 ? Math.sqrt(value) : 0, math_round: Number(value.toFixed(Math.max(0, Math.min(12, Number(data.precision) || 0)))), math_floor: Math.floor(value), math_ceil: Math.ceil(value), math_sin: Math.sin(value), math_cos: Math.cos(value), math_tan: Math.tan(value), math_asin: Math.asin(value), math_acos: Math.acos(value), math_atan: Math.atan(value), math_log: value > 0 ? Math.log(value) : 0, math_log10: value > 0 ? Math.log10(value) : 0, math_exp: Math.exp(value), math_sign: Math.sign(value), math_clamp: Math.min(Number(input('max', 1)), Math.max(Number(input('min', 0)), value)), math_lerp: Number(input('a', 0)) + (Number(input('b', 1)) - Number(input('a', 0))) * Number(input('t', 0.5)), math_compare: ({ less_than: a < b, less_or_equal: a <= b, equal: a === b, not_equal: a !== b, greater_or_equal: a >= b, greater_than: a > b }[data.operation || 'less_than']) };
-        if (node.type === 'math_constant') return ({ pi: Math.PI, tau: Math.PI * 2, e: Math.E, golden_ratio: (1 + Math.sqrt(5)) / 2, sqrt_two: Math.SQRT2 }[data.constant || 'pi']);
-        const result = operations[node.type];
-        return Number.isFinite(result) ? result : undefined;
-      }
-      if (node.type === 'logic_not') return !input('value', false);
-      if (node.type === 'logic_and') return Boolean(input('a', false)) && Boolean(input('b', false));
-      if (node.type === 'logic_or') return Boolean(input('a', false)) || Boolean(input('b', false));
-      if (node.type === 'logic_xor') return Boolean(input('a', false)) !== Boolean(input('b', false));
-      if (node.type === 'data_text_uppercase') return String(input('text', '')).toLocaleUpperCase();
-      if (node.type === 'data_text_lowercase') return String(input('text', '')).toLocaleLowerCase();
-      if (node.type === 'data_text_trim') return String(input('text', '')).trim();
-      if (definition?.inputs?.some((pin) => pin.id === outputId)) return undefined;
-      return undefined;
-    };
     const outputValue = shiftHeld ? previewOutput(sourceNode, connection.sourcePinId) : undefined;
     let outputPreview = '';
     if (shiftHeld) {
@@ -1601,7 +1666,7 @@ export function NodeCanvas({
     const shade = fanout > 1 ? (fanoutOrder % 2 === 0 ? -12 : 5) : denseWiring ? denseShades[(wireFanout.indices.get(connection.id) || 0) % denseShades.length] : 0;
     const color = reduceWireColorNoise && !active && !isSelectedNodeWire ? '#737d8b' : shade ? shadeWireColor(pinColor, shade) : pinColor;
     return (
-      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': fanout > 1 ? 0.66 : denseWiring ? 0.68 : 0.84 }}>
+      <g key={connection.id} className={`wire-group ${fanout > 1 ? 'is-fanout' : ''} ${denseWiring ? 'is-dense' : ''} ${reduceWireColorNoise && !active && !isSelectedNodeWire ? 'is-muted' : ''} ${isLocked ? 'is-locked' : ''} ${isSelectedNodeWire ? 'is-connected-selected' : ''} ${isPrimarySelectedWire ? 'is-primary-selection' : ''}`} data-wire-id={connection.id} style={{ '--wire-opacity': fanout > 1 ? 0.66 : denseWiring ? 0.68 : 0.84 }}>
         <path d={path} className="wire-hit-area" data-tooltip={shiftHeld ? outputPreview : undefined} aria-label={settings.doubleClickWireToCut ? 'Single-click to reroute; double-click to disconnect' : 'Single-click to disconnect; double-click to reroute'} onClick={(event) => {
           if (settings.doubleClickWireToCut) {
             startWireFromConnection(event, connection, 'output');
@@ -1742,6 +1807,7 @@ export function NodeCanvas({
           const isSelected = selectedNodeIds.includes(node.id);
           const isConnectedToSelection = connectedSelectedNodeIds.has(node.id);
           const definition = getNodeDefinition(node);
+          const templatePreviewValues = Object.fromEntries((inputWiresByNode.get(node.id) || []).map((wire) => [wire.targetPinId, previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId)]).filter(([, value]) => value !== undefined));
           const remoteSelection = remoteActions.find((peer) => peer.action?.selectedNodeIds?.includes(node.id));
           const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'node-edit' && peer.action.nodeId === node.id
             || peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)) || remoteSelection;
@@ -1758,6 +1824,7 @@ export function NodeCanvas({
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
                 graphVariables={graphVariables}
+                templatePreviewValues={templatePreviewValues}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
                 functionGraphs={functionGraphs}
@@ -1789,6 +1856,7 @@ export function NodeCanvas({
         {/* selected wires layer: above other nodes, 1 below selected node )z-index: 9) */}
         <svg className="wire-layer wire-layer-selected" width="20000" height="20000" aria-label="Selected connections">
           {selectedConnections.map((connection) => renderWire(connection, true))}
+          {primarySelectedConnections.map((connection) => renderWire(connection, true, true))}
           {wireCutAnimations.flatMap((animation) => animation.segments.map((segment, index) => <path key={`${animation.id}-${index}`} d={segment.d} className="wire-cut-segment" style={{ '--wire-color': animation.color, '--wire-cut-length': `${segment.length}px` }} />))}
           {connectingWire && <path
             d={connectingWire.direction === 'output'
@@ -1900,9 +1968,9 @@ export function NodeCanvas({
       {nodes.length === 0 && <div className="canvas-empty-hint"><span className="empty-hint-glyph"><Plus size={17} /></span><span>Build a graph</span><button onClick={() => onOpenPalette?.()}>Add first node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button></div>}
 
       <div className="canvas-tools" aria-label="Canvas controls">
-        <button className="canvas-tool-button" onClick={() => setZoom((value) => clamp(value / 1.15, 0.25, 2.5))} title="Zoom out" aria-label="Zoom out"><Minus size={15} /></button>
-        <button className="canvas-zoom-readout" onClick={() => { setZoom(1); setPan({ x: 22, y: 18 }); }} title="Reset zoom">{Math.round(zoom * 100)}%</button>
-        <button className="canvas-tool-button" onClick={() => setZoom((value) => clamp(value * 1.15, 0.25, 2.5))} title="Zoom in" aria-label="Zoom in"><Plus size={15} /></button>
+        <button className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value / 1.15, 0.25, 2.5)); }} title="Zoom out" aria-label="Zoom out"><Minus size={15} /></button>
+        <button className="canvas-zoom-readout" onClick={() => { if (textInputPopupOpen()) return; setZoom(1); setPan({ x: 22, y: 18 }); }} title="Reset zoom">{Math.round(zoom * 100)}%</button>
+        <button className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value * 1.15, 0.25, 2.5)); }} title="Zoom in" aria-label="Zoom in"><Plus size={15} /></button>
         <span className="canvas-tool-divider" />
         <button className="canvas-tool-button" onClick={fitView} title="Frame graph" aria-label="Frame graph"><Maximize size={15} /></button>
       </div>
