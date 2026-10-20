@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 //
-export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, shake = false }) {
+export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon, iconClassName = '', headerMeta, children, footer, maxWidth, panelClassName = '', shake = false }) {
   const dialogRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const onConfirmRef = useRef(onConfirm);
@@ -48,7 +48,7 @@ export function Modal({ isOpen, onClose, onConfirm, title, subtitle, icon: Icon,
   if (!isOpen) return null;
   const widthClass = String(maxWidth || '').includes('2xl') ? 'modal-wide' : String(maxWidth || '').includes('lg') ? 'modal-medium' : '';
   return <div className="dialog-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
-    <section ref={dialogRef} className={`modal-panel ${widthClass} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
+    <section ref={dialogRef} className={`modal-panel ${widthClass} ${panelClassName} ${shake ? 'is-shaking' : ''}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
       <header className="modal-header">
         {Icon && <div className={`modal-title-icon ${iconClassName}`}><Icon size={17} /></div>}
         <div className="modal-title-copy"><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
