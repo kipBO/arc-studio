@@ -1,5 +1,6 @@
 let audioContext;
 let lastClickAt = 0;
+let userActivatedAudio = false;
 //
 function getAudioContext() {
   if (typeof window === 'undefined') return null;
@@ -13,6 +14,7 @@ function getAudioContext() {
 }
 
 export function unlockUiSounds() {
+  userActivatedAudio = true;
   const context = getAudioContext();
   if (!context || context.state === 'running') return Promise.resolve();
   return context.resume().catch(() => {});
@@ -93,6 +95,7 @@ function playSound(context, kind) {
 }
 //
 export function playUiSound(kind = 'click') {
+  if (!userActivatedAudio) return;
   const context = getAudioContext();
   if (!context) return;
   const play = () => playSound(context, kind);
