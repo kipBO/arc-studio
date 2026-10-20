@@ -125,6 +125,6 @@ export const serverConfig = {
 
 export const environmentStatus = {
   requiredMissing: requiredEnvMissing,
-  optionalFallbacks,
+  optionalFallbacks: optionalEnvFallbacks,
   requiredKeys: [...requiredEnvKeys]
 };
