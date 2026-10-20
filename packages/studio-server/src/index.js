@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import fs from 'node:fs';
 
 import { serverConfig } from './config.js';
@@ -18,9 +18,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const logger = new Logger();
-const userStore = new UserStore();
-
 const diagnostics = StartupDiagnostics.run();
+const requiredEnvironmentFailure = diagnostics.checks.find((check) => check.name === 'Environment Variables' && check.status === 'FAIL');
+if (requiredEnvironmentFailure) {
+  const message = `[Startup] ${requiredEnvironmentFailure.message}. Set the value in .env or the server environment before starting ARC Studio.`;
+  console.error(message);
+  logger.log('ERROR', message);
+  await new Promise((resolveClose) => logger.close(resolveClose));
+  process.exit(1);
+}
+const userStore = new UserStore();
 
 const app = express();
 const server = http.createServer(app);
@@ -256,13 +263,29 @@ if (!serverOnlyMode && fs.existsSync(clientDistPath)) {
       let html = fs.readFileSync(studioHtmlPath, 'utf8');
       html = html.replace(/(<meta property="og:image" content=")[^"]+("\s*\/>)/, (_match, prefix, suffix) => `${prefix}${imageUrl}${suffix}`);
       html = html.replace(/(<meta name="twitter:image" content=")[^"]+("\s*\/>)/, (_match, prefix, suffix) => `${prefix}${imageUrl}${suffix}`);
+      res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      res.set('Pragma', 'no-cache');
+      res.set('Expires', '0');
       res.type('html').send(html);
     } catch (error) {
       next(error);
     }
   };
   app.get('/', sendStudioPage);
-  app.use(express.static(clientDistPath));
+  app.use(express.static(clientDistPath, {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+      } else if (filePath.includes(`${sep}assets${sep}`)) {
+        res.set('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
+  app.get('/assets/*', (_req, res) => {
+    res.set('Cache-Control', 'no-store').status(404).type('text/plain').send('ARC Studio client asset not found. Refresh the page to load the current version.');
+  });
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api') && !req.path.startsWith('/ws')) {
       sendStudioPage(req, res, (error) => {
