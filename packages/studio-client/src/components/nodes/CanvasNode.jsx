@@ -370,6 +370,23 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'data_to_boolean' && !isConnected('value')) {
     return <div className="node-config node-config-stack"><FallbackField label="Value"><AnimatedDropdown value={String(node.data?.value ?? false)} options={[{ value: 'false', label: 'False' }, { value: 'true', label: 'True' }]} onChange={(value) => update('value', value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Value to convert to a boolean" className="node-select" /></FallbackField></div>;
   }
+  if (node.type === 'data_check_value') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('value') && <span className="node-config-hint">Leave Value unconnected to detect a missing value.</span>}
+      {!isConnected('fallback') && <FallbackField label="Fallback"><input value={node.data?.fallback ?? ''} onChange={(event) => update('fallback', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used for missing, null, or empty text" aria-label="Value check fallback" /></FallbackField>}
+      <span className="node-config-hint">State is missing, null, empty, or value. Zero and false count as values.</span>
+    </div>;
+  }
+  if (node.type === 'data_format_number') {
+    const style = ['decimal', 'percent', 'currency'].includes(node.data?.style) ? node.data.style : 'decimal';
+    return <div className="node-config node-config-stack">
+      {!isConnected('value') && <FallbackField label="Value"><NodeNumberInput allowEmpty step="any" value={node.data?.value ?? 0} onChange={(event) => update('value', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number to format" /></FallbackField>}
+      {!isConnected('locale') && <FallbackField label="Locale"><input value={node.data?.locale ?? 'en-US'} onChange={(event) => update('locale', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="en-US" aria-label="Number format locale" /></FallbackField>}
+      {!isConnected('style') && <FallbackField label="Style"><AnimatedDropdown value={style} options={[{ value: 'decimal', label: 'Number' }, { value: 'percent', label: 'Percent' }, { value: 'currency', label: 'Currency' }]} onChange={(value) => update('style', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Number format style" className="node-select" /></FallbackField>}
+      {style === 'currency' && !isConnected('currency') && <FallbackField label="Currency code"><input maxLength={3} value={node.data?.currency ?? 'USD'} onChange={(event) => update('currency', event.target.value.toUpperCase())} onPointerDown={(event) => event.stopPropagation()} placeholder="USD" aria-label="Currency code" /></FallbackField>}
+      <div className="node-config"><FallbackField label="Minimum decimals">{isConnected('minimum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.minimum_fraction_digits ?? 0} onChange={(event) => update('minimum_fraction_digits', Math.max(0, Math.min(20, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Minimum fraction digits" />}</FallbackField><FallbackField label="Maximum decimals">{isConnected('maximum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.maximum_fraction_digits ?? 2} onChange={(event) => update('maximum_fraction_digits', Math.max(0, Math.min(20, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum fraction digits" />}</FallbackField></div>
+    </div>;
+  }
   if (node.type.startsWith('math_')) {
     if (node.type === 'math_random') return <div className="node-config node-config-stack">
       {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
