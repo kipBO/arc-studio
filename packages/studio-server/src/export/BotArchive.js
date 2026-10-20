@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
+import { randomBytes } from 'node:crypto';
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const repoRoot = path.resolve(serverRoot, '../..');
@@ -11,17 +12,40 @@ for (let n = 0; n < 256; n += 1) {
   for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
   crcTable[n] = value >>> 0;
 }
-export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapters = []) {
+
+function pickOwnFields(source, fields) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return source;
+  return Object.fromEntries(fields.filter((field) => Object.hasOwn(source, field)).map((field) => [field, source[field]]));
+}
+
+function projectRuntimeGraph(graph) {
+  return {
+    id: graph.id,
+    name: typeof graph.name === 'string' ? graph.name : 'Untitled graph',
+    ...(graph.graphType === 'function' ? { graphType: 'function' } : {}),
+    variables: (Array.isArray(graph.variables) ? graph.variables : []).map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'valueType', 'initialValue', 'persist'])),
+    nodes: graph.nodes.map((node) => pickOwnFields(node, ['id', 'type', 'label', 'data', 'permission', 'requiredPermission'])),
+    connections: graph.connections.map((connection) => pickOwnFields(connection, ['sourceNodeId', 'sourcePinId', 'targetNodeId', 'targetPinId']))
+  };
+}
+
+export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapters = [], exportOptions = {}) {
   const safeGraphs = graphs
     .filter((graph) => graph && typeof graph.id === 'string' && Array.isArray(graph.nodes) && Array.isArray(graph.connections))
-    .map((graph) => ({
-      id: graph.id,
-      name: typeof graph.name === 'string' ? graph.name : 'Untitled graph',
-      ...(graph.graphType === 'function' ? { graphType: 'function' } : {}),
-      variables: Array.isArray(graph.variables) ? graph.variables : [],
-      nodes: graph.nodes,
-      connections: graph.connections
-    }));
+    .map(projectRuntimeGraph);
+  const safeProjectVariables = (Array.isArray(projectVariables) ? projectVariables : [])
+    .map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'initialValue']));
+  const includeCryptoSecret = exportOptions.includeCryptoSecret === true;
+  const includeBotToken = exportOptions.includeBotToken === true;
+  const botToken = includeBotToken ? String(exportOptions.botToken || '').replace(/[\r\n]/g, '') : '';
+  if (includeBotToken && !botToken) throw new Error('A bot token is not configured for this project.');
+  const cryptoSecret = includeCryptoSecret
+    ? String(exportOptions.cryptoSecret || randomBytes(32).toString('hex')).replace(/[\r\n]/g, '')
+    : '';
+  const requestedLogRetention = String(exportOptions.logRetentionDays ?? 7);
+  const logRetentionDays = ['1', '7', '14', '30', '90', '365', '0', 'forever'].includes(requestedLogRetention) ? requestedLogRetention : '7';
+  const projectName = String(exportOptions.projectName || 'Untitled Project').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) || 'Untitled Project';
+  const projectAuthor = String(exportOptions.projectAuthor || 'Unknown').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32) || 'Unknown';
   const usedTypes = new Set(safeGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
   const exports = normalizePluginExports(pluginAdapters, usedTypes);
   const dependencies = { chezcord: 'file:./chezcord' };
@@ -37,22 +61,49 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   }
   const pluginStoreSource = createExportPluginStore(exports);
   const readme = `${baseReadme}\n${exports.length ? `This export includes ${exports.map((plugin) => `${plugin.name} ${plugin.version}`).join(', ')} adapter${exports.length === 1 ? '' : 's'}. See PLUGIN-PERMISSIONS.md for declared capabilities and plugin notices.\n` : ''}`;
-  const envExample = `DISCORD_BOT_TOKEN=\nARC_SESSION_SECRET=\n${environment.map((item) => `\n# ${item.description}${item.required ? ' (required)' : ''}\n${item.name}=`).join('\n')}\n`;
+  const seenEnvironmentNames = new Set(['DISCORD_BOT_TOKEN', 'ARC_CRYPTO_SECRET', 'ARC_LOG_RETENTION_DAYS']);
+  const environmentExamples = environment.filter((item) => {
+    if (seenEnvironmentNames.has(item.name)) return false;
+    seenEnvironmentNames.add(item.name);
+    return true;
+  });
+  const envExample = [
+    '# Discord bot token. This export includes it only if you selected that option.',
+    'DISCORD_BOT_TOKEN=',
+    '',
+    '# Used by AES encrypt/decrypt nodes when no passphrase is connected. Keep it stable to decrypt stored data after restarts.',
+    'ARC_CRYPTO_SECRET=',
+    '',
+    '# Days to keep daily bot logs. Use 0 or forever to keep them all.',
+    'ARC_LOG_RETENTION_DAYS=',
+    ...environmentExamples.flatMap((item) => ['', `# ${item.description}${item.required ? ' (required)' : ''}`, `${item.name}=`]),
+    ''
+  ].join('\n');
+  const envFile = [
+    `DISCORD_BOT_TOKEN=${botToken}`,
+    `ARC_CRYPTO_SECRET=${cryptoSecret}`,
+    `ARC_LOG_RETENTION_DAYS=${logRetentionDays}`,
+    ''
+  ].join('\n');
   const entries = [
     { name: 'README.md', data: readme },
+    { name: '.env', data: envFile },
     { name: '.env.example', data: envExample },
     { name: 'package.json', data: JSON.stringify({
       name: 'arc-bot-export',
       private: true,
       type: 'module',
-      scripts: { start: 'node src/index.js' },
+      scripts: { prestart: 'node scripts/ensure-dependencies.mjs', start: 'node src/index.js' },
       dependencies,
       engines: { node: '>=22.0.0' }
     }, null, 2) },
-    { name: 'graphs.json', data: JSON.stringify(safeGraphs, null, 2) },
-    { name: 'project-variables.json', data: JSON.stringify(Array.isArray(projectVariables) ? projectVariables : [], null, 2) },
+    { name: 'scripts/ensure-dependencies.mjs', data: runtimeDependencyBootstrap },
+    { name: 'graphs.json', data: JSON.stringify(safeGraphs) },
+    { name: 'project-variables.json', data: JSON.stringify(safeProjectVariables) },
     { name: 'src/env.js', data: runtimeEnv },
-    { name: 'src/index.js', data: runtimeIndex },
+    { name: 'src/index.js', data: runtimeIndex
+      .replace('__ARC_PROJECT_NAME__', JSON.stringify(projectName))
+      .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor)) },
     { name: 'src/engine/GraphRunner.js', data: readText('src/engine/GraphRunner.js') },
     { name: 'src/engine/MathOperations.js', data: readText('src/engine/MathOperations.js') },
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
@@ -195,11 +246,13 @@ This standalone bot contains the graphs selected at export time and does not req
 3. Run \`npm install\`, then \`npm start\`.
 
 The bot reads graph definitions from \`graphs.json\`. Message content and member-join, and other event graphs need their privileged intents enabled in the Discord Developer Portal. Slash-command graphs handle incoming interactions, register those commands with Discord separately from ARC Studio or your App. Keep \`.env\` private and never commit your bot token.
+
+This bot export cannot be imported into ARC Studio.
 `;
 
 function standaloneCryptoSource() {
   return readText('src/security/CryptoEngine.js')
-    .replace("import { serverConfig } from '../config.js';", "const serverConfig = { sessionSecret: process.env.ARC_SESSION_SECRET || crypto.randomBytes(32).toString('hex') };");
+    .replace("import { serverConfig } from '../config.js';", "const serverConfig = { sessionSecret: process.env.ARC_CRYPTO_SECRET || crypto.randomBytes(32).toString('hex') };");
 }
 
 function* walk(directory) {
@@ -281,6 +334,8 @@ function crc32(buffer) {
 }
 
 const runtimeIndex = `import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import './env.js';
 import { Client, GatewayIntents } from 'chezcord';
 import { GraphRunner } from './engine/GraphRunner.js';
@@ -293,11 +348,64 @@ if (!token) {
   console.error('Set DISCORD_BOT_TOKEN in .env before starting the bot.');
   process.exit(1);
 }
+const logDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../logs');
+const logRetention = String(process.env.ARC_LOG_RETENTION_DAYS || '7').trim().toLowerCase();
+let logDate = '';
+let logStream = null;
+let logWriteWarningShown = false;
+function rotateLogs() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (today === logDate && logStream) return;
+  fs.mkdirSync(logDirectory, { recursive: true, mode: 0o700 });
+  logStream?.end();
+  logDate = today;
+  logStream = fs.createWriteStream(path.join(logDirectory, 'arc-bot-' + today + '.log'), { flags: 'a', mode: 0o600 });
+  logStream.on('error', (error) => {
+    if (logWriteWarningShown) return;
+    logWriteWarningShown = true;
+    console.error('[Log File] Could not write bot logs: ' + error.message);
+  });
+  if (logRetention === 'forever' || Number(logRetention) === 0) return;
+  const retentionDays = Math.min(365, Math.max(1, Number.parseInt(logRetention, 10) || 7));
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  for (const file of fs.readdirSync(logDirectory)) {
+    if (!/^arc-bot-\\d{4}-\\d{2}-\\d{2}\\.log$/.test(file)) continue;
+    const filePath = path.join(logDirectory, file);
+    if (fs.statSync(filePath).mtimeMs < cutoff) fs.unlinkSync(filePath);
+  }
+}
 function writeLog(level, message) {
   if (String(level).toUpperCase() === 'DEBUG') return;
   const line = '[' + new Date().toISOString() + '] [' + String(level).toUpperCase().padEnd(5) + '] ' + String(message);
   (level === 'ERROR' ? console.error : level === 'WARN' ? console.warn : console.log)(line);
+  try {
+    rotateLogs();
+    logStream?.write(line + '\\n');
+  } catch (error) {
+    if (!logWriteWarningShown) {
+      logWriteWarningShown = true;
+      console.error('[Log File] Could not write bot logs: ' + error.message);
+    }
+  }
 }
+const retentionLabel = logRetention === 'forever' || Number(logRetention) === 0 ? 'forever' : logRetention + ' days';
+console.log([
+  '',
+  '==============================================================================',
+  '   █████╗ ██████╗  ██████╗      ███████╗████████╗██╗   ██╗██████╗ ██╗ ██████╗ ',
+  '  ██╔══██╗██╔══██╗██╔════╝      ██╔════╝╚══██╔══╝██║   ██║██╔══██╗██║██╔═══██╗',
+  '  ███████║██████╔╝██║     █████╗███████╗   ██║   ██║   ██║██║  ██║██║██║   ██║',
+  '  ██╔══██║██╔══██╗██╔════╝      ╚════██║   ██║   ██║   ██║██║  ██║██║██║   ██║',
+  '  ██║  ██║██║  ██║╚██████╗      ███████║   ██║   ╚██████╔╝██████╔╝██║╚██████╔╝',
+  '  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝      ╚══════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═╝ ╚═════╝ ',
+  '==============================================================================',
+  '  Project: ' + __ARC_PROJECT_NAME__,
+  '  Made by: ' + __ARC_PROJECT_AUTHOR__,
+  '  Log files: ' + logDirectory,
+  '  Log retention: ' + retentionLabel,
+  '==============================================================================',
+  ''
+].join('\\n'));
 function formatError(error) {
   return error instanceof Error ? (error.stack || error.message) : String(error);
 }
@@ -435,7 +543,7 @@ async function dispatchGraphs(eventName, payload, onlyGraphId = null, interactio
 }
 async function trackGraphRun(run) {
   activeGraphRuns.add(run);
-  try { await run; }
+  try { return await run; }
   finally { activeGraphRuns.delete(run); }
 }
 function graphContext(graph, eventPayload = null, interactionState = null) {
@@ -474,12 +582,34 @@ async function shutdown(signal) {
     if (timeout) clearTimeout(timeout);
     await PluginStore.closeProject().catch((error) => writeLog('WARN', 'Adapter shutdown warning: ' + formatError(error)));
     writeLog('INFO', 'Shutdown complete.');
+    if (logStream) await new Promise((resolve) => logStream.end(resolve));
   }
   catch (error) { writeLog('ERROR', 'Shutdown error: ' + formatError(error)); process.exitCode = 1; }
 }
 process.once('SIGINT', () => { shutdown('SIGINT'); });
 process.once('SIGTERM', () => { shutdown('SIGTERM'); });
 await client.login();
+`;
+
+const runtimeDependencyBootstrap = `import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const dependencies = Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies });
+const missing = dependencies.filter((name) => !fs.existsSync(path.join(root, 'node_modules', ...name.split('/'), 'package.json')));
+if (missing.length) {
+  console.log('Installing bot packages for the first run...');
+  const result = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+    cwd: root,
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status || 1);
+}
 `;
 
 const runtimeEnv = `import fs from 'node:fs';
