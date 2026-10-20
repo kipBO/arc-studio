@@ -58,6 +58,7 @@ export class BotManager {
     this.restRateLimitListener = null;
     this.stopCronScheduler = null;
     this.graphRunAbortController = null;
+    this.graphRunControllers = new Map();
     this.startBotPromise = null;
     this.botStartGeneration = 0;
     this.status = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | ONLINE | ERROR
@@ -977,6 +978,8 @@ export class BotManager {
   }
 
   deleteGraph(tabId) {
+    for (const controller of this.graphRunControllers.get(tabId) || []) controller.abort();
+    this.graphRunControllers.delete(tabId);
     this.graphs.delete(tabId);
     this.deletedGraphIds.add(tabId);
     this.variableStates.delete(tabId);
@@ -1155,9 +1158,17 @@ export class BotManager {
         && (!onlyGraphId || graph.id === onlyGraphId)
         && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === normalizedEventName));
       await Promise.all(listeningGraphs.map(async (graph) => {
+        if (this.graphs.get(graph.id) !== graph) return;
         const isReadyEvent = normalizedEventName === 'READY';
         if (isReadyEvent && activeReadyGraphRuns.has(graph.id)) return;
         if (isReadyEvent) activeReadyGraphRuns.add(graph.id);
+        const graphController = new AbortController();
+        const graphControllers = this.graphRunControllers.get(graph.id) || new Set();
+        graphControllers.add(graphController);
+        this.graphRunControllers.set(graph.id, graphControllers);
+        const abortWithBot = () => graphController.abort();
+        if (runSignal.aborted) graphController.abort();
+        else runSignal.addEventListener('abort', abortWithBot, { once: true });
         try {
           const result = await GraphRunner.execute(graph, eventName, payload, {
             projectDir: this.projectDir,
@@ -1176,7 +1187,7 @@ export class BotManager {
               return (permissions & 8n) !== 0n || (permissions & 32n) !== 0n;
             },
             deploySlashCommands: () => this.deploySlashCommands(),
-            signal: runSignal,
+            signal: graphController.signal,
             onNodeExecution: ({ graphId, nodeId }) => this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graphId, nodeIds: [nodeId] } }),
             onNodeError: (failure) => {
               this.log('ERROR', `Graph “${failure.graphName}” failed at node “${failure.nodeLabel}” (${failure.nodeId}): ${failure.error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
@@ -1184,12 +1195,18 @@ export class BotManager {
             },
             log: (message) => this.log('EXECUTION', message)
           });
-          if (result.executedNodeIds.length > 0) {
+          if (!graphController.signal.aborted && result.executedNodeIds.length > 0) {
             this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graph.id, nodeIds: result.executedNodeIds } });
           }
         } catch (error) {
-          this.log('ERROR', `Graph “${graph.name || graph.id}” failed while handling ${normalizedEventName}: ${error.message}`);
+          if (error?.name !== 'AbortError' && !graphController.signal.aborted) {
+            this.log('ERROR', `Graph “${graph.name || graph.id}” failed while handling ${normalizedEventName}: ${error.message}`);
+          }
         } finally {
+          runSignal.removeEventListener('abort', abortWithBot);
+          const activeControllers = this.graphRunControllers.get(graph.id);
+          activeControllers?.delete(graphController);
+          if (!activeControllers?.size) this.graphRunControllers.delete(graph.id);
           if (isReadyEvent) activeReadyGraphRuns.delete(graph.id);
         }
       }));
@@ -1280,10 +1297,11 @@ export class BotManager {
       await dispatchGraphEvent('GUILD_MEMBER_ADD', member);
     });
 
-    const graphGatewayEvents = new Set([...this.graphs.values()].flatMap((graph) => (graph.nodes || [])
-      .map((node) => NodeDefinitions[node.type]?.gatewayEvent).filter(Boolean)));
     this.client.on('gatewayDispatch', (eventName, payload) => {
-      if (!graphGatewayEvents.has(eventName) || ['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
+      if (['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
+      const graphNeedsEvent = [...this.graphs.values()].some((graph) => graph.graphType !== 'function'
+        && (graph.nodes || []).some((node) => NodeDefinitions[node.type]?.gatewayEvent === eventName));
+      if (!graphNeedsEvent) return;
       dispatchGraphEvent(eventName, payload).catch((error) => this.log('ERROR', `Graph event ${eventName} failed: ${error.message}`));
     });
 
