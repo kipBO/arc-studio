@@ -92,6 +92,52 @@ function regexSafetyError(pattern) {
   return '';
 }
 
+function readDataPath(source, path) {
+  const text = String(path || '').trim();
+  if (!text || text.length > 512) return { exists: false, value: undefined };
+  const parts = []; let index = 0;
+  while (index < text.length) {
+    if (text[index] === '.') {
+      if (index === 0 || index === text.length - 1 || text[index + 1] === '.' || text[index + 1] === '[') return { exists: false, value: undefined };
+      index += 1; continue;
+    }
+    if (text[index] === '[') {
+      const rest = text.slice(index);
+      const match = /^\[(?:(\d+)|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')\]/.exec(rest);
+      if (!match) return { exists: false, value: undefined };
+      parts.push(match[1] !== undefined ? Number(match[1]) : (match[2] ?? match[3]).replace(/\\([\\"'])/g, '$1'));
+      index += match[0].length;
+    } else {
+      const match = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(text.slice(index));
+      if (!match) return { exists: false, value: undefined };
+      parts.push(match[0]); index += match[0].length;
+    }
+    if (parts.length > 64) return { exists: false, value: undefined };
+  }
+  let value = source;
+  for (const key of parts) {
+    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string') || !Object.hasOwn(Object(value), key)) return { exists: false, value: undefined };
+    value = value[key];
+  }
+  return { exists: true, value };
+}
+
+function compareArrayItem(actual, expected, operator) {
+  if (operator === 'exists') return actual.exists;
+  if (operator === 'is_empty') return actual.exists && (actual.value == null || actual.value === '' || Array.isArray(actual.value) && !actual.value.length || typeof actual.value === 'object' && !Array.isArray(actual.value) && !Object.keys(actual.value).length);
+  if (!actual.exists) return false;
+  const left = actual.value;
+  if (operator === 'not_equals') return !Object.is(left, expected);
+  if (operator === 'contains') return typeof left === 'string' ? left.includes(String(expected ?? '')) : Array.isArray(left) ? left.some((item) => Object.is(item, expected)) : false;
+  if (operator === 'starts_with') return typeof left === 'string' && left.startsWith(String(expected ?? ''));
+  if (operator === 'ends_with') return typeof left === 'string' && left.endsWith(String(expected ?? ''));
+  if (operator === 'greater_than') return left > expected;
+  if (operator === 'greater_or_equal') return left >= expected;
+  if (operator === 'less_than') return left < expected;
+  if (operator === 'less_or_equal') return left <= expected;
+  return Object.is(left, expected);
+}
+
 function evaluateDataNode(type, inputs = {}, data = {}) {
   if (type === 'data_check_value') {
     const value = inputs.value;
@@ -110,6 +156,20 @@ function evaluateDataNode(type, inputs = {}, data = {}) {
       if (style === 'currency') { const currency = String(inputs.currency || 'USD').toUpperCase(); if (!/^[A-Z]{3}$/.test(currency)) return { text: '', valid: false }; options.currency = currency; }
       return { text: new Intl.NumberFormat(String(inputs.locale || 'en-US'), options).format(value), valid: true };
     } catch { return { text: '', valid: false }; }
+  }
+  if (type === 'data_get_value_by_path') {
+    const result = readDataPath(inputs.value, inputs.path);
+    return { value: result.exists ? result.value : inputs.fallback, exists: result.exists };
+  }
+  if (type === 'data_find_array_item' || type === 'data_filter_array') {
+    const array = Array.isArray(inputs.array) ? inputs.array.slice(0, 10000) : [];
+    const path = String(inputs.path ?? '').trim();
+    const operator = ['equals', 'not_equals', 'contains', 'starts_with', 'ends_with', 'greater_than', 'greater_or_equal', 'less_than', 'less_or_equal', 'exists', 'is_empty'].includes(inputs.operator) ? inputs.operator : 'equals';
+    const matches = array.map((item, index) => ({ item, index, actual: path ? readDataPath(item, path) : { exists: true, value: item } }))
+      .filter(({ actual }) => compareArrayItem(actual, inputs.value, type === 'data_find_array_item' ? 'equals' : operator));
+    if (type === 'data_find_array_item') { const found = matches[0]; return { item: found?.item ?? null, index: found?.index ?? -1, found: Boolean(found) }; }
+    const filtered = matches.map(({ item }) => item);
+    return { array: filtered, count: filtered.length };
   }
   if (type === 'data_permission_overwrites') {
     const permissionBits = {
@@ -1321,6 +1381,15 @@ export class GraphRunner {
           const branchPin = conditionVal ? 'true_exec' : 'false_exec';
           const nextWires = findExecOutputs(targetNode.id, branchPin);
           currentExecWires.push(...nextWires);
+        } else if (targetNode.type === 'branch_switch') {
+          const value = resolveDataInput(targetNode, 'value', '');
+          const selected = Array.from({ length: 5 }, (_, index) => index + 1).find((index) => {
+            const caseValue = resolveDataInput(targetNode, `case_${index}`, '');
+            return caseValue !== '' && String(value ?? '') === String(caseValue ?? '');
+          });
+          const branchPin = selected ? `case_${selected}_exec` : 'default_exec';
+          log(`[Switch] Value matched ${selected ? `Case ${selected}` : 'Default'}`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, branchPin));
         } else if (targetNode.type === 'compare_text') {
           const textA = String(resolveDataInput(targetNode, 'text_a', targetNode.data?.text_a || ''));
           const textB = String(resolveDataInput(targetNode, 'text_b', targetNode.data?.text_b || ''));
