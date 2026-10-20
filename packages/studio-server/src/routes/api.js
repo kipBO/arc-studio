@@ -140,7 +140,8 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       workspaceName: userStore.workspaceName,
       canResetPrimaryAdminWithMasterKey: userStore.isSetupCompleted() && !serverConfig.desktopMode && !serverConfig.isDefaultKey,
       version: serverConfig.version,
-      chezcordVersion: serverConfig.chezcordVersion
+      chezcordVersion: serverConfig.chezcordVersion,
+      supportedNodeTypes: Object.values(NodeDefinitions).map((definition) => definition.type)
     });
   });
 
@@ -183,7 +184,8 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       recordTeamActivity({ user: session.user }, 'account.signed_in', 'Signed in to the workspace', {});
       res.json({ success: true, ...session });
     } catch (err) {
-      res.status(401).json({ error: err.message });
+      const ownerPasswordIncorrect = !serverConfig.desktopMode && err.ownerPasswordIncorrect === true;
+      res.status(401).json({ error: err.message, ...(ownerPasswordIncorrect ? { ownerPasswordIncorrect: true } : {}) });
     }
   });
 
@@ -553,11 +555,15 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   // Bot State
   router.get('/bot/state', (req, res) => {
+    const permissions = req.user?.permissions || [];
+    const canExportBotToken = req.user?.isPrimaryAdmin === true
+      || (serverConfig.showBotTokenExportOptionToAuthorizedUsers && (permissions.includes('*') || permissions.includes('bot:control')));
     res.json({
       status: botManager.status,
       profile: botManager.botProfile,
       intents: botManager.getIntentPlan?.() || [],
-      hasToken: Boolean(botManager.getBotToken())
+      hasToken: Boolean(botManager.getBotToken()),
+      canExportBotToken
     });
   });
 
@@ -994,8 +1000,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     const includeBotToken = req.body?.includeBotToken === true;
     const includeCryptoSecret = req.body?.includeCryptoSecret === true;
     const permissions = req.user?.permissions || [];
-    if (includeBotToken && !permissions.includes('*') && !permissions.includes('bot:control')) {
-      return res.status(403).json({ error: 'You need bot control permission to include the bot token in an export.' });
+    const canExportBotToken = req.user?.isPrimaryAdmin === true
+      || (serverConfig.showBotTokenExportOptionToAuthorizedUsers && (permissions.includes('*') || permissions.includes('bot:control')));
+    if (includeBotToken && !canExportBotToken) {
+      return res.status(403).json({ error: 'Only the primary owner can include the bot token in exports unless ARC_SHOW_BOT_TOKEN_EXPORT_OPTION is enabled for bot-control accounts.' });
     }
     const projectId = typeof req.body?.projectId === 'string' ? req.body.projectId : botManager.project.id;
     const project = botManager.projectStore.projects.find((item) => item.id === projectId);
