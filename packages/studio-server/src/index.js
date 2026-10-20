@@ -14,6 +14,7 @@ import { StartupDiagnostics } from './engine/StartupDiagnostics.js';
 import { BotManager } from './engine/BotManager.js';
 import { createApiRouter } from './routes/api.js';
 import { createBotManagerProxy } from './engine/RequestBotManager.js';
+import { CollaborationLastSeen } from './storage/CollaborationLastSeen.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,6 +30,7 @@ if (requiredEnvironmentFailure) {
   process.exit(1);
 }
 const userStore = new UserStore();
+const collaborationLastSeen = new CollaborationLastSeen();
 
 const app = express();
 const server = http.createServer(app);
@@ -42,6 +44,7 @@ const liveNoteEditLocks = new Map();
 const liveProjectTabs = new Map();
 const recentProjectGraphUse = new Map();
 const NOTE_EDIT_LOCK_TTL_MS = 15_000;
+const COLLAB_CURSOR_IDLE_MS = 30_000;
 const collaboratorColors = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
 const collaboratorColor = (id) => {
   let hash = 0;
@@ -85,6 +88,33 @@ const sameCollaborationValue = (left, right) => {
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length && leftKeys.every((key) => Object.hasOwn(right, key) && sameCollaborationValue(left[key], right[key]));
 };
+const cloneCollaborationValue = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+function mergeConcurrentGraphValue(base, current, incoming) {
+  if (sameCollaborationValue(incoming, base)) return cloneCollaborationValue(current);
+  if (sameCollaborationValue(current, base) || sameCollaborationValue(incoming, current)) return cloneCollaborationValue(incoming);
+  if (base && current && incoming && !Array.isArray(base) && !Array.isArray(current) && !Array.isArray(incoming)
+    && typeof base === 'object' && typeof current === 'object' && typeof incoming === 'object') {
+    const result = {};
+    for (const key of new Set([...Object.keys(base), ...Object.keys(current), ...Object.keys(incoming)])) {
+      const value = mergeConcurrentGraphValue(base[key], current[key], incoming[key]);
+      if (value !== undefined) result[key] = value;
+    }
+    return result;
+  }
+  if ([base, current, incoming].every((value) => Array.isArray(value) && value.every((item) => item && typeof item === 'object' && item.id != null))) {
+    const baseById = new Map(base.map((item) => [item.id, item]));
+    const currentById = new Map(current.map((item) => [item.id, item]));
+    const incomingById = new Map(incoming.map((item) => [item.id, item]));
+    const order = [...current.map((item) => item.id), ...incoming.map((item) => item.id)].filter((id, index, ids) => ids.indexOf(id) === index);
+    const result = [];
+    for (const id of order) {
+      const value = mergeConcurrentGraphValue(baseById.get(id), currentById.get(id), incomingById.get(id));
+      if (value !== undefined) result.push(value);
+    }
+    return result;
+  }
+  return cloneCollaborationValue(incoming);
+}
 const publishNoteEditLocks = (roomKey) => {
   const [projectId, ...graphParts] = roomKey.split(':');
   sendToCollaborationRoom(roomKey, {
@@ -130,7 +160,7 @@ function publishProjectCollaboration(projectId) {
     const graphId = client.arcPresence?.projectId === projectId ? client.arcPresence.graphId : '';
     if (graphId && !collaborator.graphIds.includes(graphId)) collaborator.graphIds.push(graphId);
   }
-  const activity = new Map();
+  const activity = new Map(collaborationLastSeen.graphSnapshot(projectId).map((entry) => [entry.graphId, entry]));
   for (const state of liveGraphStates.values()) {
     if (state.projectId !== projectId || Date.now() - state.updatedAt > 30 * 60 * 1000 || !state.user?.id) continue;
     activity.set(state.graphId, { graphId: state.graphId, userId: state.user.id, updatedAt: state.updatedAt });
@@ -146,10 +176,15 @@ function publishProjectCollaboration(projectId) {
     graphIds: [...(liveProjectTabs.get(projectId) || [])].slice(0, 12),
     tabsInitialized: liveProjectTabs.has(projectId),
     graphActivity: [...activity.values()],
+    projectLastSeen: collaborationLastSeen.projectSnapshot(),
     users: [...users.values()]
   };
   const message = JSON.stringify({ type: 'PROJECT_COLLABORATION_UPDATED', payload });
   for (const client of clients) client.send(message);
+}
+function broadcastProjectLastSeen() {
+  const serialized = JSON.stringify({ type: 'PROJECT_LAST_SEEN_UPDATED', payload: collaborationLastSeen.projectSnapshot() });
+  for (const client of wss.clients) if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) client.send(serialized);
 }
 
 const desktopOrigins = (process.env.ARC_CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
@@ -340,6 +375,30 @@ wss.on('connection', (ws) => {
     }
     if (leaveRoom) ws.arcRoomKey = null;
   };
+  const scheduleCollaborationActionExpiry = () => {
+    clearTimeout(ws.arcActionExpiry);
+    const roomKey = ws.arcRoomKey;
+    if (!roomKey || !ws.arcUser?.id) { ws.arcActionExpiry = null; return; }
+    ws.arcActionExpiry = setTimeout(() => {
+      const activeRoom = liveCollaborationActions.get(roomKey);
+      const active = activeRoom?.get(ws.arcUser?.id);
+      if (active?.action?.selectedNodeIds?.length) {
+        const selection = {
+          ...active,
+          action: { kind: 'selection', mode: 'select', selectedNodeIds: active.action.selectedNodeIds, ...(active.action.cursor ? { cursor: active.action.cursor, cursorIdle: true } : {}) },
+          updatedAt: Date.now()
+        };
+        activeRoom.set(ws.arcUser.id, selection);
+        sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: selection }, ws);
+      } else if (active?.action?.cursor) {
+        const idleCursor = { ...active, action: { kind: 'idle', cursor: active.action.cursor }, updatedAt: Date.now() };
+        activeRoom.set(ws.arcUser.id, idleCursor);
+        sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: idleCursor }, ws);
+      } else clearCollaborationAction(false, false);
+      ws.arcActionExpiry = null;
+    }, COLLAB_CURSOR_IDLE_MS);
+    ws.arcActionExpiry.unref?.();
+  };
   const removeNoteEditLock = (roomKey, noteId, { expired = false } = {}) => {
     const room = liveNoteEditLocks.get(roomKey);
     const lock = room?.get(noteId);
@@ -390,6 +449,7 @@ wss.on('connection', (ws) => {
         ws.arcToken = msg.token;
         ws.arcUser = { id: user.id, username: user.username, role: user.role, permissions: user.permissions || [] };
         ws.arcProjectId = projectStore.projects.some((project) => project.id === user.activeProjectId) ? user.activeProjectId : projectStore.activeProjectId;
+        collaborationLastSeen.record(ws.arcProjectId, '', ws.arcUser);
         ws.arcManager = managerForUser({ ...user, activeProjectId: ws.arcProjectId });
         ws.arcColor = collaboratorColor(user.id);
         clearTimeout(authTimeout);
@@ -406,7 +466,8 @@ wss.on('connection', (ws) => {
             projectVariables: ws.arcManager.getProjectVariables(),
             version: serverConfig.version,
             chezcordVersion: serverConfig.chezcordVersion,
-            diagnostics
+            diagnostics,
+            projectLastSeen: collaborationLastSeen.projectSnapshot()
           }
         }));
         publishPresence();
@@ -422,6 +483,21 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
       } else if (msg.type === 'USER_ACTIVITY') {
         ws.arcLastActivityAt = Date.now();
+        if (collaborationLastSeen.record(ws.arcProjectId, ws.arcPresence?.graphId || '', ws.arcUser)) {
+          broadcastProjectLastSeen();
+          publishProjectCollaboration(ws.arcProjectId);
+        }
+        const room = ws.arcRoomKey && liveCollaborationActions.get(ws.arcRoomKey);
+        const active = room?.get(ws.arcUser?.id);
+        if (active?.action?.cursor && (active.action.kind === 'idle' || active.action.cursorIdle)) {
+          const action = { ...active.action };
+          if (action.kind === 'idle') { action.kind = 'cursor'; action.mode = 'move'; }
+          delete action.cursorIdle;
+          const resumed = { ...active, action, updatedAt: Date.now() };
+          room.set(ws.arcUser.id, resumed);
+          sendToCollaborationRoom(ws.arcRoomKey, { type: 'COLLAB_ACTION_UPDATED', payload: resumed }, ws);
+          scheduleCollaborationActionExpiry();
+        } else if (ws.arcActionExpiry) scheduleCollaborationActionExpiry();
       } else if (['PROJECT_TABS_SYNC', 'PROJECT_TAB_OPEN', 'PROJECT_TAB_CLOSE'].includes(msg.type)) {
         const projectId = ws.arcProjectId;
         if (!projectId || !projectStore.projects.some((project) => project.id === projectId)) return;
@@ -452,7 +528,7 @@ wss.on('connection', (ws) => {
           const graphKey = `${projectId}:${candidate.id}`;
           if (!liveGraphStates.has(graphKey)) {
             const graph = JSON.parse(serialized);
-            liveGraphStates.set(graphKey, { projectId, graphId: graph.id, graph, revision: 0, updatedAt: Date.now(), user: { id: ws.arcUser.id, username: ws.arcUser.username }, serializedGraph: serialized });
+            liveGraphStates.set(graphKey, { projectId, graphId: graph.id, graph, revision: 0, updatedAt: Date.now(), user: { id: ws.arcUser.id, username: ws.arcUser.username }, serializedGraph: serialized, history: [{ revision: 0, graph }] });
           }
           const sharedGraph = liveGraphStates.get(graphKey)?.graph;
           if (sharedGraph) {
@@ -503,9 +579,10 @@ wss.on('connection', (ws) => {
         }
         ws.arcPresence = projectId && graphId ? { projectId, graphId } : null;
         ws.arcRoomKey = nextRoomKey;
+        const lastSeenUpdated = collaborationLastSeen.record(projectId, graphId, ws.arcUser);
         if (projectId && graphId) {
           const now = Date.now();
-          recentProjectGraphUse.set(`${projectId}:${graphId}`, { projectId, graphId, userId: ws.arcUser.id, updatedAt: now });
+          recentProjectGraphUse.set(`${projectId}:${graphId}`, { projectId, graphId, userId: ws.arcUser.id, username: ws.arcUser.username, updatedAt: now });
         }
         if (nextRoomKey) {
           const room = liveCollaborationActions.get(nextRoomKey);
@@ -518,7 +595,7 @@ wss.on('connection', (ws) => {
           const initialGraph = ws.arcManager.getGraphs().find((graph) => graph.id === graphId);
           if (initialGraph) {
             const serializedGraph = JSON.stringify(initialGraph);
-            liveState = { projectId, graphId, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph };
+            liveState = { projectId, graphId, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph, history: [{ revision: 0, graph: initialGraph }] };
             liveGraphStates.set(`${projectId}:${graphId}`, liveState);
           }
         }
@@ -528,6 +605,7 @@ wss.on('connection', (ws) => {
           ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload }));
         } else if (ws.arcPresence) ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: { projectId, graphId, ready: true, revision: 0 } }));
         publishPresence();
+        if (lastSeenUpdated) broadcastProjectLastSeen();
       } else if (msg.type === 'NOTE_EDIT_LOCK_REQUEST' || msg.type === 'NOTE_EDIT_LOCK_RELEASE') {
         const roomKey = ws.arcRoomKey;
         const actionProjectId = typeof msg.projectId === 'string' ? msg.projectId : '';
@@ -737,26 +815,7 @@ wss.on('connection', (ws) => {
         room.set(ws.arcUser.id, envelope);
         liveCollaborationActions.set(roomKey, room);
         sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: envelope }, ws);
-        clearTimeout(ws.arcActionExpiry);
-        ws.arcActionExpiry = setTimeout(() => {
-          const activeRoom = liveCollaborationActions.get(roomKey);
-          const active = activeRoom?.get(ws.arcUser?.id);
-          if (active?.action?.selectedNodeIds?.length) {
-            const selection = {
-              ...active,
-              action: { kind: 'selection', mode: 'select', selectedNodeIds: active.action.selectedNodeIds, ...(active.action.cursor ? { cursor: active.action.cursor, cursorIdle: true } : {}) },
-              updatedAt: Date.now()
-            };
-            activeRoom.set(ws.arcUser.id, selection);
-            sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: selection }, ws);
-          } else if (active?.action?.cursor) {
-            const idleCursor = { ...active, action: { kind: 'idle', cursor: active.action.cursor }, updatedAt: Date.now() };
-            activeRoom.set(ws.arcUser.id, idleCursor);
-            sendToCollaborationRoom(roomKey, { type: 'COLLAB_ACTION_UPDATED', payload: idleCursor }, ws);
-          } else clearCollaborationAction(false, false);
-          ws.arcActionExpiry = null;
-        }, 12_000);
-        ws.arcActionExpiry.unref?.();
+        scheduleCollaborationActionExpiry();
       } else if (msg.type === 'GRAPH_STATE') {
         const payload = msg.payload || msg;
         const projectId = typeof payload.projectId === 'string' ? payload.projectId : '';
@@ -787,12 +846,24 @@ wss.on('connection', (ws) => {
           const initialGraph = ws.arcManager.getGraphs().find((item) => item.id === graph.id);
           if (initialGraph) {
             const initialSerialized = JSON.stringify(initialGraph);
-            previous = { projectId, graphId: graph.id, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized };
+            previous = { projectId, graphId: graph.id, graph: initialGraph, revision: 0, updatedAt: Date.now(), user: null, serializedGraph: initialSerialized, history: [{ revision: 0, graph: initialGraph }] };
             liveGraphStates.set(key, previous);
           }
         }
-        const candidateGraph = { ...graph };
-        if (Array.isArray(graph.notes)) candidateGraph.notes = graph.notes.map((note) => ({ ...note }));
+        let candidateGraph = { ...graph };
+        const baseRevision = Number(payload.baseRevision);
+        if (previous && Number.isInteger(baseRevision) && baseRevision !== previous.revision) {
+          const baseState = previous.history?.find((entry) => entry.revision === baseRevision);
+          if (baseState) candidateGraph = mergeConcurrentGraphValue(baseState.graph, previous.graph, candidateGraph);
+          else {
+            const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId, resync: true };
+            delete syncPayload.serializedGraph;
+            delete syncPayload.history;
+            ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
+            return;
+          }
+        }
+        if (Array.isArray(candidateGraph.notes)) candidateGraph.notes = candidateGraph.notes.map((note) => ({ ...note }));
         const previousNotes = new Map((previous?.graph?.notes || []).map((note) => [note.id, note]));
         const incomingNotes = Array.isArray(candidateGraph.notes)
           ? candidateGraph.notes
@@ -843,29 +914,36 @@ wss.on('connection', (ws) => {
           for (const rejected of rejectedNoteEdits) ws.send(JSON.stringify({ type: 'NOTE_EDIT_REJECTED', payload: { projectId, graphId: graph.id, ...rejected } }));
         };
         if (previous?.serializedGraph === serializedGraph) {
+          const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null };
+          delete syncPayload.serializedGraph;
+          delete syncPayload.history;
+          ws.send(JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload }));
           ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId: graph.id, revision: previous.revision, syncId: payload.syncId || null } }));
           reportRejectedNoteEdits();
           return;
         }
+        const revision = (previous?.revision || 0) + 1;
         const state = {
           projectId,
           graphId: graph.id,
           graph: candidateGraph,
-          revision: (previous?.revision || 0) + 1,
+          revision,
           updatedAt: Date.now(),
           user: { id: ws.arcUser.id, username: ws.arcUser.username },
-          serializedGraph
+          serializedGraph,
+          history: [...(previous?.history || (previous ? [{ revision: previous.revision, graph: previous.graph }] : [])), { revision, graph: candidateGraph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
         };
         liveGraphStates.set(key, state);
-        ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId: graph.id, revision: state.revision, syncId: payload.syncId || null } }));
         reportRejectedNoteEdits();
-        const syncPayload = { ...state };
+        const syncPayload = { ...state, clientId: payload.clientId, syncId: payload.syncId || null };
         delete syncPayload.serializedGraph;
+        delete syncPayload.history;
         const message = JSON.stringify({ type: 'GRAPH_STATE_SYNC', payload: syncPayload });
         for (const client of wss.clients) {
-          if (client !== ws && client.arcAuthenticated && client.readyState === WebSocket.OPEN
+          if (client.arcAuthenticated && client.readyState === WebSocket.OPEN
             && client.arcPresence?.projectId === projectId && client.arcPresence?.graphId === graph.id) client.send(message);
         }
+        ws.send(JSON.stringify({ type: 'GRAPH_STATE_ACK', payload: { graphId: graph.id, revision: state.revision, syncId: payload.syncId || null } }));
         publishProjectCollaboration(projectId);
         }
       }
