@@ -46,7 +46,7 @@ See [desktop downloads and system requirements](docs/DESKTOP_DISTRIBUTION.md).
 
 ## Run it locally
 
-Requires Node.js 22 or newer.
+Requires Node.js 22 or newer
 
 ```sh
 npm ci
