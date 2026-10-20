@@ -207,10 +207,13 @@ export function CanvasNode({
 function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues) {
   const isConnected = (pinId) => connectedInputIds.has(pinId);
   if (node.type === 'branch_switch') {
+    const cases = nodeDef.inputs.filter((pin) => /^case_\d+$/.test(pin.id));
     return <div className="node-config node-config-stack">
       {!isConnected('value') && <FallbackField label="Value"><input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Value to match" aria-label="Switch value" /></FallbackField>}
-      {Array.from({ length: 5 }, (_, index) => `case_${index + 1}`).filter((pin) => !isConnected(pin)).map((pin, index) => <FallbackField key={pin} label={`Case ${index + 1}`}><input value={node.data?.[pin] ?? ''} onChange={(event) => update(pin, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to skip" aria-label={`Switch case ${index + 1}`} /></FallbackField>)}
+      {cases.filter((pin) => !isConnected(pin.id)).map((pin) => <FallbackField key={pin.id} label={pin.label}><input value={node.data?.[pin.id] ?? ''} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave blank to skip" aria-label={`Switch ${pin.label.toLowerCase()}`} /></FallbackField>)}
       <span className="node-config-hint">First matching non-empty case runs. Values are compared as text.</span>
+      <span className="node-config-hint">{cases.length} / 50 cases</span>
+      {cases.length < 50 && <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.preventDefault(); event.stopPropagation(); update('caseCount', cases.length + 1); }}><Plus size={12} /> Add case</button>}
     </div>;
   }
   const textEditor = (id, label, maxLength = 2000, placeholder = '', autocomplete = true) => {
