@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, X } from 'lucide-react';
 import { countDiscordCodeBlocks, detectDiscordCodeLanguages, inferDiscordCodeLanguage } from '../ui/DiscordLongTextField.jsx';
 import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
+import { renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
@@ -89,7 +90,7 @@ function highlightMarkdown(line) {
   return <span className={lineClass}>{tokens.length ? tokens : line || ' '}</span>;
 }
 
-export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const editorRef = useRef(null);
@@ -133,6 +134,17 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
       return { content: inFence ? (language === 'json' ? highlightJson(line) : highlightCode(line, language)) : (isJson ? highlightJson(line) : highlightMarkdown(line)), isCode: inFence || isJson };
     });
   }, [draft, isJson]);
+  const templatePreview = useMemo(() => {
+    const values = new Map(graphVariables.filter((item) => item?.name).map((item) => [item.name.toLowerCase(), item.initialValue]));
+    for (const [pinId, previewValue] of Object.entries(templatePreviewValues || {})) {
+      const slot = /^slot_(.+)$/.exec(pinId); const arg = /^arg_(\d+)$/.exec(pinId);
+      if (slot) values.set(slot[1].toLowerCase(), previewValue);
+      if (arg) values.set(`arg${arg[1]}`, previewValue);
+    }
+    const text = renderTextTemplate(draft, (name) => values.get(name.toLowerCase()), appEmojis);
+    return text.length > 500 ? `${text.slice(0, 497)}…` : text;
+  }, [draft, graphVariables, templatePreviewValues, appEmojis]);
+  const containsTemplate = /(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(draft);
 
   const close = () => {
     if (draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
@@ -278,6 +290,7 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
         <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
       </div>
     </div>
+    {containsTemplate && <div className="discord-text-studio-preview"><strong>Template preview</strong><pre>{templatePreview || '(empty)'}</pre></div>}
     <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
     <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
