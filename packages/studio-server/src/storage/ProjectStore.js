@@ -197,6 +197,10 @@ export class ProjectStore {
       }));
     };
     const exportedFiles = redact(files);
+    const botConfig = files['bot-config.json'];
+    if ((typeof botConfig === 'string' && botConfig.length > 0)
+      || (botConfig && typeof botConfig === 'object' && Object.keys(botConfig).length > 0)) sensitiveCount += 1;
+    exportedFiles['bot-config.json'] = {};
     return { format: 'arc-project', version: 1, project: { name: project.name, exportedAt: new Date().toISOString(), createdWithVersion: currentArcStudioVersion }, files: exportedFiles, sensitiveData: includeSecrets ? undefined : { omittedFields: sensitiveCount } };
   }
 
