@@ -182,10 +182,31 @@ app.use('/api', createApiRouter(
 
 const clientDistPath = resolve(__dirname, '../../studio-client/dist');
 if (fs.existsSync(clientDistPath)) {
+  const studioHtmlPath = resolve(clientDistPath, 'index.html');
+  const sendStudioPage = (req, res, next) => {
+    try {
+      const isNightly = String(serverConfig.version).includes('-');
+      const forwardedProtocol = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+      const protocol = ['http', 'https'].includes(forwardedProtocol) ? forwardedProtocol : req.protocol;
+      const host = req.get('x-forwarded-host')?.split(',')[0]?.trim() || req.get('host');
+      const imageName = isNightly ? 'nightly-icon.png' : 'arc.png';
+      const imageUrl = host ? new URL(`/${imageName}`, `${protocol}://${host}`).href : `/${imageName}`;
+      let html = fs.readFileSync(studioHtmlPath, 'utf8');
+      html = html.replace(/(<meta property="og:image" content=")[^"]+("\s*\/>)/, (_match, prefix, suffix) => `${prefix}${imageUrl}${suffix}`);
+      html = html.replace(/(<meta name="twitter:image" content=")[^"]+("\s*\/>)/, (_match, prefix, suffix) => `${prefix}${imageUrl}${suffix}`);
+      res.type('html').send(html);
+    } catch (error) {
+      next(error);
+    }
+  };
+  app.get('/', sendStudioPage);
   app.use(express.static(clientDistPath));
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api') && !req.path.startsWith('/ws')) {
-      res.sendFile(resolve(clientDistPath, 'index.html'));
+      sendStudioPage(req, res, (error) => {
+        if (error) logger.log('ERROR', `Could not serve Studio page: ${error.message}`);
+        if (!res.headersSent) res.status(500).send('Could not load ARC Studio.');
+      });
     }
   });
 }
