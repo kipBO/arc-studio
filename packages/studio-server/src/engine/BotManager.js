@@ -1192,7 +1192,7 @@ export class BotManager {
 
     this.client.on('messageCreate', async (msg) => {
       if (msg.author?.id === this.client.user?.id) return;
-      this.log('INFO', `Message received from ${msg.author?.username}: "${msg.content}"`);
+      this.log('INFO', 'Message event received, dispatching to matching graphs.');
       await dispatchGraphEvent('MESSAGE_CREATE', msg);
     });
 
