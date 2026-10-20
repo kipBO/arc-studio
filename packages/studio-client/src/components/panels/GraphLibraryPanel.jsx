@@ -320,7 +320,7 @@ export function GraphLibraryPanel({
           </button>
           {(isSearching || expandedGroups[groupName]) && <div className="graph-library-children" role="group">{items.map((graph) => {
             const isOpen = openGraphIds.includes(graph.id);
-            return <div key={graph.id} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''}`} role="treeitem" aria-current={graph.id === activeTabId ? 'page' : undefined}>
+            return <div key={graph.id} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''} ${contextMenu?.kind === 'graph' && contextMenu.graph?.id === graph.id ? 'is-context-menu-open' : ''}`} role="treeitem" aria-current={graph.id === activeTabId ? 'page' : undefined}>
               <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} onContextMenu={(event) => openContextMenu(event, graph)} title="Drag into the canvas to call this graph">
                 <FileCode2 size={14} /><span>{graph.name || 'Untitled graph'}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{isOpen && <i title="Open in a tab" />}
               </button>
@@ -330,7 +330,7 @@ export function GraphLibraryPanel({
         </section>)}
         {!filteredGraphs.length && <div className="graph-library-empty">{graphs.length ? 'No matches' : 'No saved graphs'}</div>}
         <div className="graph-library-section-heading graph-library-subsection"><span><BookmarkPlus size={13} /> Templates</span><small>{templates.length}</small></div>
-        {filteredTemplates.map((template) => <div className="graph-library-item" key={template.id} onContextMenu={(event) => openTemplateMenu(event, template)}>
+        {filteredTemplates.map((template) => <div className={`graph-library-item ${contextMenu?.kind === 'template' && contextMenu.graph?.id === template.id ? 'is-context-menu-open' : ''}`} key={template.id} onContextMenu={(event) => openTemplateMenu(event, template)}>
           <button className="graph-library-entry" onClick={() => onUseTemplate?.(template)} title="Create a graph from this template"><FileCode2 size={14} /><span>{template.name || 'Untitled template'}</span>{defaultGraphId === template.id && <Star className="graph-default-star" size={11} fill="currentColor" />}</button>
           <button className="graph-library-more" onClick={(event) => openTemplateMenu(event, template)} aria-label={`Actions for ${template.name || 'template'}`}><MoreHorizontal size={14} /></button>
         </div>)}
@@ -354,7 +354,7 @@ export function GraphLibraryPanel({
         {filteredPrefabs.map((prefab) => {
           const definition = BuiltInNodeDefinitions.find((node) => node.type === prefab.node?.type);
           const pluginTooltip = `Plugin node from ${definition?.pluginName || definition?.pluginId || 'an installed plugin'}`;
-          return <div className="graph-library-item" key={prefab.id} onContextMenu={(event) => openPrefabMenu(event, prefab)}>
+          return <div className={`graph-library-item ${contextMenu?.kind === 'prefab' && contextMenu.graph?.id === prefab.id ? 'is-context-menu-open' : ''}`} key={prefab.id} onContextMenu={(event) => openPrefabMenu(event, prefab)}>
           <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startNodeDrag(event, { type: 'prefab', prefabId: prefab.id, prefabNode: prefab.node })} onDragEnd={finishNodeDrag} onClick={() => onAddPrefab?.(prefab)} title="Drag to canvas or click to add" aria-label={definition?.pluginAdapter ? `${prefab.name || 'Node prefab'}. ${pluginTooltip}` : undefined}><NodeTypeIcon type={prefab.node?.type} color={definition?.color} size={14} /><span>{prefab.name || 'Node prefab'}</span>{definition?.pluginAdapter && <span className="node-plugin-origin library-plugin-origin" title={pluginTooltip} aria-label={pluginTooltip}><Puzzle size={12} /></span>}</button>
           <button className="graph-library-more" onClick={(event) => openPrefabMenu(event, prefab)} aria-label={`Actions for ${prefab.name || 'node prefab'}`}><MoreHorizontal size={14} /></button>
         </div>;
@@ -389,7 +389,7 @@ export function GraphLibraryPanel({
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentEmbeds.length} / 3</small></div>
           <div className="graph-library-frequent-list">{frequentEmbeds.map((asset) => <button key={asset.id} className="graph-library-entry" onClick={() => { recordUsage('embeds', asset.id); onOpenEmbed?.(asset); }} title="Open embed"><Sparkles size={14} /><span>{asset.name || 'Untitled embed'}</span></button>)}</div>
         </section>}
-        {filteredEmbeds.map((asset) => <div className="graph-library-item" key={asset.id} onContextMenu={(event) => openEmbedMenu(event, asset)}>
+        {filteredEmbeds.map((asset) => <div className={`graph-library-item ${contextMenu?.kind === 'embed' && contextMenu.graph?.id === asset.id ? 'is-context-menu-open' : ''}`} key={asset.id} onContextMenu={(event) => openEmbedMenu(event, asset)}>
           <button className="graph-library-entry" draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'embed-asset', id: asset.id, name: asset.name || 'Untitled embed', blocks: asset.blocks || [], components: asset.components || [] })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startEmbedDrag(event, asset)} onDragEnd={finishEmbedDrag} onClick={() => { recordUsage('embeds', asset.id); onOpenEmbed?.(asset); }} title="Open embed or drag it onto the canvas"><Sparkles size={13} /><span>{asset.name || 'Untitled embed'}</span></button>
           <button className="graph-library-more" onClick={(event) => openEmbedMenu(event, asset)} aria-label={`Actions for ${asset.name || 'embed'}`} title="Embed actions"><MoreHorizontal size={14} /></button>
         </div>)}
