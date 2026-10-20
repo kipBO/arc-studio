@@ -144,6 +144,7 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     if (templateAutocomplete) {
       const token = /\{\{([^{}]*)$/.exec(textBeforeCaret);
       if (token && textBeforeCaret[token.index - 1] !== '\\') {
+        const caret = event.target.selectionStart ?? event.target.value.length;
         const expression = token[1];
         const pipe = expression.lastIndexOf('|');
         const filterStage = pipe >= 0;
@@ -151,7 +152,9 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
         const leading = fragment.match(/^\s*/)?.[0].length || 0;
         const pathStage = !filterStage && /^[A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*(?:[A-Za-z_$][A-Za-z0-9_$]*)?|\s*\[\s*\d*)+/.test(fragment.trim());
         const start = pathStage ? token.index + 2 : textBeforeCaret.length - fragment.length + leading;
-        setMatch({ kind: 'template', start, end: event.target.selectionStart ?? event.target.value.length, query: pathStage ? fragment.trim().replace(/\.\s*\[/g, '[') : fragment.slice(leading), filterStage, pathStage });
+        const closingBrace = event.target.value.indexOf('}}', caret);
+        const end = closingBrace >= 0 ? closingBrace + 2 : caret;
+        setMatch({ kind: 'template', start, end, query: pathStage ? fragment.trim().replace(/\.\s*\[/g, '[') : fragment.slice(leading), filterStage, pathStage });
         return;
       }
     }
