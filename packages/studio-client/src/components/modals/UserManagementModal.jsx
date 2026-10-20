@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { PasswordInput, SelectInput, TextInput } from '../ui/Inputs.jsx';
-import { Activity, KeyRound, Shield, SlidersHorizontal, Trash2, UserPlus, Users } from 'lucide-react';
+import { Activity, KeyRound, Pencil, Shield, SlidersHorizontal, Trash2, UserPlus, Users } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
 //
@@ -33,7 +33,7 @@ const PERMISSION_OPTIONS = [
   { value: 'emojis:upload', label: 'Manage emojis', detail: 'Upload and manage application emojis.' }
 ];
 
-export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '' }) {
+export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '', onCurrentUserChange }) {
   const [users, setUsers] = useState([]);
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -53,7 +53,19 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   const [permissionLogoutTarget, setPermissionLogoutTarget] = useState(null);
   const [permissionLogoutError, setPermissionLogoutError] = useState('');
   const [loggingOutUser, setLoggingOutUser] = useState(false);
+  const [usernameTarget, setUsernameTarget] = useState(null);
+  const [usernameDraft, setUsernameDraft] = useState('');
+  const [usernameError, setUsernameError] = useState('');
+  const [usernameSaving, setUsernameSaving] = useState(false);
+  const [usernameAvailableAt, setUsernameAvailableAt] = useState(0);
+  const [usernameClock, setUsernameClock] = useState(Date.now());
   const createFormRef = useRef(null);
+
+  useEffect(() => {
+    if (!usernameTarget) return undefined;
+    const timer = window.setInterval(() => setUsernameClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [usernameTarget]);
 
   const shakeInvalidFields = () => {
     const form = createFormRef.current;
@@ -204,6 +216,43 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
     } finally { setLoggingOutUser(false); }
   };
 
+  const startUsernameEdit = (user) => {
+    const changedAt = Date.parse(user.usernameChangedAt || '');
+    setUsernameTarget(user);
+    setUsernameDraft(user.username || '');
+    setUsernameError('');
+    setUsernameAvailableAt(Number.isFinite(changedAt) ? changedAt + 10 * 60 * 1000 : 0);
+    setUsernameClock(Date.now());
+  };
+
+  const renameOwner = async (event) => {
+    event.preventDefault();
+    if (!usernameTarget || !authToken || usernameSaving) return;
+    const nextUsername = usernameDraft.trim();
+    if (nextUsername.length < 2 || nextUsername.length > 32) return setUsernameError('Use 2 to 32 characters.');
+    if (usernameAvailableAt > Date.now()) return setUsernameError('Please wait for the 10 minute cooldown to end.');
+    setUsernameSaving(true);
+    setUsernameError('');
+    try {
+      const response = await fetch(apiUrl('/api/auth/username'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ username: nextUsername })
+      });
+      const data = await readApiResponse(response);
+      if (!response.ok) {
+        if (data.availableAt) setUsernameAvailableAt(Number(data.availableAt));
+        throw new Error(data.error || 'Could not rename the owner account.');
+      }
+      onCurrentUserChange?.(data.user);
+      setUsernameTarget(null);
+      await fetchUsers();
+      arcEvents.emit('toast:notify', { title: data.changed ? 'Owner account renamed' : 'Username unchanged', message: data.user.username, type: 'success' });
+    } catch (error) {
+      setUsernameError(error.message || 'Could not rename the owner account.');
+    } finally { setUsernameSaving(false); }
+  };
+
   return <>
   <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl">
     <form ref={createFormRef} className="team-create-form" noValidate onSubmit={createUser}>
@@ -224,8 +273,15 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
             <div className="team-user-row">
               <span className="team-avatar">{(user.username?.[0] || 'U').toUpperCase()}</span>
               <div className="team-user-copy"><strong>{user.username}{primary && <small>Primary</small>}</strong><span><i className={`role-dot role-${user.role}`} />{user.role === 'custom' ? 'Custom permissions' : user.role} <em>· {String(user.id).slice(0, 8)}</em></span><small className="team-last-login">Last sign-in: {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : 'Never'}</small></div>
-              <div className="team-user-actions">{!primary && user.id !== currentUserId && user.username?.toLowerCase() !== String(currentUsername).toLowerCase() && <><button type="button" className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button type="button" className="icon-button" onClick={() => { setEditingUserId(''); setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button type="button" className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
+              <div className="team-user-actions">{primary && user.id === currentUserId && <button type="button" className="icon-button" onClick={() => usernameTarget?.id === user.id ? setUsernameTarget(null) : startUsernameEdit(user)} title="Rename owner account" aria-label="Rename owner account"><Pencil size={15} /></button>}{!primary && user.id !== currentUserId && user.username?.toLowerCase() !== String(currentUsername).toLowerCase() && <><button type="button" className="icon-button" onClick={() => startPermissionEdit(user)} title={`Edit ${user.username} permissions`} aria-label={`Edit ${user.username} permissions`}><SlidersHorizontal size={15} /></button><button type="button" className="icon-button" onClick={() => { setEditingUserId(''); setResetTarget(user); setResetPassword(''); setResetConfirmPassword(''); setResetError(''); }} title={`Reset ${user.username} password`} aria-label={`Reset ${user.username} password`}><KeyRound size={15} /></button></>}{!primary && <button type="button" className="icon-button team-delete-button" onClick={() => deleteUser(user)} title={`Remove ${user.username}`} aria-label={`Remove ${user.username}`}><Trash2 size={15} /></button>}</div>
             </div>
+            {usernameTarget?.id === user.id && <form className="team-create-form team-inline-username-form" onSubmit={renameOwner}>
+              <div className="team-form-title"><span><Pencil size={16} /></span><div><strong>Rename owner account</strong><small>This username identifies you in the workspace. It can be changed once every 10 minutes.</small></div></div>
+              <TextInput label="Username" placeholder="Username" value={usernameDraft} onChange={(event) => { setUsernameDraft(event.target.value); setUsernameError(''); }} minLength={2} maxLength={32} autoComplete="username" />
+              {usernameAvailableAt > usernameClock && <p className="team-username-cooldown">You can rename again in {Math.floor((usernameAvailableAt - usernameClock) / 60000)}m {Math.ceil(((usernameAvailableAt - usernameClock) % 60000) / 1000)}s.</p>}
+              {usernameError && <p className="form-error" role="alert">{usernameError}</p>}
+              <div className="team-reset-actions"><Button type="button" variant="secondary" disabled={usernameSaving} onClick={() => setUsernameTarget(null)}>Cancel</Button><Button type="submit" loading={usernameSaving} disabled={usernameAvailableAt > usernameClock}>Save username</Button></div>
+            </form>}
             {editingUserId === user.id && <div className="team-permissions-editor">
               <div className="team-permissions-heading"><strong>Workspace permissions</strong><small>Selecting every permission grants full Admin access, including Team access. Changes take effect on the member’s next request. You can sign them out now to end their current session.</small></div>
               <div className="team-permissions-grid">{PERMISSION_OPTIONS.map((permission) => <label className="team-permission-option" key={permission.value}>
