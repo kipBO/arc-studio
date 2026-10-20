@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -35,6 +36,7 @@ const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 40 * 1024 * 1
 //
 const liveGraphStates = new Map();
 const liveCollaborationActions = new Map();
+const liveGraphChatBubbles = new Map();
 const liveCollaborationStudioDrafts = new Map();
 const liveNoteEditLocks = new Map();
 const liveProjectTabs = new Map();
@@ -51,6 +53,25 @@ const sendToCollaborationRoom = (roomKey, data, excludedClient = null) => {
   const serialized = JSON.stringify(data);
   for (const client of wss.clients) {
     if (client !== excludedClient && client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcRoomKey === roomKey) client.send(serialized);
+  }
+};
+const removeGraphChatBubble = (roomKey, bubbleId) => {
+  const room = liveGraphChatBubbles.get(roomKey);
+  const entry = room?.get(bubbleId);
+  if (!entry) return false;
+  clearTimeout(entry.timer);
+  room.delete(bubbleId);
+  if (!room.size) liveGraphChatBubbles.delete(roomKey);
+  sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_EXPIRED', payload: { projectId: entry.bubble.projectId, graphId: entry.bubble.graphId, id: bubbleId } });
+  return true;
+};
+const sendGraphChatSnapshot = (client, roomKey) => {
+  const room = liveGraphChatBubbles.get(roomKey);
+  if (!room) return;
+  const now = Date.now();
+  for (const [bubbleId, entry] of room) {
+    if (entry.bubble.expiresAt <= now) removeGraphChatBubble(roomKey, bubbleId);
+    else client.send(JSON.stringify({ type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble }));
   }
 };
 const noteLockSnapshot = (roomKey) => [...(liveNoteEditLocks.get(roomKey)?.values() || [])]
@@ -490,6 +511,7 @@ wss.on('connection', (ws) => {
           const room = liveCollaborationActions.get(nextRoomKey);
           if (room) for (const action of room.values()) ws.send(JSON.stringify({ type: 'COLLAB_ACTION_UPDATED', payload: action }));
           ws.send(JSON.stringify({ type: 'NOTE_EDIT_LOCKS_UPDATED', payload: { projectId, graphId, locks: noteLockSnapshot(nextRoomKey) } }));
+          sendGraphChatSnapshot(ws, nextRoomKey);
         }
         let liveState = ws.arcPresence ? liveGraphStates.get(`${projectId}:${graphId}`) : null;
         if (ws.arcPresence && !liveState) {
@@ -563,6 +585,65 @@ wss.on('connection', (ws) => {
         room.set(noteId, lock);
         liveNoteEditLocks.set(roomKey, room);
         publishNoteEditLocks(roomKey);
+      } else if (msg.type === 'GRAPH_CHAT_SEND' || msg.type === 'GRAPH_CHAT_MOVE') {
+        const roomKey = ws.arcRoomKey;
+        const payload = msg.payload;
+        const projectId = typeof msg.projectId === 'string' ? msg.projectId : '';
+        const graphId = typeof msg.graphId === 'string' ? msg.graphId : '';
+        if (!roomKey || !ws.arcPresence || projectId !== ws.arcPresence.projectId || graphId !== ws.arcPresence.graphId
+          || !payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+        const graphExists = liveGraphStates.has(`${projectId}:${graphId}`)
+          || ws.arcManager?.getGraphs().some((graph) => graph.id === graphId);
+        if (!graphExists) return;
+        const point = payload.position;
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)
+          || Math.abs(point.x) > 1_000_000 || Math.abs(point.y) > 1_000_000) return;
+        const now = Date.now();
+        if (msg.type === 'GRAPH_CHAT_SEND') {
+          const recent = (ws.arcGraphChatSendTimes || []).filter((time) => now - time < 10_000);
+          if (recent.length >= 5) {
+            ws.arcGraphChatSendTimes = recent;
+            ws.send(JSON.stringify({ type: 'GRAPH_CHAT_REJECTED', payload: { reason: 'rate-limit', message: 'Please wait a moment before sending another canvas message.' } }));
+            return;
+          }
+          recent.push(now);
+          ws.arcGraphChatSendTimes = recent;
+          const content = Array.from(typeof payload.content === 'string' ? payload.content.trim() : '').slice(0, 280).join('');
+          if (!content) return;
+          const length = Array.from(content).length;
+          const stayMs = Math.min(20_000, 5_000 + Math.ceil((length / 280) * 15_000));
+          const fadeMs = Math.min(2_000, 500 + Math.ceil((length / 280) * 1_500));
+          const bubble = {
+            id: randomUUID(),
+            projectId,
+            graphId,
+            userId: ws.arcUser.id,
+            username: ws.arcUser.username,
+            color: ws.arcColor || collaboratorColor(ws.arcUser.id),
+            content,
+            x: point.x,
+            y: point.y,
+            createdAt: now,
+            stayMs,
+            fadeMs,
+            expiresAt: now + stayMs + fadeMs
+          };
+          let room = liveGraphChatBubbles.get(roomKey);
+          if (!room) { room = new Map(); liveGraphChatBubbles.set(roomKey, room); }
+          room.set(bubble.id, { bubble, timer: null });
+          const entry = room.get(bubble.id);
+          entry.timer = setTimeout(() => removeGraphChatBubble(roomKey, bubble.id), stayMs + fadeMs + 10);
+          entry.timer.unref?.();
+          sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: bubble });
+          return;
+        }
+        const bubbleId = typeof payload.id === 'string' ? payload.id : '';
+        const entry = liveGraphChatBubbles.get(roomKey)?.get(bubbleId);
+        if (!entry || entry.bubble.userId !== ws.arcUser.id || entry.bubble.expiresAt <= now) return;
+        if (!ws.arcGraphChatMoveTimes || now - ws.arcGraphChatMoveTimes.windowAt >= 1000) ws.arcGraphChatMoveTimes = { windowAt: now, count: 0 };
+        if (++ws.arcGraphChatMoveTimes.count > 30) return;
+        entry.bubble = { ...entry.bubble, x: point.x, y: point.y };
+        sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
       } else if (msg.type === 'COLLAB_ACTION') {
         const roomKey = ws.arcRoomKey;
         const action = msg.action;
