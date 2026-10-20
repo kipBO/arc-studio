@@ -10,6 +10,16 @@ const lazyNamed = (loader, name) => {
   Component.preload = load;
   return Component;
 };
+function formatCompactLastSeen(value) {
+  const timestamp = typeof value === 'number' ? value : Date.parse(value || '');
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 30 * 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -36,6 +46,7 @@ import { TooltipLayer } from './components/ui/TooltipLayer.jsx';
 import { EmojiPickerOverlay } from './components/ui/EmojiPickerOverlay.jsx';
 import { SelectionContextMenu } from './components/ui/SelectionContextMenu.jsx';
 import { SidebarResizeHandle } from './components/ui/SidebarResizeHandle.jsx';
+import { ReleaseNotes } from './components/ui/ReleaseNotes.jsx';
 import { arcEvents } from './core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl, studioWebSocketUrl } from './core/api.js';
 import { xhrJson } from './core/xhrJson.js';
@@ -546,6 +557,7 @@ export function App() {
   const [serverUpdate, setServerUpdate] = useState(null);
   const [stableUpdateReady, setStableUpdateReady] = useState(null);
   const [releaseNotesNotice, setReleaseNotesNotice] = useState(null);
+  const [updateNotice, setUpdateNotice] = useState(null);
   const [updateInstallPromptOpen, setUpdateInstallPromptOpen] = useState(false);
   const [updateInstalling, setUpdateInstalling] = useState(false);
   const updateRef = useRef(null);
@@ -594,6 +606,7 @@ export function App() {
   const [projects, setProjects] = useState([]);
   const [projectStarters, setProjectStarters] = useState([]);
   const [projectUsers, setProjectUsers] = useState({});
+  const [projectLastSeen, setProjectLastSeen] = useState({});
   const [maxProjects, setMaxProjects] = useState(() => localDesktopWorkspace ? null : 10);
   useEffect(() => { if (localDesktopWorkspace) setMaxProjects(null); }, [localDesktopWorkspace]);
   const [needsProjectOnboarding, setNeedsProjectOnboarding] = useState(false);
@@ -716,6 +729,7 @@ export function App() {
   const liveGraphRevisionRef = useRef(new Map());
   const lastLiveGraphSentRef = useRef(new Map());
   const pendingLiveGraphRef = useRef(new Map());
+  const liveGraphSendTimersRef = useRef(new Map());
   const rejectedLiveGraphToastRef = useRef(new Set());
   const liveGraphReadyRef = useRef(new Set());
   const autoSaveInFlightRef = useRef(new Set());
@@ -868,6 +882,45 @@ export function App() {
       update?.close().catch(() => {});
     };
   }, [desktopMode, networkOnline, settings.autoUpdateChecks, studioVersion, desktopReleaseChannel]);
+
+  useEffect(() => {
+    const detected = appUpdate?.version
+      ? { version: appUpdate.version, title: appUpdate.title, url: appUpdate.url, notes: appUpdate.notes, kind: 'install' }
+      : stableUpdateReady?.version
+        ? { version: stableUpdateReady.version, title: `ARC Studio ${stableUpdateReady.version}`, url: `https://github.com/relentiousdragon/arc-studio/releases/tag/v${encodeURIComponent(stableUpdateReady.version)}`, notes: '', kind: 'staged' }
+        : null;
+    if (!desktopMode || !detected) return undefined;
+
+    const noticeKey = `arc_seen_update_notice_${desktopReleaseChannel}_${detected.version}`;
+    try {
+      if (localStorage.getItem(noticeKey)) return undefined;
+      localStorage.setItem(noticeKey, '1');
+      const seenKey = 'arc_seen_release_notes_versions';
+      const stored = JSON.parse(localStorage.getItem(seenKey) || '[]');
+      const seenVersions = Array.isArray(stored) ? stored.filter((version) => typeof version === 'string') : [];
+      if (!seenVersions.includes(detected.version)) seenVersions.push(detected.version);
+      if (studioVersion && !seenVersions.includes(studioVersion)) seenVersions.push(studioVersion);
+      localStorage.setItem(seenKey, JSON.stringify(seenVersions.slice(-100)));
+    } catch {}
+
+    setReleaseNotesNotice(null);
+    setUpdateNotice({ ...detected, notes: detected.notes || 'Loading release notes…' });
+    if (detected.notes) return undefined;
+
+    let active = true;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 10000);
+    fetch(apiUrl(`/api/release-notes/${encodeURIComponent(detected.version)}`), { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`Release notes request failed (${response.status}).`)))
+      .then((release) => {
+        if (active) setUpdateNotice((current) => current?.version === detected.version ? { ...current, title: release.title || current.title, notes: String(release.notes || '').trim() || 'This update does not include release notes.', url: release.url || current.url } : current);
+      })
+      .catch(() => {
+        if (active) setUpdateNotice((current) => current?.version === detected.version ? { ...current, notes: 'Release notes could not be loaded. You can read them on the ARC Studio release page.' } : current);
+      })
+      .finally(() => window.clearTimeout(timeout));
+    return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
+  }, [appUpdate?.notes, appUpdate?.title, appUpdate?.url, appUpdate?.version, desktopMode, desktopReleaseChannel, stableUpdateReady?.version]);
 
   useEffect(() => {
     if (!settings.uiSounds) return undefined;
@@ -1723,6 +1776,7 @@ export function App() {
           if (msg.type === 'INIT_STATE') {
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
             setCollaborationSocketStatus('connected');
+            setProjectLastSeen(msg.payload.projectLastSeen && typeof msg.payload.projectLastSeen === 'object' ? msg.payload.projectLastSeen : {});
             window.clearTimeout(collaborationActionTimerRef.current);
             collaborationActionTimerRef.current = null;
             pendingCollaborationActionRef.current.clear();
@@ -1732,6 +1786,8 @@ export function App() {
             liveGraphReadyRef.current.clear();
             lastLiveGraphSentRef.current.clear();
             pendingLiveGraphRef.current.clear();
+            for (const timer of liveGraphSendTimersRef.current.values()) window.clearTimeout(timer);
+            liveGraphSendTimersRef.current.clear();
             setSocketReadyRevision((revision) => revision + 1);
             if (Array.isArray(msg.payload.projectVariables)) setProjectVariables(msg.payload.projectVariables);
             if (msg.payload.projects) {
@@ -1887,11 +1943,16 @@ export function App() {
             const incoming = payload.graph;
             if (payload.graphId !== incoming.id) return;
             const previousRevision = liveGraphRevisionRef.current.get(incoming.id) || 0;
-            if (Number(payload.revision) <= previousRevision) return;
-            liveGraphRevisionRef.current.set(incoming.id, Number(payload.revision) || previousRevision + 1);
+            const pending = pendingLiveGraphRef.current.get(incoming.id);
+            const isOwnUpdate = payload.clientId === collaborationClientIdRef.current && pending?.syncId === payload.syncId;
+            const incomingRevision = Number(payload.revision);
+            if (incomingRevision <= previousRevision && liveGraphBaseRef.current.has(incoming.id) && !isOwnUpdate && !payload.resync) return;
+            liveGraphRevisionRef.current.set(incoming.id, Number.isInteger(incomingRevision) && incomingRevision >= 0 ? incomingRevision : previousRevision + 1);
             const base = liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
             const local = tabsRef.current.find((item) => item.id === incoming.id);
-            const merged = mergeGraphState(base, local || base, incoming);
+            const mergeBase = isOwnUpdate ? pending.graph : base;
+            const merged = mergeGraphState(mergeBase, local || mergeBase, incoming);
+            if (isOwnUpdate || payload.resync) pendingLiveGraphRef.current.delete(incoming.id);
             setSlashCommandStudio((current) => {
               if (!current || current.graphId !== incoming.id) return current;
               const incomingNode = incoming.nodes?.find((node) => node.id === current.nodeId && node.type === 'event_slash_command');
@@ -1918,6 +1979,8 @@ export function App() {
             if (pending?.syncId === msg.payload.syncId && pending?.clientId === collaborationClientIdRef.current) {
               lastLiveGraphSentRef.current.set(msg.payload.graphId, pending.serialized);
               pendingLiveGraphRef.current.delete(msg.payload.graphId);
+              liveGraphRevisionRef.current.set(msg.payload.graphId, Number(msg.payload.revision) || liveGraphRevisionRef.current.get(msg.payload.graphId) || 0);
+              setLiveSyncRevision((revision) => revision + 1);
               rejectedLiveGraphToastRef.current.delete(msg.payload.graphId);
             }
           } else if (msg.type === 'GRAPH_STATE_REJECTED') {
@@ -1926,6 +1989,7 @@ export function App() {
             if (graphId) {
               pendingLiveGraphRef.current.delete(graphId);
               if (pending) lastLiveGraphSentRef.current.set(graphId, pending.serialized);
+              setLiveSyncRevision((revision) => revision + 1);
             }
             if (!graphId || !rejectedLiveGraphToastRef.current.has(graphId)) {
               if (graphId) rejectedLiveGraphToastRef.current.add(graphId);
@@ -1990,6 +2054,7 @@ export function App() {
             if (payload.projectId !== activeProjectIdRef.current) return;
             const graphIds = [...new Set((Array.isArray(payload.graphIds) ? payload.graphIds : []).filter((id) => typeof id === 'string'))].slice(0, MAX_OPEN_GRAPH_TABS);
             setProjectCollaboration({ ...payload, graphIds, users: Array.isArray(payload.users) ? payload.users : [] });
+            if (payload.projectLastSeen && typeof payload.projectLastSeen === 'object') setProjectLastSeen(payload.projectLastSeen);
             if (!payload.tabsInitialized) return;
             if (!localDesktopWorkspace && projectTabStartupPendingRef.current) {
               projectTabStartupBaselineRef.current = new Set(graphIds);
@@ -2027,6 +2092,8 @@ export function App() {
             }
             setTabs(nextTabs);
             if (!effectiveGraphIds.includes(activeTabIdRef.current)) setActiveTabId(nextTabs[0]?.id || null);
+          } else if (msg.type === 'PROJECT_LAST_SEEN_UPDATED') {
+            if (msg.payload && typeof msg.payload === 'object') setProjectLastSeen(msg.payload);
           } else if (msg.type === 'GRAPH_CHAT_BUBBLE') {
             const bubble = msg.payload;
             if (!bubble?.id || bubble.projectId !== activeProjectIdRef.current || bubble.graphId !== activeTabIdRef.current
@@ -2228,23 +2295,34 @@ export function App() {
     const graph = tabs.find((tab) => tab.id === activeTabId);
     const socket = wsRef.current;
     if (!graph?.isDirty || !socket || socket.readyState !== WebSocket.OPEN || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)) return undefined;
-    const graphState = snapshotGraph(graph);
-    const serialized = JSON.stringify(graphState);
-    if (lastLiveGraphSentRef.current.get(graph.id) === serialized) return undefined;
+    if (pendingLiveGraphRef.current.has(graph.id)) return undefined;
+    const graphKey = `${activeProjectId}:${graph.id}`;
+    if (liveGraphSendTimersRef.current.has(graphKey)) return undefined;
     const timer = window.setTimeout(() => {
-      if (socket !== wsRef.current || socket.readyState !== WebSocket.OPEN) return;
+      liveGraphSendTimersRef.current.delete(graphKey);
+      if (activeProjectIdRef.current !== activeProjectId || activeTabIdRef.current !== graph.id) return;
+      const latestGraph = tabsRef.current.find((tab) => tab.id === graph.id);
+      const latestSocket = wsRef.current;
+      if (!latestGraph?.isDirty || !latestSocket || latestSocket !== socket || latestSocket.readyState !== WebSocket.OPEN
+        || !liveGraphReadyRef.current.has(`${activeProjectId}:${graph.id}`)) return;
+      if (pendingLiveGraphRef.current.has(graph.id)) return;
+      const graphState = snapshotGraph(latestGraph);
+      const serialized = JSON.stringify(graphState);
+      if (lastLiveGraphSentRef.current.get(graph.id) === serialized) return;
       const syncId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      socket.send(JSON.stringify({
+      pendingLiveGraphRef.current.set(graph.id, { serialized, syncId, clientId: collaborationClientIdRef.current, graph: graphState });
+      latestSocket.send(JSON.stringify({
         type: 'GRAPH_STATE',
         projectId: activeProjectId,
         graphId: graph.id,
+        baseRevision: liveGraphRevisionRef.current.get(graph.id) || 0,
         clientId: collaborationClientIdRef.current,
         syncId,
         graph: graphState
       }));
-      pendingLiveGraphRef.current.set(graph.id, { serialized, syncId, clientId: collaborationClientIdRef.current });
-    }, 100);
-    return () => window.clearTimeout(timer);
+    }, 40);
+    liveGraphSendTimersRef.current.set(graphKey, timer);
+    return undefined;
   }, [activeProjectId, activeTabId, liveSyncRevision, socketReadyRevision, tabs]);
 
   useEffect(() => {
@@ -4874,6 +4952,7 @@ export function App() {
       updateRef.current = null;
       setAppUpdate(null);
       setUpdateInstallPromptOpen(false);
+      setUpdateNotice(null);
       await update.close().catch(() => {});
     } catch (error) {
       arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: error?.message || 'ARC Studio could not install the update.', type: 'error', duration: 7000 });
@@ -5215,7 +5294,7 @@ export function App() {
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -5247,12 +5326,12 @@ export function App() {
                 <button
                   type="button"
                   className="project-switcher-item"
-                  title={(projectUsers[project.id] || []).map((user) => user.username).join(', ') || 'No users currently here'}
+                  title={projectUsers[project.id]?.length ? `Online: ${projectUsers[project.id].map((user) => user.username).join(', ')}` : projectLastSeen[project.id]?.username ? `Last here: ${projectLastSeen[project.id].username} · ${formatCompactLastSeen(projectLastSeen[project.id].updatedAt)}` : 'No recent activity'}
                   onClick={() => handleActivateProject(project.id)}
                   disabled={projectBusy || project.id === activeProjectId}
                   aria-current={project.id === activeProjectId ? 'page' : undefined}
                 >
-                  <span className="project-switcher-copy"><strong>{project.name}</strong><small>{(projectUsers[project.id] || []).length ? (projectUsers[project.id] || []).map((user) => user.username).join(', ') : 'No users currently here'}</small></span>
+                  <span className="project-switcher-copy"><strong>{project.name}</strong>{projectUsers[project.id]?.length > 0 && <small className="project-online-users">Online · {projectUsers[project.id].map((user) => user.username).join(', ')}</small>}{projectLastSeen[project.id]?.username && <small className="project-last-seen">Last here · {projectLastSeen[project.id].username} · {formatCompactLastSeen(projectLastSeen[project.id].updatedAt)}</small>}{!projectUsers[project.id]?.length && !projectLastSeen[project.id]?.username && <small className="project-last-seen">No recent activity</small>}</span>
                   {project.id === activeProjectId && <span className="project-active-mark">Current</span>}
                 </button>
                 <button type="button" className="project-more-button" aria-label={`More actions for ${project.name}`} title="Project options" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => {
@@ -5532,6 +5611,23 @@ export function App() {
         </div>
       </Modal>
       <Modal
+        isOpen={Boolean(updateNotice)}
+        onClose={() => setUpdateNotice(null)}
+        title={updateNotice?.title || `ARC Studio ${updateNotice?.version || ''}`}
+        subtitle={updateNotice?.kind === 'staged' ? 'Update ready · release notes' : 'Update available · release notes'}
+        icon={Sparkles}
+        maxWidth="max-w-2xl"
+        footer={<>
+          <a className="studio-button studio-button-secondary" href={updateNotice?.url} target="_blank" rel="noreferrer">View release</a>
+          {updateNotice?.kind === 'install'
+            ? <><Button variant="secondary" onClick={() => setUpdateNotice(null)}>Later</Button><Button icon={Download} loading={updateInstalling} onClick={handleInstallStudioUpdate}>Install update</Button></>
+            : <Button onClick={() => setUpdateNotice(null)}>Got it</Button>}
+        </>}
+      >
+        {updateNotice?.kind === 'staged' && <p className="close-graph-copy">This update will be applied the next time you launch ARC Studio.</p>}
+        <ReleaseNotes>{updateNotice?.notes}</ReleaseNotes>
+      </Modal>
+      <Modal
         isOpen={updateInstallPromptOpen}
         onClose={() => !updateInstalling && setUpdateInstallPromptOpen(false)}
         title={`Update ARC Studio to ${appUpdate?.version || 'the latest version'}?`}
@@ -5540,10 +5636,10 @@ export function App() {
         footer={<><Button variant="secondary" disabled={updateInstalling} onClick={() => setUpdateInstallPromptOpen(false)}>Later</Button><Button icon={Download} loading={updateInstalling} onClick={handleInstallStudioUpdate}>Download and install</Button></>}
       >
         <p className="close-graph-copy">Your graphs and settings are saved in your workspace. The update will be verified before it is installed.</p>
-        {appUpdate?.notes && <pre style={{ maxHeight: 220, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{appUpdate.notes}</pre>}
+        {appUpdate?.notes && <ReleaseNotes>{appUpdate.notes}</ReleaseNotes>}
       </Modal>
       <Modal
-        isOpen={Boolean(releaseNotesNotice)}
+        isOpen={Boolean(releaseNotesNotice) && !updateNotice && !appUpdate && !stableUpdateReady && !updateInstallPromptOpen}
         onClose={dismissReleaseNotes}
         title={releaseNotesNotice?.title || `What’s new in ARC Studio ${studioVersion}`}
         subtitle="Release notes"
@@ -5551,7 +5647,7 @@ export function App() {
         maxWidth="max-w-2xl"
         footer={<><a className="studio-button studio-button-secondary" href={releaseNotesNotice?.url} target="_blank" rel="noreferrer">View release</a><Button onClick={dismissReleaseNotes}>Got it</Button></>}
       >
-        <pre className="release-notes-content">{releaseNotesNotice?.notes}</pre>
+        <ReleaseNotes>{releaseNotesNotice?.notes}</ReleaseNotes>
       </Modal>
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
@@ -5648,8 +5744,8 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const errors = [];
   const warnings = [];
   if (!graph) return { errors, warnings };
-  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
-  const connections = Array.isArray(graph.connections) ? graph.connections : [];
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter((node) => node && typeof node === 'object') : [];
+  const connections = Array.isArray(graph.connections) ? graph.connections.filter((connection) => connection && typeof connection === 'object') : [];
   const nodeIds = new Set(nodes.map((node) => node.id));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const isFunction = graph.graphType === 'function' || nodes.some((node) => node.type === 'function_input' || node.type === 'function_return');
