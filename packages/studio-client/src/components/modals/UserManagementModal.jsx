@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
-import { PasswordInput, SelectInput, TextInput } from '../ui/Inputs.jsx';
+import { PasswordInput, SelectInput, TextInput, Toggle } from '../ui/Inputs.jsx';
 import { Activity, KeyRound, Pencil, Shield, SlidersHorizontal, Trash2, UserPlus, Users } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
@@ -41,6 +41,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('editor');
+  const [requirePasswordChange, setRequirePasswordChange] = useState(false);
   const [formErrors, setFormErrors] = useState({});
   const [resetTarget, setResetTarget] = useState(null);
   const [resetPassword, setResetPassword] = useState('');
@@ -118,11 +119,11 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
       const response = await fetch(apiUrl('/api/users'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
-        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole })
+        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole, mustChangePassword: requirePasswordChange })
       });
       const data = await readApiResponse(response);
       if (!response.ok) throw new Error(data.error || 'Could not create this account.');
-      setNewUsername(''); setNewPassword(''); setNewRole('editor'); setFormErrors({});
+      setNewUsername(''); setNewPassword(''); setNewRole('editor'); setRequirePasswordChange(false); setFormErrors({});
       await fetchUsers();
       arcEvents.emit('toast:notify', { title: 'Account created', message: data.user.username, type: 'success' });
     } catch (error) {
@@ -254,7 +255,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   };
 
   return <>
-  <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl">
+  <Modal isOpen={isOpen} onClose={onClose} title="Team access" subtitle="Manage studio accounts and roles" icon={Users} maxWidth="max-w-2xl" panelClassName="modal-team-access">
     <form ref={createFormRef} className="team-create-form" noValidate onSubmit={createUser}>
       <div className="team-form-title"><span><UserPlus size={16} /></span><div><strong>Add a member</strong><small>Create a separate sign-in for a collaborator.</small></div></div>
       <div className="team-form-grid">
@@ -262,6 +263,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
         <PasswordInput label="Initial password" placeholder="At least 6 characters" value={newPassword} onChange={(event) => { setNewPassword(event.target.value); setFormErrors((current) => ({ ...current, password: '' })); }} error={formErrors.password} showStrength minLength={6} autoComplete="new-password" />
       </div>
       <SelectInput label="Role" value={newRole} options={ROLE_OPTIONS} onChange={setNewRole} />
+      <Toggle label="Require password change at first sign-in" description="The account must choose a different password before opening the workspace." checked={requirePasswordChange} onChange={setRequirePasswordChange} />
       <Button type="submit" variant="primary" loading={creating} icon={UserPlus}>Create account</Button>
     </form>
     <section className="team-list-section">
