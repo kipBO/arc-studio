@@ -80,7 +80,24 @@ try {
 
     const archivePath = path.join(temporaryDir, archiveName);
     fs.writeFileSync(archivePath, archive, { mode: 0o600 });
-    execFileSync('tar', ['-xf', archivePath, '-C', temporaryDir], { stdio: 'inherit' });
+    if (process.platform === 'win32') {
+      execFileSync('powershell.exe', [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$ErrorActionPreference = "Stop"; Expand-Archive -LiteralPath $env:ARC_RUNTIME_ARCHIVE -DestinationPath $env:ARC_RUNTIME_DESTINATION -Force'
+      ], {
+        env: {
+          ...process.env,
+          ARC_RUNTIME_ARCHIVE: archivePath,
+          ARC_RUNTIME_DESTINATION: temporaryDir
+        },
+        stdio: 'inherit'
+      });
+    } else {
+      execFileSync('tar', ['-xf', archivePath, '-C', temporaryDir], { stdio: 'inherit' });
+    }
     const extractedRoot = path.join(temporaryDir, `node-v${nodeVersion}-${archivePlatform}`);
     extractedNodes.push(path.join(extractedRoot, targetConfig.binary));
     if (archivePlatform === archivePlatforms[0]) {
