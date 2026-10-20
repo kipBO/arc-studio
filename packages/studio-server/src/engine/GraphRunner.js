@@ -418,7 +418,7 @@ function evaluateDataNode(type, inputs = {}, data = {}) {
   }
   return {};
 }
-import { performSafeHttpRequest } from './SafeHttpRequest.js';
+import { downloadSafeHttpFile, performSafeHttpRequest } from './SafeHttpRequest.js';
 import { PluginStore } from './PluginStore.js';
 
 function buildDiscordComponents(rows = [], renderText = (value) => value) {
@@ -803,7 +803,11 @@ export class GraphRunner {
     const resolveMessageFiles = (node, connectedFiles) => {
       const embedWire = findInputConnection(node.id, 'embed');
       const embedNode = embedWire && nodes.find((item) => item.id === embedWire.sourceNodeId);
-      const files = [...(Array.isArray(connectedFiles) ? connectedFiles : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : [])];
+      let normalizedConnectedFiles = connectedFiles;
+      if (typeof normalizedConnectedFiles === 'string') {
+        try { normalizedConnectedFiles = JSON.parse(normalizedConnectedFiles); } catch { normalizedConnectedFiles = []; }
+      }
+      const files = [...(Array.isArray(normalizedConnectedFiles) ? normalizedConnectedFiles : normalizedConnectedFiles?.filename && normalizedConnectedFiles?.data ? [normalizedConnectedFiles] : []), ...(Array.isArray(node.data?.attachments) ? node.data.attachments : []), ...(Array.isArray(embedNode?.data?.attachments) ? embedNode.data.attachments : [])];
       const unique = new Map();
       for (const file of files) if (file?.filename && file?.data) unique.set(String(file.filename).toLowerCase(), file);
       return [...unique.values()];
@@ -1770,6 +1774,7 @@ export class GraphRunner {
           const content = String(resolveDataInput(targetNode, 'content', targetNode.data?.content || '')).slice(0, 2000);
           const embed = resolveDataInput(targetNode, 'embed', null) || (Array.isArray(targetNode.data?.blocks) ? buildEmbedFromNode(targetNode) : null);
           const components = resolveMessageComponents(targetNode);
+          const files = resolveMessageFiles(targetNode, resolveDataInput(targetNode, 'files', targetNode.data?.files || []));
 
           if (!applicationId) {
             log(`[Edit Interaction Reply] Error: Missing Application ID`);
@@ -1780,7 +1785,8 @@ export class GraphRunner {
             const payload = {
               ...(content ? { content } : {}),
               ...(embed ? { embeds: [embed] } : {}),
-              ...(Array.isArray(components) && components.length ? { components } : {})
+              ...(Array.isArray(components) && components.length ? { components } : {}),
+              ...(files?.length ? { files } : {})
             };
             if (typeof context.rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
             await context.rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
@@ -2003,6 +2009,37 @@ export class GraphRunner {
           dataCache.set(`${targetNode.id}:token`, token);
           log(`[Crypto Random] Generated secure token (${type}): ${token.slice(0, 10)}...`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_http_download') {
+          const clearDownloadOutputs = (error = '') => {
+            dataCache.set(`${targetNode.id}:file`, null);
+            dataCache.set(`${targetNode.id}:filename`, '');
+            dataCache.set(`${targetNode.id}:content_type`, '');
+            dataCache.set(`${targetNode.id}:byte_size`, 0);
+            dataCache.set(`${targetNode.id}:error`, error);
+          };
+          if (context.mock) {
+            clearDownloadOutputs('HTTP downloads are disabled in the Offline Simulator.');
+            log('[HTTP Download File] Skipped in Offline Simulator.');
+          } else {
+            try {
+              const downloaded = await downloadSafeHttpFile(resolveDataInput(targetNode, 'url', ''), {
+                userAgent: resolveDataInput(targetNode, 'user_agent', ''),
+                timeoutMs: resolveDataInput(targetNode, 'timeout_ms', 20000),
+                maxBytes: resolveDataInput(targetNode, 'max_bytes', 20971520)
+              });
+              const file = { filename: downloaded.filename, contentType: downloaded.contentType, data: downloaded.bytes.toString('base64') };
+              dataCache.set(`${targetNode.id}:file`, file);
+              dataCache.set(`${targetNode.id}:filename`, downloaded.filename);
+              dataCache.set(`${targetNode.id}:content_type`, downloaded.contentType);
+              dataCache.set(`${targetNode.id}:byte_size`, downloaded.bytes.length);
+              dataCache.set(`${targetNode.id}:error`, '');
+              log(`[HTTP Download File] Downloaded ${downloaded.filename} (${downloaded.bytes.length.toLocaleString()} bytes, ${downloaded.contentType}).`);
+            } catch (error) {
+              clearDownloadOutputs(error.message || 'File download failed.');
+              log(`[HTTP Download File] Failed: ${error.message || 'File download failed.'}`);
+            }
+          }
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_web_fetch' || targetNode.type === 'action_web_retry') {
           const retryEnabled = targetNode.type === 'action_web_retry';
           const method = String(resolveDataInput(targetNode, 'method', 'GET')).toUpperCase();
@@ -2035,6 +2072,7 @@ export class GraphRunner {
                   url: resolveDataInput(targetNode, 'url', ''),
                   method,
                   headers: resolveDataInput(targetNode, 'headers', '{}'),
+                  userAgent: resolveDataInput(targetNode, 'user_agent', ''),
                   body: resolveDataInput(targetNode, 'body', ''),
                   timeoutMs: resolveDataInput(targetNode, 'timeout_ms', 10000),
                   maxBytes: resolveDataInput(targetNode, 'max_bytes', 1048576)
