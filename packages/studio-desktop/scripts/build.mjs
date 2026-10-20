@@ -171,7 +171,13 @@ try {
     updaterEndpoint: expectedUpdateEndpoint,
     target,
     platform: process.platform,
-    architecture: process.arch
+    architecture: target === 'universal-apple-darwin'
+      ? 'universal'
+      : target.startsWith('aarch64-')
+        ? 'arm64'
+        : target.startsWith('x86_64-')
+          ? 'x64'
+          : process.arch
   };
   fs.writeFileSync(buildInfoPath, `${JSON.stringify(buildInfo, null, 2)}\n`);
   console.log(`Wrote build metadata: ${buildInfoPath}`);
