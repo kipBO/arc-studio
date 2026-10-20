@@ -458,9 +458,10 @@ export function SplashScreen({
   };
 
   const setupCredential = needsSetup && !(desktopMode && workspaceMode === 'local') && setupStep === 1;
-  const resetPassRequested = !desktopMode && new URLSearchParams(window.location.search).get('resetPass') === 'true';
+  const resetPassParams = new URLSearchParams(window.location.search);
+  const resetPassRequested = !desktopMode && (resetPassParams.get('reset_pass') === 'true' || resetPassParams.get('resetPass') === 'true');
   const showMasterPasswordReset = !desktopMode && !needsSetup && canResetPrimaryAdminWithMasterKey
-    && (resetPassRequested || ownerResetPromptForUsername === username.trim().toLowerCase());
+    && (resetPassRequested || Boolean(ownerResetPromptForUsername && ownerResetPromptForUsername === username.trim().toLowerCase()));
   const remotePending = desktopMode && workspaceChoice === 'remote' && (showWorkspaceUrl || workspaceMode !== 'remote' || remoteUrl.trim().replace(/\/$/, '') !== remoteWorkspaceUrl.trim().replace(/\/$/, ''));
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
   const desktopServerError = desktopMode && /\b500\b/.test(`${workspaceError} ${startupError || ''}`);
