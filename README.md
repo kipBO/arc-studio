@@ -33,7 +33,7 @@ ARC Studio is in development. Submit an issue for bugs or pull request to contri
 
 ## Platforms
 
-Run it yourself in a browser, or install the desktop app.
+Run it yourself in a browser, or install the desktop app:
 
 | System | Desktop builds |
 | --- | --- |
