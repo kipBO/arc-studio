@@ -111,6 +111,7 @@ export function EmbedStudioView({
   componentsSourceLabel = '',
   appEmojis = [],
   graphVariables = [],
+  templateValuePaths = [],
   templatePreviewValues = {},
   templateSuggestions = [],
   botProfile = null,
@@ -240,6 +241,8 @@ export function EmbedStudioView({
   const validUrl = (value, allowAttachment = false) => {
     const normalized = String(value || '').trim();
     if (!normalized) return true;
+    const withoutTemplates = normalized.replace(/\{\{[^{}]+\}\}/g, '');
+    if (withoutTemplates !== normalized && !/[{}]/.test(withoutTemplates)) return true;
     if (allowAttachment && /^attachment:\/\/[^?#\r\n]{1,100}$/.test(normalized)) return true;
     try {
       return ['http:', 'https:'].includes(new URL(normalized).protocol);
@@ -487,6 +490,7 @@ export function EmbedStudioView({
                 wiredFields={wiredFields}
                 appEmojis={appEmojis}
                 graphVariables={graphVariables}
+                templateValuePaths={templateValuePaths}
                 templatePreviewValues={templatePreviewValues}
                 templateSuggestions={templateSuggestions}
                 onChange={onBlocksChange}
