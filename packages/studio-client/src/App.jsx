@@ -45,7 +45,7 @@ import studioPackage from '../package.json';
 import { classifyArcUpdate, compareArcVersions, getArcVersionDistance } from './core/appUpdates.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
-import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getSwitchCasePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -6122,6 +6122,9 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
   if (node.type === 'data_permission_overwrites' && direction === 'inputs') return getPermissionOverwritePins(node, connections).find((pin) => pin.id === pinId) || null;
   if (node.type === 'data_array_create' && direction === 'inputs') return getArrayCreatePins(node, connections).find((pin) => pin.id === pinId) || null;
   if (['math_sum', 'math_average'].includes(node.type) && direction === 'inputs') return getMathListPins(node, connections).find((pin) => pin.id === pinId) || null;
+  if (node.type === 'branch_switch' && (direction === 'inputs' ? /^case_\d+$/.test(pinId) : /^case_\d+_exec$/.test(pinId))) {
+    return getSwitchCasePins(node, connections, direction).find((pin) => pin.id === pinId) || null;
+  }
   if (direction === 'inputs') {
     const execPin = definition.inputs?.find((pin) => pin.type === 'exec');
     if (execPin) {
