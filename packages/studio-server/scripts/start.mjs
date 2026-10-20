@@ -7,8 +7,9 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '../../..');
 const clientIndex = path.join(repositoryRoot, 'packages/studio-client/dist/index.html');
 const nightlyIcon = path.join(repositoryRoot, 'packages/studio-client/dist/nightly-icon.png');
+const serverOnly = process.argv.includes('--server-only');
 //
-if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) {
+if (!serverOnly && (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon))) {
   console.log('[ARC Studio] Web client assets are missing, building them before startup...');
   const isWindows = process.platform === 'win32';
   const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'build:client'], {
@@ -22,4 +23,5 @@ if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) {
   if (!fs.existsSync(clientIndex) || !fs.existsSync(nightlyIcon)) throw new Error('Web client build did not produce the expected Studio assets.');
 }
 
+if (serverOnly) process.env.ARC_SERVER_ONLY = '1';
 await import('../src/index.js');
