@@ -1140,6 +1140,10 @@ export function App() {
       .sort((left, right) => Number(left) - Number(right))
       .map((number) => ({ name: `arg${number}`, label: `arg${number}` }));
   }, [activeConnections, embedStudio?.nodeId]);
+  const embedTemplateValuePaths = useMemo(() => {
+    if (!embedStudio?.nodeId) return [];
+    return getTemplateValuePaths(activeGraph, activeGraph?.nodes?.find((node) => node.id === embedStudio.nodeId), availableVariables);
+  }, [activeGraph, availableVariables, embedStudio?.nodeId]);
   const anyStudioOpenForActiveGraph = embedStudioOpenForActiveGraph || discordTextStudioOpenForActiveGraph || permissionStudioOpenForActiveGraph || slashCommandStudioOpenForActiveGraph || modalStudioOpenForActiveGraph;
   useEffect(() => {
     if (anyStudioOpenForActiveGraph) { studioWasOpenRef.current = true; return; }
@@ -5141,6 +5145,7 @@ export function App() {
             componentsSourceLabel={embedStudio.componentsSourceLabel}
             appEmojis={appEmojis}
             graphVariables={availableVariables}
+            templateValuePaths={embedTemplateValuePaths}
             templatePreviewValues={getTemplatePreviewInputs({ nodes: activeNodes, connections: activeConnections }, activeNodes.find((item) => item.id === embedStudio.nodeId), availableVariables)}
             templateSuggestions={embedTemplateSuggestions}
             botProfile={botProfile}
