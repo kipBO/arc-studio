@@ -74,6 +74,18 @@ npm start
 
 On first startup, the server builds the web client if it has not been built yet.
 
+### Server only for desktop connections
+
+Run this when people should connect through the ARC Studio desktop app and you do not want to host the browser editor:
+
+```sh
+npm ci
+cp .env.example .env
+npm run start:server
+```
+
+Set a private `ARC_SETUP_KEY` in `.env` before exposing the server. This starts only the API and WebSocket server, it does not build or serve the web client. Desktop clients can connect to it, while browser users cannot open the editor from this server.
+
 Put the server behind HTTPS. If you use a reverse proxy, make sure it passes WebSocket connections too. Keep `packages/studio-server/data` so projects and accounts survive restarts. The admin can add subusers and choose their roles. Everyone signs in to the same workspace, opens a project, and sees each other's graph edits live. Save the graph to keep those changes.
 
 The server only accepts connections from the same machine by default. Keep that setting when your HTTPS proxy runs on the same host. Change `HOST` only if the server needs to accept connections directly. And change the sample setup key before your team uses it.
