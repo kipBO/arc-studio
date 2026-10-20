@@ -1383,7 +1383,7 @@ export class GraphRunner {
           currentExecWires.push(...nextWires);
         } else if (targetNode.type === 'branch_switch') {
           const value = resolveDataInput(targetNode, 'value', '');
-          const selected = Array.from({ length: 5 }, (_, index) => index + 1).find((index) => {
+          const selected = Array.from({ length: 50 }, (_, index) => index + 1).find((index) => {
             const caseValue = resolveDataInput(targetNode, `case_${index}`, '');
             return caseValue !== '' && String(value ?? '') === String(caseValue ?? '');
           });
