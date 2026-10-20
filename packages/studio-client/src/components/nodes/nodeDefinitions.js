@@ -590,7 +590,7 @@ export const BuiltInNodeDefinitions = [
       { id: 'content', label: 'Content', type: 'string', defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: 'embed' },
       { id: 'components', label: 'Components (Optional)', type: 'object' },
-      { id: 'files', label: 'Files (JSON, optional)', type: 'string', defaultValue: '[]' },
+      { id: 'files', label: 'Files (optional)', type: 'object', defaultValue: [] },
       { id: 'file_data', label: 'File Data URL / Base64', type: 'string', defaultValue: '' },
       { id: 'file_name', label: 'File Name', type: 'string', defaultValue: 'image.png' },
       { id: 'reply_to_message_id', label: 'Reply to Message ID', type: 'string', defaultValue: '' },
@@ -614,7 +614,7 @@ export const BuiltInNodeDefinitions = [
       { id: 'content', label: 'Content (Optional)', type: 'string', defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: 'embed' },
       { id: 'components', label: 'Components (Optional)', type: 'object' },
-      { id: 'files', label: 'Files (JSON, optional)', type: 'string', defaultValue: '[]' }
+      { id: 'files', label: 'Files (optional)', type: 'object', defaultValue: [] }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: 'exec' },
@@ -635,7 +635,7 @@ export const BuiltInNodeDefinitions = [
       { id: 'content', label: 'Reply Content', type: 'string', defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: 'embed' },
       { id: 'components', label: 'Components (Optional)', type: 'object' },
-      { id: 'files', label: 'Files (JSON, optional)', type: 'string', defaultValue: '[]' },
+      { id: 'files', label: 'Files (optional)', type: 'object', defaultValue: [] },
       { id: 'ephemeral', label: 'Ephemeral (Hidden)', type: 'boolean', defaultValue: false }
     ],
     outputs: [
@@ -703,7 +703,8 @@ export const BuiltInNodeDefinitions = [
       { id: 'interaction_token', label: 'Interaction Token', type: 'string', defaultValue: '' },
       { id: 'content', label: 'New Content (Optional)', type: 'string', defaultValue: '' },
       { id: 'embed', label: 'Embed (Optional)', type: 'embed' },
-      { id: 'components', label: 'Components (Optional)', type: 'object' }
+      { id: 'components', label: 'Components (Optional)', type: 'object' },
+      { id: 'files', label: 'Files (optional)', type: 'object', defaultValue: [] }
     ],
     outputs: [
       { id: 'exec', label: 'Exec', type: 'exec' }
@@ -1266,6 +1267,7 @@ export const BuiltInNodeDefinitions = [
       { id: 'url', label: 'URL', type: 'string', defaultValue: '' },
       { id: 'method', label: 'Method', type: 'string', defaultValue: 'GET' },
       { id: 'headers', label: 'Headers (JSON)', type: 'string', defaultValue: '{}' },
+      { id: 'user_agent', label: 'User-Agent', type: 'string', defaultValue: '' },
       { id: 'body', label: 'Body', type: 'string', defaultValue: '' },
       { id: 'timeout_ms', label: 'Timeout (ms)', type: 'number', defaultValue: 10000 },
       { id: 'max_bytes', label: 'Max response bytes', type: 'number', defaultValue: 1048576 }
@@ -1281,6 +1283,28 @@ export const BuiltInNodeDefinitions = [
     ]
   },
   {
+    type: 'action_http_download',
+    category: NodeCategories.NETWORK,
+    label: 'HTTP Download File',
+    color: '#0ea5e9',
+    description: 'Downloads a public file over HTTP or HTTPS as a bounded binary attachment. Connect File to a message or interaction reply Files input.',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'url', label: 'URL', type: 'string', defaultValue: '' },
+      { id: 'user_agent', label: 'User-Agent', type: 'string', defaultValue: '' },
+      { id: 'timeout_ms', label: 'Timeout (ms)', type: 'number', defaultValue: 20000 },
+      { id: 'max_bytes', label: 'Max file bytes', type: 'number', defaultValue: 20971520 }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'file', label: 'File', type: 'object' },
+      { id: 'filename', label: 'File Name', type: 'string' },
+      { id: 'content_type', label: 'Content Type', type: 'string' },
+      { id: 'byte_size', label: 'Bytes', type: 'number' },
+      { id: 'error', label: 'Error', type: 'string' }
+    ]
+  },
+  {
     type: 'action_web_retry',
     category: NodeCategories.NETWORK,
     label: 'HTTP Request (Retry)',
@@ -1291,6 +1315,7 @@ export const BuiltInNodeDefinitions = [
       { id: 'url', label: 'URL', type: 'string', defaultValue: '' },
       { id: 'method', label: 'Method', type: 'string', defaultValue: 'GET' },
       { id: 'headers', label: 'Headers (JSON)', type: 'string', defaultValue: '{}' },
+      { id: 'user_agent', label: 'User-Agent', type: 'string', defaultValue: '' },
       { id: 'body', label: 'Body', type: 'string', defaultValue: '' },
       { id: 'timeout_ms', label: 'Timeout (ms)', type: 'number', defaultValue: 10000 },
       { id: 'max_bytes', label: 'Max response bytes', type: 'number', defaultValue: 1048576 },
