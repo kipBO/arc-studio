@@ -78,7 +78,7 @@ async function resolvePinnedAddress(hostname, timeout) {
   return addresses[0];
 }
 
-export async function performSafeHttpRequest({ url: rawUrl, method: rawMethod = 'GET', headers: rawHeaders = '{}', body = '', timeoutMs = 10000, maxBytes = MAX_RESPONSE_BYTES }) {
+export async function performSafeHttpRequest({ url: rawUrl, method: rawMethod = 'GET', headers: rawHeaders = '{}', userAgent: rawUserAgent = '', body = '', timeoutMs = 10000, maxBytes = MAX_RESPONSE_BYTES }) {
   const textUrl = String(rawUrl ?? '').trim();
   if (!textUrl || textUrl.length > 4096) throw new Error('Enter an HTTP or HTTPS URL under 4,096 characters.');
   let url;
@@ -99,6 +99,16 @@ export async function performSafeHttpRequest({ url: rawUrl, method: rawMethod = 
   const timeout = Math.min(30000, Math.max(1000, Number(timeoutMs) || 10000));
   const pinned = await resolvePinnedAddress(hostname, timeout);
   const headers = parseHeaders(rawHeaders);
+  const userAgent = String(rawUserAgent ?? '').trim();
+  if (userAgent) {
+    if (/[\r\n]/.test(userAgent)) throw new Error('User-Agent contains an invalid line break.');
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'user-agent') delete headers[name];
+    }
+    headers['User-Agent'] = userAgent;
+    const totalHeaderBytes = Object.entries(headers).reduce((total, [name, value]) => total + Buffer.byteLength(name) + Buffer.byteLength(value), 0);
+    if (totalHeaderBytes > MAX_HEADER_BYTES) throw new Error('Combined request headers exceed 16 KiB.');
+  }
   const responseLimit = Math.min(MAX_RESPONSE_BYTES, Math.max(1024, Number(maxBytes) || MAX_RESPONSE_BYTES));
   const transport = url.protocol === 'https:' ? https : http;
   const requestOptions = {
@@ -152,7 +162,7 @@ export async function performSafeHttpRequest({ url: rawUrl, method: rawMethod = 
   });
 }
 //
-export async function downloadSafeHttpFile(rawUrl, { timeoutMs = 20000, maxBytes = MAX_DOWNLOAD_BYTES } = {}) {
+export async function downloadSafeHttpFile(rawUrl, { timeoutMs = 20000, maxBytes = MAX_DOWNLOAD_BYTES, userAgent = '' } = {}) {
   const textUrl = String(rawUrl ?? '').trim();
   if (!textUrl || textUrl.length > 4096) throw new Error('Enter an HTTP or HTTPS attachment URL under 4,096 characters.');
   let url;
@@ -167,12 +177,15 @@ export async function downloadSafeHttpFile(rawUrl, { timeoutMs = 20000, maxBytes
   }
   const timeout = Math.min(30000, Math.max(1000, Number(timeoutMs) || 20000));
   const limit = Math.min(MAX_DOWNLOAD_BYTES, Math.max(1, Number(maxBytes) || MAX_DOWNLOAD_BYTES));
+  const agent = String(userAgent || '').trim().slice(0, 512);
+  if (/[\r\n]/.test(agent)) throw new Error('User-Agent cannot contain line breaks.');
   const pinned = await resolvePinnedAddress(hostname, timeout);
   const transport = url.protocol === 'https:' ? https : http;
 
   return new Promise((resolve, reject) => {
     const request = transport.get(url, {
       timeout,
+      headers: agent ? { 'user-agent': agent } : undefined,
       lookup: (_host, options, callback) => {
         if (options?.all) callback(null, [pinned]);
         else callback(null, pinned.address, pinned.family);
@@ -206,7 +219,19 @@ export async function downloadSafeHttpFile(rawUrl, { timeoutMs = 20000, maxBytes
       response.on('aborted', () => reject(new Error('Attachment download ended before the file was complete.')));
       response.on('end', () => {
         if (!size) return reject(new Error('The attachment URL returned an empty file.'));
-        resolve({ bytes: Buffer.concat(chunks), contentType: String(response.headers['content-type'] || 'application/octet-stream').split(';', 1)[0].slice(0, 127) });
+        const contentDisposition = String(response.headers['content-disposition'] || '');
+        const dispositionName = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)?.[1]
+          || /filename\s*=\s*"?([^";]+)"?/i.exec(contentDisposition)?.[1];
+        let filename = '';
+        if (dispositionName) {
+          try { filename = decodeURIComponent(dispositionName); } catch { filename = dispositionName; }
+        }
+        if (!filename) {
+          const pathPart = url.pathname.split('/').filter(Boolean).at(-1) || 'download.bin';
+          try { filename = decodeURIComponent(pathPart); } catch { filename = pathPart; }
+        }
+        filename = filename.replace(/[\\/\0-\x1f\x7f]/g, '_').trim().slice(0, 100) || 'download.bin';
+        resolve({ bytes: Buffer.concat(chunks), filename, contentType: String(response.headers['content-type'] || 'application/octet-stream').split(';', 1)[0].slice(0, 127) });
       });
     });
     request.setTimeout(timeout, () => request.destroy(new Error(`Attachment download timed out after ${timeout} ms.`)));
