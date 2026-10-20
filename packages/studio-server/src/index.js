@@ -484,7 +484,7 @@ server.listen(serverConfig.port, serverConfig.host, () => {
   console.log(`==============================================================================`);
   console.log(`  ★ ARC Studio:            v${serverConfig.version}`);
   console.log(`  ★ Chezcord:              v${serverConfig.chezcordVersion}`);
-  console.log(`────────────────────────────────────────────────────────────────────────────`);
+  console.log(`──────────────────────────────────────────────────────────────────────────────`);
   console.log(`  ➜ Web Studio:            ${localUrl}`);
   console.log(`  ➜ Setup:                 ${userStore.isSetupCompleted() ? 'Complete' : 'Required'}`);
   console.log(`  ➜ Master Setup Key:      Hidden`);
