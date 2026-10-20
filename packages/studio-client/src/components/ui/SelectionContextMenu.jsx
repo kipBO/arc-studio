@@ -34,6 +34,7 @@ export function SelectionContextMenu() {
 
   useEffect(() => {
     const onContextMenu = (event) => {
+      if (event.altKey) return;
       const text = readSelectedText(event.target);
       if (!text) return;
       event.preventDefault();
