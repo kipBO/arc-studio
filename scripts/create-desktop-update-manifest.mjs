@@ -36,7 +36,7 @@ function walk(directory) {
 walk(releaseDirectory);
 
 const expectedBuilds = new Map([
-  ['universal-apple-darwin', { platform: 'darwin' }],
+  ['universal-apple-darwin', { platform: 'darwin', architecture: 'universal' }],
   ['x86_64-pc-windows-msvc', { platform: 'win32', architecture: 'x64' }],
   ['aarch64-pc-windows-msvc', { platform: 'win32', architecture: 'arm64' }],
   ['x86_64-unknown-linux-gnu', { platform: 'linux', architecture: 'x64' }],
@@ -45,17 +45,19 @@ const expectedBuilds = new Map([
 const buildInfoFiles = files.filter((file) => path.basename(file) === 'arc-build-info.json');
 if (buildInfoFiles.length !== expectedBuilds.size) throw new Error(`Expected ${expectedBuilds.size} platform build metadata files; found ${buildInfoFiles.length}.`);
 const seenTargets = new Set();
+const builds = [];
 for (const file of buildInfoFiles) {
   const info = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (info.schemaVersion !== 1 || info.version !== rootPackage.version || info.channel !== channel || info.updaterEndpoint !== expectedUpdaterEndpoint) {
     throw new Error(`${path.basename(path.dirname(file))}/arc-build-info.json does not match release version/channel (${rootPackage.version} · ${channel}).`);
   }
   const expectedBuild = expectedBuilds.get(info.target);
-  if (!expectedBuild || expectedBuild.platform !== info.platform || (expectedBuild.architecture && expectedBuild.architecture !== info.architecture) || seenTargets.has(info.target)) {
+  if (!expectedBuild || expectedBuild.platform !== info.platform || expectedBuild.architecture !== info.architecture || seenTargets.has(info.target)) {
     throw new Error(`Unexpected, duplicate, or mismatched desktop build metadata: ${info.target} (${info.platform}).`);
   }
   if (!file.includes(info.target)) throw new Error(`Build metadata for ${info.target} was uploaded with the wrong platform artifact.`);
   seenTargets.add(info.target);
+  builds.push({ target: info.target, platform: info.platform, architecture: info.architecture });
 }
 for (const target of expectedBuilds.keys()) if (!seenTargets.has(target)) throw new Error(`Missing platform build metadata for ${target}.`);
 
@@ -110,4 +112,13 @@ const manifest = {
   platforms
 };
 fs.writeFileSync(path.join(releaseDirectory, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+for (const file of buildInfoFiles) fs.rmSync(file);
+const buildInfo = {
+  schemaVersion: 1,
+  version,
+  channel,
+  updaterEndpoint: expectedUpdaterEndpoint,
+  builds: builds.sort((left, right) => left.target.localeCompare(right.target))
+};
+fs.writeFileSync(path.join(releaseDirectory, 'arc-build-info.json'), `${JSON.stringify(buildInfo, null, 2)}\n`);
 console.log(`Created updater manifest for ARC Studio ${version} (${Object.keys(platforms).length} targets).`);
