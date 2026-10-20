@@ -397,6 +397,13 @@ export const NodeDefinitions = {
     ]
   },
 
+  branch_switch: {
+    type: 'branch_switch', category: NodeCategories.LOGIC, label: 'Switch / Case', color: '#8b5cf6', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Compares one value with up to 50 cases and runs the first matching branch, or Default when none match.',
+    inputs: [{ id: 'exec', label: 'Exec', type: PinTypes.EXEC }, { id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: '' }, ...Array.from({ length: 2 }, (_, index) => ({ id: `case_${index + 1}`, label: `Case ${index + 1}`, type: PinTypes.STRING, defaultValue: '' }))],
+    outputs: [...Array.from({ length: 2 }, (_, index) => ({ id: `case_${index + 1}_exec`, label: `Case ${index + 1}`, type: PinTypes.EXEC })), { id: 'default_exec', label: 'Default', type: PinTypes.EXEC }]
+  },
+
   compare_text: {
     type: 'compare_text',
     category: NodeCategories.LOGIC,
@@ -814,13 +821,31 @@ export const NodeDefinitions = {
     outputs: [{ id: 'number', label: 'Number', type: PinTypes.NUMBER }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
   },
   data_check_value: {
-    type: 'data_check_value', category: NodeCategories.VALUES, label: 'Check Value', color: '#06b6d4',
+    type: 'data_check_value', category: NodeCategories.VALUES, label: 'Check Value', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
     description: 'Distinguishes missing, null, empty text, and real values. The Value output uses the fallback unless a real value is present.',
     inputs: [{ id: 'value', label: 'Value', type: PinTypes.ARG, defaultValue: undefined }, { id: 'fallback', label: 'Fallback', type: PinTypes.ARG, defaultValue: '' }],
     outputs: [{ id: 'value', label: 'Value or fallback', type: PinTypes.ARG }, { id: 'state', label: 'State', type: PinTypes.STRING }, { id: 'is_missing', label: 'Missing', type: PinTypes.BOOLEAN }, { id: 'is_null', label: 'Null', type: PinTypes.BOOLEAN }, { id: 'is_empty', label: 'Empty text', type: PinTypes.BOOLEAN }, { id: 'has_value', label: 'Has value', type: PinTypes.BOOLEAN }]
   },
+  data_get_value_by_path: {
+    type: 'data_get_value_by_path', category: NodeCategories.VALUES, label: 'Get Value by Path', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Safely reads a nested object or array path such as user.profile.name or items[0].id. Check Exists when the path may be missing.',
+    inputs: [{ id: 'value', label: 'Object / Array', type: PinTypes.OBJECT, defaultValue: {} }, { id: 'path', label: 'Path', type: PinTypes.STRING, defaultValue: '' }, { id: 'fallback', label: 'Fallback', type: PinTypes.ARG, defaultValue: '' }],
+    outputs: [{ id: 'value', label: 'Value or fallback', type: PinTypes.ARG }, { id: 'exists', label: 'Exists', type: PinTypes.BOOLEAN }]
+  },
+  data_find_array_item: {
+    type: 'data_find_array_item', category: NodeCategories.VALUES, label: 'Find Array Item', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Finds the first item equal to Value. Set Path to compare a nested property, such as id or user.name.',
+    inputs: [{ id: 'array', label: 'Array', type: PinTypes.OBJECT, defaultValue: [] }, { id: 'path', label: 'Property path', type: PinTypes.STRING, defaultValue: '' }, { id: 'value', label: 'Match value', type: PinTypes.ARG, defaultValue: '' }],
+    outputs: [{ id: 'item', label: 'Item', type: PinTypes.ARG }, { id: 'index', label: 'Index', type: PinTypes.NUMBER }, { id: 'found', label: 'Found', type: PinTypes.BOOLEAN }]
+  },
+  data_filter_array: {
+    type: 'data_filter_array', category: NodeCategories.VALUES, label: 'Filter Array', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
+    description: 'Keeps items whose value (or selected property path) matches the chosen comparison.',
+    inputs: [{ id: 'array', label: 'Array', type: PinTypes.OBJECT, defaultValue: [] }, { id: 'path', label: 'Property path', type: PinTypes.STRING, defaultValue: '' }, { id: 'operator', label: 'Comparison', type: PinTypes.STRING, defaultValue: 'equals' }, { id: 'value', label: 'Match value', type: PinTypes.ARG, defaultValue: '' }],
+    outputs: [{ id: 'array', label: 'Filtered items', type: PinTypes.OBJECT }, { id: 'count', label: 'Count', type: PinTypes.NUMBER }]
+  },
   data_format_number: {
-    type: 'data_format_number', category: NodeCategories.VALUES, label: 'Format Number', color: '#06b6d4',
+    type: 'data_format_number', category: NodeCategories.VALUES, label: 'Format Number', color: '#06b6d4', createdAt: '2026-10-20T16:53:56.000Z',
     description: 'Formats a finite number with locale grouping, decimal, percent, or currency style. Percent style scales the number by 100.',
     inputs: [{ id: 'value', label: 'Value', type: PinTypes.NUMBER, defaultValue: 0 }, { id: 'locale', label: 'Locale', type: PinTypes.STRING, defaultValue: 'en-US' }, { id: 'style', label: 'Style', type: PinTypes.STRING, defaultValue: 'decimal' }, { id: 'currency', label: 'Currency', type: PinTypes.STRING, defaultValue: 'USD' }, { id: 'minimum_fraction_digits', label: 'Minimum decimals', type: PinTypes.NUMBER, defaultValue: 0 }, { id: 'maximum_fraction_digits', label: 'Maximum decimals', type: PinTypes.NUMBER, defaultValue: 2 }],
     outputs: [{ id: 'text', label: 'Formatted', type: PinTypes.STRING }, { id: 'valid', label: 'Valid', type: PinTypes.BOOLEAN }]
