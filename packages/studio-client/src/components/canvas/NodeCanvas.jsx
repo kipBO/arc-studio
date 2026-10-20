@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getSwitchCasePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
 import { FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, StepForward, Type } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
@@ -520,6 +520,11 @@ export function NodeCanvas({
     if (node.type === 'data_array_append') return withExecInputPins({ ...definition, inputs: [...definition.inputs.filter((pin) => pin.id === 'array'), ...getArrayAppendPins(node, connections)] });
     if (node.type === 'data_array_concat') return withExecInputPins({ ...definition, inputs: getArrayCombinePins(node, connections) });
     if (node.type === 'math_sum' || node.type === 'math_average') return withExecInputPins({ ...definition, inputs: getMathListPins(node, connections) });
+    if (node.type === 'branch_switch') return withExecInputPins({
+      ...definition,
+      inputs: [...definition.inputs.filter((pin) => !/^case_\d+$/.test(pin.id)), ...getSwitchCasePins(node, connections, 'inputs')],
+      outputs: [...definition.outputs.filter((pin) => !/^case_\d+_exec$/.test(pin.id)), ...getSwitchCasePins(node, connections, 'outputs')]
+    });
     if (node.type === 'logic_xor_many') {
       const highest = connections.reduce((value, wire) => wire.targetNodeId === node.id ? Math.max(value, Number(/^input_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0) : value, 0);
       const count = Math.min(25, Math.max(2, highest + 1));
