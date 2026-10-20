@@ -496,6 +496,38 @@ export class UserStore extends EventEmitter {
     return profile;
   }
 
+  renamePrimaryAdmin(userId, username) {
+    const user = this.users.find((item) => item.id === userId);
+    if (!user || user.isPrimaryAdmin !== true) throw new Error('Only the primary workspace owner can rename this account.');
+
+    const cleanUser = String(username ?? '').trim().toLowerCase();
+    if (cleanUser.length < 2 || cleanUser.length > 32 || /[\u0000-\u001f\u007f]/.test(cleanUser)) {
+      throw new Error('Username must be 2 to 32 characters and cannot contain control characters.');
+    }
+    if (this.users.some((item) => item.id !== user.id && String(item.username || '').toLowerCase() === cleanUser)) {
+      throw new Error(`Username "${cleanUser}" is already in use.`);
+    }
+
+    const lastChangedAt = Date.parse(user.usernameChangedAt || '');
+    const availableAt = Number.isFinite(lastChangedAt) ? lastChangedAt + 10 * 60 * 1000 : 0;
+    if (cleanUser !== String(user.username || '').toLowerCase() && Date.now() < availableAt) {
+      const error = new Error('You can rename the owner account once every 10 minutes.');
+      error.retryAfterMs = availableAt - Date.now();
+      error.availableAt = availableAt;
+      throw error;
+    }
+
+    const changed = cleanUser !== String(user.username || '').toLowerCase();
+    if (changed) {
+      user.username = cleanUser;
+      user.usernameChangedAt = new Date().toISOString();
+      this.saveState();
+    }
+    const { salt: _salt, passwordHash: _passwordHash, activeSessionId: _activeSessionId, activeSessionExpiresAt: _activeSessionExpiresAt, activeSessionRememberMe: _activeSessionRememberMe, ...profile } = user;
+    if (changed) this.emit('usernameUpdated', { user: profile });
+    return { user: profile, changed, availableAt: changed ? Date.parse(user.usernameChangedAt) + 10 * 60 * 1000 : availableAt };
+  }
+
   deleteUser(id) {
     const idx = this.users.findIndex((u) => u.id === id);
     if (idx === -1) throw new Error('User not found');
