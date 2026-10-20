@@ -129,6 +129,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     {activeTab === 'canvas' && <div className="settings-section settings-tab-content">
       <div className="settings-section-heading"><span>Canvas behavior</span></div>
       <Toggle label="Snap to grid" description="Align nodes while dragging" checked={settings.snapToGrid ?? true} onChange={(value) => update('snapToGrid', value)} />
+      <Toggle label="Zoom with mouse wheel" description="Zoom the canvas without holding Ctrl or ⌘" checked={settings.zoomCanvasWithScroll ?? false} onChange={(value) => update('zoomCanvasWithScroll', value)} />
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
       <Toggle label="Execution pulse" description="Animate active connections" checked={settings.wirePulse ?? true} onChange={(value) => update('wirePulse', value)} />
       <Toggle label="Magnetic sockets" description="Assist wire placement near pins" checked={settings.magneticSnap ?? true} onChange={(value) => update('magneticSnap', value)} />
@@ -197,7 +198,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
     {activeTab === 'shortcuts' && desktopMode && <div className="settings-section settings-tab-content settings-shortcuts-content">
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
-      <div className="settings-shortcut-editor">{shortcutActions.map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : shortcuts[key] ? formatShortcut(shortcuts[key], platform) : 'Unassigned'}</button></div>)}</div>
+      <div className="settings-shortcut-editor">{shortcutActions.filter(([key]) => key !== 'arrangeNodes' || localWorkspace).map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : shortcuts[key] ? formatShortcut(shortcuts[key], platform) : 'Unassigned'}</button></div>)}</div>
+      <div className="settings-shortcut-gesture"><strong>Colored sections</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and drag a node to move it between sections. It stays grouped while inside; drag it fully outside to remove it. The section won’t stretch to follow the node.</span></div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>
     </div>}
