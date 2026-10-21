@@ -11,7 +11,12 @@ const desktopRoot = path.resolve(scriptDir, '..');
 const runtimeRoot = path.join(desktopRoot, 'src-tauri/resources/runtime');
 const appRoot = path.join(runtimeRoot, 'app');
 const target = process.env.ARC_DESKTOP_TARGET || process.env.TAURI_ENV_TARGET_TRIPLE || execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim();
-const nodeVersion = process.env.ARC_DESKTOP_NODE_VERSION || process.versions.node;
+const requestedNodeVersion = process.env.ARC_DESKTOP_NODE_VERSION || process.versions.node;
+const nodeVersionMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(requestedNodeVersion);
+if (!nodeVersionMatch || Number(nodeVersionMatch[1]) < 22) {
+  throw new Error(`ARC Studio desktop requires a Node.js 22 or newer runtime. Set ARC_DESKTOP_NODE_VERSION to a supported release. Received ${requestedNodeVersion}.`);
+}
+const nodeVersion = requestedNodeVersion;
 
 const targets = {
   'universal-apple-darwin': { archivePlatforms: ['darwin-x64', 'darwin-arm64'], archiveExt: 'tar.gz', binary: 'bin/node', universal: true },
