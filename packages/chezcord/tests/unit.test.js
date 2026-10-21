@@ -10,6 +10,7 @@ import {
   ButtonBuilder,
   RateLimiter,
   RESTClient,
+  InteractionAlreadyAcknowledgedError,
   InteractionSecurity,
   Client,
   CDN
@@ -106,6 +107,178 @@ describe('Client & RESTClient', () => {
     assert.ok(client.rest instanceof RESTClient);
     assert.equal(client.user, null);
     assert.equal(client.ws, null);
+  });
+
+  test('reconnects without duplicate dispatches and removes shard listeners on destroy', async () => {
+    const OriginalWebSocket = globalThis.WebSocket;
+    const sockets = [];
+    class MockWebSocket {
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) {
+        this.url = url;
+        this.readyState = 0;
+        sockets.push(this);
+      }
+
+      send() {}
+
+      close(code = 1000, reason = '') {
+        this.readyState = MockWebSocket.CLOSED;
+        this.onclose?.({ code, reason });
+      }
+
+      receive(payload) {
+        this.onmessage?.({ data: JSON.stringify(payload) });
+      }
+    }
+
+    globalThis.WebSocket = MockWebSocket;
+    const client = new Client({ token: 'gateway-lifecycle-test' });
+    let rawDispatches = 0;
+    let messages = 0;
+    client.on('gatewayDispatch', () => { rawDispatches += 1; });
+    client.on('messageCreate', () => { messages += 1; });
+
+    try {
+      await client.login();
+      const shard = client.ws;
+      const firstSocket = sockets[0];
+      shard.scheduleReconnect = () => {};
+      firstSocket.close(1006, 'test reconnect');
+      shard.connect();
+
+      const activeSocket = sockets[1];
+      const dispatch = { op: GatewayOpcodes.DISPATCH, s: 1, t: 'MESSAGE_CREATE', d: { id: 'message-1' } };
+      firstSocket.receive(dispatch);
+      activeSocket.receive(dispatch);
+      assert.equal(rawDispatches, 1);
+      assert.equal(messages, 1);
+
+      client.destroy();
+      assert.equal(shard.eventNames().length, 0);
+      activeSocket.receive({ ...dispatch, s: 2, d: { id: 'message-2' } });
+      assert.equal(rawDispatches, 1);
+      assert.equal(messages, 1);
+    } finally {
+      client.destroy();
+      globalThis.WebSocket = OriginalWebSocket;
+    }
+  });
+
+  test('replacing a login disposes the previous Gateway shard', async () => {
+    const OriginalWebSocket = globalThis.WebSocket;
+    const sockets = [];
+    class MockWebSocket {
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url) { this.url = url; this.readyState = 0; sockets.push(this); }
+      send() {}
+      close(code = 1000, reason = '') { this.readyState = MockWebSocket.CLOSED; this.onclose?.({ code, reason }); }
+      receive(payload) { this.onmessage?.({ data: JSON.stringify(payload) }); }
+    }
+
+    globalThis.WebSocket = MockWebSocket;
+    const client = new Client({ token: 'gateway-relogin-test' });
+    let messages = 0;
+    client.on('messageCreate', () => { messages += 1; });
+
+    try {
+      await client.login();
+      const oldShard = client.ws;
+      const oldSocket = sockets[0];
+      await client.login();
+      const activeSocket = sockets[1];
+      assert.notEqual(client.ws, oldShard);
+      assert.equal(oldShard.eventNames().length, 0);
+
+      const dispatch = { op: GatewayOpcodes.DISPATCH, s: 1, t: 'MESSAGE_CREATE', d: { id: 'message-1' } };
+      oldSocket.receive(dispatch);
+      activeSocket.receive(dispatch);
+      assert.equal(messages, 1);
+    } finally {
+      client.destroy();
+      globalThis.WebSocket = OriginalWebSocket;
+    }
+  });
+
+  test('allows only one interaction response attempt, including concurrent calls', async () => {
+    const originalFetch = globalThis.fetch;
+    let releaseFetch;
+    let calls = 0;
+    const fetchGate = new Promise((resolve) => { releaseFetch = resolve; });
+    globalThis.fetch = async () => {
+      calls += 1;
+      await fetchGate;
+      return new Response(null, { status: 204 });
+    };
+
+    const rest = new RESTClient({ apiBase: 'https://discord.ack-test/api/v10' });
+    try {
+      const firstResponse = rest.createInteractionResponse('interaction-1', 'test-token', { type: 4, data: { content: 'first' } });
+      assert.throws(
+        () => rest.deferInteractionReply('interaction-1', 'test-token'),
+        (error) => error instanceof InteractionAlreadyAcknowledgedError && error.code === 'INTERACTION_ALREADY_ACKNOWLEDGED'
+      );
+      releaseFetch();
+      await firstResponse;
+      assert.equal(calls, 1);
+    } finally {
+      releaseFetch();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('does not retry an interaction acknowledgement after a network error', async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      throw new Error('connection lost');
+    };
+
+    const rest = new RESTClient({ apiBase: 'https://discord.ack-network-test/api/v10' });
+    try {
+      await assert.rejects(rest.createInteractionResponse('interaction-2', 'test-token', { type: 4, data: { content: 'once' } }), /connection lost/);
+      assert.throws(
+        () => rest.createInteractionResponse('interaction-2', 'test-token', { type: 4, data: { content: 'retry' } }),
+        InteractionAlreadyAcknowledgedError
+      );
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('returns a rate limit error without retrying an interaction acknowledgement', async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ retry_after: 30 }), {
+        status: 429,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+
+    const rest = new RESTClient({ apiBase: 'https://discord.ack-rate-limit-test/api/v10' });
+    try {
+      await assert.rejects(
+        rest.createInteractionResponse('interaction-3', 'test-token', { type: 4, data: { content: 'once' } }),
+        (error) => error.status === 429
+      );
+      assert.equal(calls, 1);
+      assert.throws(
+        () => rest.createInteractionResponse('interaction-3', 'test-token', { type: 4, data: { content: 'retry' } }),
+        InteractionAlreadyAcknowledgedError
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('uses application emoji routes for app-owned emoji mgmt', async () => {
