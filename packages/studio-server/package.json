@@ -1,6 +1,6 @@
 {
   "name": "arc-studio-server",
-  "version": "2026.1.1-nightly.5",
+  "version": "2026.1.1-nightly.6",
   "description": "ARC Studio Backend Server",
   "type": "module",
   "main": "src/index.js",
@@ -9,7 +9,7 @@
     "start:server": "node scripts/start.mjs --server-only",
     "dev": "node --watch src/index.js",
     "dev:desktop": "node scripts/dev-desktop.mjs",
-    "test": "node --test tests/crypto.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "chezcord": "*",
