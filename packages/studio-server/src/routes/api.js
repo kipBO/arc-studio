@@ -54,16 +54,46 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     if (!embedStores.has(filePath)) embedStores.set(filePath, new EmbedStore(filePath));
     return embedStores.get(filePath);
   };
-  const activityStore = new ActivityStore();
+  const activityStores = new Map();
+  const legacyActivityPath = path.join(dataDir, 'activity.json');
+  const activityStoreForProject = (projectManager = botManager) => {
+    const projectId = String(projectManager?.project?.id || 'default');
+    if (activityStores.has(projectId)) return activityStores.get(projectId);
+    const projectDirectory = projectManager?.projectDir || botManager.projectDir;
+    const filePath = path.join(projectDirectory, 'activity.json');
+    const store = new ActivityStore(filePath);
+    if (!fs.existsSync(filePath)) {
+      try {
+        const legacy = JSON.parse(fs.readFileSync(legacyActivityPath, 'utf8'));
+        const projectName = projectManager?.project?.name || '';
+        const firstProjectId = projectManager?.projectStore?.projects?.[0]?.id;
+        const matchingEntries = (Array.isArray(legacy) ? legacy : []).filter((entry) => {
+          if (entry?.details?.projectId) return entry.details.projectId === projectId;
+          if (entry?.details?.projectName) return entry.details.projectName === projectName;
+          return projectId === firstProjectId;
+        });
+        store.importLegacyEntries(matchingEntries);
+      } catch {}
+    }
+    activityStores.set(projectId, store);
+    return store;
+  };
   const activityWebhookStore = new ActivityWebhookStore();
-  const activityWebhookDispatcher = new ActivityWebhookDispatcher(activityWebhookStore, logger);
+  const activityWebhookDispatcher = new ActivityWebhookDispatcher(activityWebhookStore, (entryId, status, entry) => activityStores.get(entry?.details?.projectId)?.updateWebhookStatus(entryId, status));
   const resetPasswordAttempts = new Map();
   const releaseNotesCache = new Map();
   const recordTeamActivity = (req, action, summary, details) => {
     if (serverConfig.desktopMode || (userStore.listUsers().length < 2 && !activityWebhookStore.isEnabled())) return;
     try {
-      const projectName = managerForUser(req.user)?.project?.name || botManager.project?.name || 'Workspace';
-      const entry = activityStore.record(req.user, action, summary, { ...(details || {}), projectName: details?.projectName || projectName });
+      let projectManager = managerForUser(req.user) || botManager;
+      const requestedProjectId = String(details?.projectId || '');
+      if (requestedProjectId && projectManager?.projectStore?.projects?.some((project) => project.id === requestedProjectId)) {
+        projectManager = managerForUser({ ...req.user, activeProjectId: requestedProjectId }) || projectManager;
+      }
+      const projectId = String(projectManager?.project?.id || 'default');
+      const projectName = projectManager?.project?.name || 'Workspace';
+      const activityStore = activityStoreForProject(projectManager);
+      const entry = activityStore.record(req.user, action, summary, { ...(details || {}), projectId, projectName: details?.projectName || projectName });
       activityWebhookDispatcher.enqueue(entry);
     }
     catch (error) { logger.log('ERROR', `Could not record team activity: ${error.message}`); }
@@ -74,7 +104,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       ...plugin,
       grantedPermissions: PluginStore.projectPermissions(projectManager.projectDir, plugin.id),
       installedBy: showInstaller
-        ? plugin.installedBy || activityStore.entries.find((entry) => ['plugin.installed', 'plugin.imported'].includes(entry.action) && entry.details?.pluginId === plugin.id)?.actor?.username || null
+        ? plugin.installedBy || activityStoreForProject(projectManager).entries.find((entry) => ['plugin.installed', 'plugin.imported'].includes(entry.action) && entry.details?.pluginId === plugin.id)?.actor?.username || null
         : null
     }));
   };
@@ -530,7 +560,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     });
 
   router.get('/activity', requirePermission('graphs:read'), (req, res) => {
-    res.json({ activity: userStore.listUsers().length > 1 ? activityStore.list(req.query.limit) : [] });
+    res.json({ activity: userStore.listUsers().length > 1 ? activityStoreForProject(managerForUser(req.user)).list(req.query.limit) : [] });
     });
   }
 
