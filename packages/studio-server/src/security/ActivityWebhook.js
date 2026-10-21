@@ -27,7 +27,7 @@ function parseWebhookUrl(value) {
 }
 
 function cleanText(value, limit = 256) {
-  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/https?:\/\/\S+/gi, '[link]').trim().slice(0, limit) || 'Unknown';
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/https?:\/\/\S+/gi, '[link]').replace(/[—;]/g, ',').trim().slice(0, limit) || 'Unknown';
 }
 
 function embedForActivity(entry) {
@@ -148,9 +148,9 @@ export class ActivityWebhookStore {
 }
 
 export class ActivityWebhookDispatcher {
-  constructor(store, logger = null) {
+  constructor(store, onStatusChange = () => {}) {
     this.store = store;
-    this.logger = logger;
+    this.onStatusChange = onStatusChange;
     this.queue = [];
     this.timer = null;
     this.sending = false;
@@ -160,10 +160,12 @@ export class ActivityWebhookDispatcher {
   enqueue(entry) {
     if (!this.store.isEnabled()) return false;
     if (this.queue.length >= MAX_QUEUE_SIZE) {
-      this.queue.shift();
-      this.#warn('Activity webhook queue is full. The oldest pending notification was dropped.');
+      const droppedIndex = this.sending ? 1 : 0;
+      const [dropped] = this.queue.splice(droppedIndex, 1);
+      this.#setStatus(dropped?.entry, 'failed');
     }
     this.queue.push({ entry, failures: 0 });
+    this.#setStatus(entry, 'in_progress');
     this.#schedule(0);
     return true;
   }
@@ -172,7 +174,10 @@ export class ActivityWebhookDispatcher {
     if (!this.store.isEnabled()) {
       clearTimeout(this.timer);
       this.timer = null;
-      if (!this.sending) this.queue.length = 0;
+      if (!this.sending) {
+        for (const pending of this.queue) this.#setStatus(pending.entry, 'failed');
+        this.queue.length = 0;
+      }
       return;
     }
     this.#schedule(0);
@@ -220,30 +225,31 @@ export class ActivityWebhookDispatcher {
         );
         nextDelay = Math.ceil(retryAfter * 1000);
         this.nextSendAt = Math.max(this.nextSendAt, Date.now() + nextDelay);
-        this.#warn('Discord rate limited an activity webhook. Delivery is paused until its retry window expires.');
       } else if (response.ok) {
         this.queue.shift();
+        this.#setStatus(pending.entry, 'success');
         this.nextSendAt = Date.now() + MIN_SEND_INTERVAL_MS;
       } else if (response.status >= 500 && pending.failures < 2) {
         pending.failures += 1;
         nextDelay = 3000 * pending.failures;
-        this.#warn(`Discord activity webhook returned HTTP ${response.status}. Retrying shortly.`);
       } else {
         this.queue.shift();
-        this.#warn(`Discord activity webhook returned HTTP ${response.status}. This notification was dropped.`);
+        this.#setStatus(pending.entry, 'failed');
       }
     } catch {
       if (pending.failures < 2) {
         pending.failures += 1;
         nextDelay = 3000 * pending.failures;
-        this.#warn('Discord activity webhook could not be reached. Retrying shortly.');
       } else {
         this.queue.shift();
-        this.#warn('Discord activity webhook could not be reached. This notification was dropped.');
+        this.#setStatus(pending.entry, 'failed');
       }
     } finally {
       this.sending = false;
-      if (!this.store.isEnabled()) this.queue.length = 0;
+      if (!this.store.isEnabled()) {
+        for (const queued of this.queue) this.#setStatus(queued.entry, 'failed');
+        this.queue.length = 0;
+      }
       else this.#schedule(nextDelay);
     }
   }
@@ -252,8 +258,8 @@ export class ActivityWebhookDispatcher {
     return this.store.getDeliveryUrl();
   }
 
-  #warn(message) {
-    try { this.logger?.log?.('WARN', message); } catch {}
+  #setStatus(entry, status) {
+    try { this.onStatusChange(entry?.id, status, entry); } catch {}
   }
 }
 
