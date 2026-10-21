@@ -387,6 +387,7 @@ export function NodeCanvas({
   const pendingPointerMoveRef = useRef(null);
   const pointerMoveHandlerRef = useRef(null);
   const canvasInteractionActiveRef = useRef(false);
+  const pinDoubleClickRef = useRef(null);
   const frameTimingRef = useRef({ last: 0, samples: 0, slow: 0, fast: 0 });
   const [performanceReduced, setPerformanceReduced] = useState(() => {
     if (typeof navigator === 'undefined') return false;
@@ -394,6 +395,10 @@ export function NodeCanvas({
     const fewCores = Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4;
     return lowMemory || fewCores;
   });
+  const canvasQualityMode = ['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto';
+  const canvasQualityModeRef = useRef(canvasQualityMode);
+  canvasQualityModeRef.current = canvasQualityMode;
+  const effectiveCanvasQuality = canvasQualityMode === 'auto' ? (performanceReduced ? 'fast' : 'quality') : canvasQualityMode;
   const performanceReducedRef = useRef(performanceReduced);
   performanceReducedRef.current = performanceReduced;
   canvasRenderVersionRef.current += 1;
@@ -1698,17 +1703,23 @@ export function NodeCanvas({
         else if (interval <= 18) { timing.fast += 1; timing.slow = Math.max(0, timing.slow - 1); }
         else { timing.fast = 0; }
 
-        if (!performanceReducedRef.current && timing.samples >= 30) {
-          if (timing.slow >= 8) setPerformanceReduced(true);
+        if (canvasQualityModeRef.current === 'auto') {
+          if (!performanceReducedRef.current && timing.samples >= 30) {
+            if (timing.slow >= 8) setPerformanceReduced(true);
+            timing.samples = 0;
+            timing.slow = 0;
+          } else if (performanceReducedRef.current && timing.fast >= 180) {
+            setPerformanceReduced(false);
+            timing.samples = 0;
+            timing.fast = 0;
+          } else if (timing.samples >= 60) {
+            timing.samples = 0;
+            timing.slow = 0;
+          }
+        } else {
           timing.samples = 0;
           timing.slow = 0;
-        } else if (performanceReducedRef.current && timing.fast >= 180) {
-          setPerformanceReduced(false);
-          timing.samples = 0;
           timing.fast = 0;
-        } else if (timing.samples >= 60) {
-          timing.samples = 0;
-          timing.slow = 0;
         }
       }
       timing.last = document.visibilityState === 'hidden' ? 0 : timestamp;
@@ -1951,6 +1962,32 @@ export function NodeCanvas({
     if (connection) startWireFromConnection(event, connection, 'output', true);
   };
 
+  const handlePinPointerDownCapture = (event) => {
+    const row = event.target instanceof Element ? event.target.closest('.node-pin-row') : null;
+    if (event.button !== 0 || event.pointerType === 'touch' || !row || !containerRef.current?.contains(row)) {
+      pinDoubleClickRef.current = null;
+      return;
+    }
+
+    const { nodeId, pinId, direction } = row.dataset;
+    const now = performance.now();
+    const previous = pinDoubleClickRef.current;
+    const isDoubleClick = previous?.nodeId === nodeId && previous.pinId === pinId && previous.direction === direction
+      && now - previous.at <= 650 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 10;
+    pinDoubleClickRef.current = isDoubleClick ? null : { nodeId, pinId, direction, at: now, x: event.clientX, y: event.clientY };
+    if (!isDoubleClick || isLocked) return;
+
+    const hasConnection = direction === 'input'
+      ? connections.some((connection) => connection.targetNodeId === nodeId && connection.targetPinId === pinId)
+      : connections.some((connection) => connection.sourceNodeId === nodeId && connection.sourcePinId === pinId);
+    if (!hasConnection) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (direction === 'input') startWireFromInput(event, nodeId, pinId);
+    else startWireFromOutput(event, nodeId, pinId);
+  };
+
   const cutWire = (event, connection) => {
     if (isLocked) return;
     const existingTimer = wireCutTimersRef.current.get(connection.id);
@@ -2163,19 +2200,22 @@ export function NodeCanvas({
     previousConnectedInputIdsRef.current = byNode;
     return byNode;
   }, [connections]);
-  const { baseConnections, selectedConnections, primarySelectedConnections } = useMemo(() => {
-    if (!selectedNodeIds.length) return { baseConnections: connections, selectedConnections: [], primarySelectedConnections: [] };
+  const { baseConnections, elevatedConnections, relatedNodeIds } = useMemo(() => {
+    if (!selectedNodeIds.length) return { baseConnections: connections, elevatedConnections: [], relatedNodeIds: new Set() };
     const selectedIds = new Set(selectedNodeIds);
+    const relatedIds = new Set(selectedNodeIds);
     const base = [];
-    const primary = [];
+    const elevated = [];
     for (const connection of connections) {
-      if (selectedIds.has(connection.sourceNodeId)) {
-        primary.push(connection);
+      if (selectedIds.has(connection.sourceNodeId) || selectedIds.has(connection.targetNodeId)) {
+        elevated.push(connection);
+        relatedIds.add(connection.sourceNodeId);
+        relatedIds.add(connection.targetNodeId);
       } else {
         base.push(connection);
       }
     }
-    return { baseConnections: base, selectedConnections: [], primarySelectedConnections: primary };
+    return { baseConnections: base, elevatedConnections: elevated, relatedNodeIds: relatedIds };
   }, [connections, selectedNodeIds]);
 const previewOutput = (node, outputId, seen = new Set()) => {
   if (!node || seen.has(node.id) || seen.size > 24) return undefined;
@@ -2408,10 +2448,6 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     onDelete: (id) => canvasNodeActionsRef.current.deleteNode?.(id),
     onNodeDataChange: (id, data, label) => canvasNodeActionsRef.current.updateNodeData?.(id, data, label),
     onPinStartConnect: (...args) => canvasNodeActionsRef.current.startWire?.(...args),
-    onPinDoubleClick: (event, nodeId, pinId, direction) => {
-      if (direction === 'input') canvasNodeActionsRef.current.startWireFromInput?.(event, nodeId, pinId);
-      else canvasNodeActionsRef.current.startWireFromOutput?.(event, nodeId, pinId);
-    },
     onOpenVariables: (...args) => canvasNodeActionsRef.current.onOpenVariables?.(...args),
     onOpenEmbedStudio: (...args) => canvasNodeActionsRef.current.onOpenEmbedStudio?.(...args),
     onOpenTextStudio: (...args) => canvasNodeActionsRef.current.onOpenTextStudio?.(...args),
@@ -2518,8 +2554,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     return next;
   }, [connections, getSocketPosition, pan, zoom, wireStyle, wireViewportWidth, wireViewportHeight]);
   const visibleBaseConnections = useMemo(() => visibleWireIds ? baseConnections.filter((wire) => visibleWireIds.has(wire.id)) : baseConnections, [baseConnections, visibleWireIds]);
-  const visibleSelectedConnections = useMemo(() => visibleWireIds ? selectedConnections.filter((wire) => visibleWireIds.has(wire.id)) : selectedConnections, [selectedConnections, visibleWireIds]);
-  const visiblePrimarySelectedConnections = useMemo(() => visibleWireIds ? primarySelectedConnections.filter((wire) => visibleWireIds.has(wire.id)) : primarySelectedConnections, [primarySelectedConnections, visibleWireIds]);
+  const visibleElevatedConnections = useMemo(() => visibleWireIds ? elevatedConnections.filter((wire) => visibleWireIds.has(wire.id)) : elevatedConnections, [elevatedConnections, visibleWireIds]);
   const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
   const sidebar = containerRef.current?.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
   if (sidebar && canvasBounds) {
@@ -2587,7 +2622,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       ref={containerRef}
       className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
+      data-canvas-quality={effectiveCanvasQuality}
       data-pin-descriptions={settings.pinDescriptionsAlways || shiftHeld ? 'true' : undefined}
+      onPointerDownCapture={handlePinPointerDownCapture}
       onPointerDown={startPan}
       onPointerMove={queuePointerMove}
       onClick={(event) => {
@@ -2665,13 +2702,13 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const rect = peer.action.selectionRect;
           return <div key={`remote-selection-box-${peer.userId}`} className="canvas-remote-selection-box" style={{ left: rect.left, top: rect.top, width: rect.right - rect.left, height: rect.bottom - rect.top, '--collaborator-color': peer.color }}><span>{peer.username}</span></div>;
         })}
-        {/* base wires layer: under all nodes (z-index 1) */}
         <svg className="wire-layer wire-layer-base" width="20000" height="20000" aria-label="Graph connections">
           {visibleBaseConnections.map((connection) => renderWire(connection, false))}
         </svg>
 
         {renderedCanvasNodes.map((node) => {
           const isSelected = selectedNodeIdSet.has(node.id);
+          const isWireRelated = relatedNodeIds.has(node.id) && !isSelected;
           const definition = nodeDefinitionsById.get(node.id);
           const templatePreviewValues = templatePreviewValuesByNode.get(node.id) || EMPTY_TEMPLATE_PREVIEW_VALUES;
           const remoteVisual = remoteNodeVisualStateById.get(node.id) || EMPTY_REMOTE_NODE_STATE;
@@ -2684,7 +2721,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
             <div
               className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
               key={node.id}
-              style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
+              style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
               onPointerDown={(event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
@@ -2707,10 +2744,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           );
         })}
 
-        {/* selected wires layer: above other nodes (z-index: 13), below selected nodes (z-index: 14) */}
-        <svg className="wire-layer wire-layer-selected" width="20000" height="20000" aria-label="Selected connections">
-          {visibleSelectedConnections.map((connection) => renderWire(connection, true))}
-          {visiblePrimarySelectedConnections.map((connection) => renderWire(connection, true, true))}
+        <svg className="wire-layer wire-layer-selected" width="20000" height="20000" aria-label="Elevated connections">
+          {visibleElevatedConnections.map((connection) => renderWire(connection, true, true))}
           {wireCutAnimations.flatMap((animation) => animation.segments.map((segment, index) => <path key={`${animation.id}-${index}`} d={segment.d} className="wire-cut-segment" style={{ '--wire-color': animation.color, '--wire-cut-length': `${segment.length}px` }} />))}
           {connectingWire && <path
             d={connectingWire.direction === 'output'
