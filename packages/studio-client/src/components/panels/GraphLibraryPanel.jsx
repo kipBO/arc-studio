@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
@@ -8,6 +8,7 @@ import { BuiltInNodeDefinitions, createDefaultNodeData, getVisibleNewNodeDefinit
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
+import { createSearchIndex } from '../palette/nodeSearch.js';
 
 const EXPANSION_STORAGE_KEY = 'arc_library_expansion_by_project';
 const DEFAULT_EXPANDED_GRAPH_GROUPS = { 'Slash Commands': true, Messages: true, Components: true, 'Member Events': true, Functions: true, Other: true };
@@ -64,17 +65,29 @@ export function GraphLibraryPanel({
   const contextMenuRef = useRef(null);
   const importGraphInputRef = useRef(null);
   const pointerDragRef = useRef(null);
-  const filteredGraphs = graphs.filter((graph) => (graph.name || 'Untitled graph').toLowerCase().includes(query.trim().toLowerCase()));
-  const filteredTemplates = templates.filter((graph) => (graph.name || 'Untitled template').toLowerCase().includes(query.trim().toLowerCase()));
+  const graphSearchIndex = useMemo(() => createSearchIndex(graphs, (graph) => [graph.name, graph.graphType, graph.id]), [graphs]);
+  const templateSearchIndex = useMemo(() => createSearchIndex(templates, (graph) => [graph.name, graph.graphType, graph.id]), [templates]);
+  const nodeSearchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !node.hidden), (node) => [
+    node.label, node.description, node.category, node.type.replaceAll('_', ' '), node.pluginName, node.pluginId,
+    ...(node.inputs || []).map((pin) => pin.label), ...(node.outputs || []).map((pin) => pin.label)
+  ]), [definitions]);
+  const prefabSearchIndex = useMemo(() => createSearchIndex(nodePrefabs, (prefab) => [prefab.name, prefab.node?.label, prefab.node?.type?.replaceAll('_', ' ')]), [nodePrefabs]);
+  const embedSearchIndex = useMemo(() => createSearchIndex(embedAssets, (asset) => [asset.name, asset.description]), [embedAssets]);
+  const variableSearchIndex = useMemo(() => createSearchIndex(graphVariables, (variable) => [variable.name, variable.type]), [graphVariables]);
+  const search = (index, source) => query.trim() ? index.search(query, Number.MAX_SAFE_INTEGER).map(({ item }) => item) : source;
+  const filteredGraphs = search(graphSearchIndex, graphs);
+  const filteredTemplates = search(templateSearchIndex, templates);
   const graphGroups = groupGraphs(filteredGraphs);
   const graphLastSeen = new Map(graphActivity.map((entry) => [entry.graphId, entry]));
-  const nodeGroups = groupNodes(definitions.filter((node) => !node.hidden).filter((node) => `${node.label} ${node.description} ${node.category}`.toLowerCase().includes(query.trim().toLowerCase())));
-  const compatiblePrefabs = nodePrefabs.filter((prefab) => definitions.some((definition) => definition.type === prefab.node?.type));
-  const filteredPrefabs = compatiblePrefabs.filter((prefab) => (prefab.name || '').toLowerCase().includes(query.trim().toLowerCase()));
-  const filteredEmbeds = embedAssets.filter((asset) => (asset.name || '').toLowerCase().includes(query.trim().toLowerCase()));
-  const filteredVariables = graphVariables.filter((variable) => `${variable.name || ''} ${variable.type || ''}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const searchNodes = search(nodeSearchIndex, definitions.filter((node) => !node.hidden));
+  const nodeGroups = groupNodes(searchNodes);
+  const compatibleTypes = useMemo(() => new Set(definitions.map((definition) => definition.type)), [definitions]);
+  const compatiblePrefabs = nodePrefabs.filter((prefab) => compatibleTypes.has(prefab.node?.type));
+  const filteredPrefabs = search(prefabSearchIndex, compatiblePrefabs).filter((prefab) => compatibleTypes.has(prefab.node?.type));
+  const filteredEmbeds = search(embedSearchIndex, embedAssets);
+  const filteredVariables = search(variableSearchIndex, graphVariables);
   const activeSnapshots = snapshots.filter((snapshot) => snapshot.graphId === activeGraph?.id);
-  const frequentNodes = rankByUsage(definitions.filter((node) => !node.hidden && matchesLibraryQuery(`${node.label} ${node.description} ${node.category}`, query)), usage.nodes, (node) => node.type, 5);
+  const frequentNodes = rankByUsage(searchNodes, usage.nodes, (node) => node.type, 5);
   const frequentGraphs = graphs.length >= 10 ? rankByUsage(filteredGraphs, usage.graphs, (graph) => graph.id, 3) : [];
   const frequentEmbeds = embedAssets.length >= 10 ? rankByUsage(filteredEmbeds, usage.embeds, (asset) => asset.id, 3) : [];
   const allGraphGroupNames = groupGraphs(graphs).map(([name]) => name);
@@ -476,10 +489,6 @@ function rankByUsage(items, usage, getId, limit) {
       return Number(rightUsage.count || 0) - Number(leftUsage.count || 0) || Number(rightUsage.usedAt || 0) - Number(leftUsage.usedAt || 0);
     })
     .slice(0, limit);
-}
-
-function matchesLibraryQuery(value, query) {
-  return String(value || '').toLowerCase().includes(query.trim().toLowerCase());
 }
 
 function clearLibraryDragPayload() {
