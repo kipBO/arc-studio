@@ -384,25 +384,21 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .node-canvas.is-panning { cursor: grabbing; }
 .node-canvas.is-dragging-node { cursor: grabbing; }
 .node-canvas.is-connecting-wire, .node-canvas.is-connecting-wire * { cursor: grabbing !important; }
-.node-canvas[data-performance="reduced"] .canvas-surface::after { display: none; }
-.node-canvas[data-performance="reduced"] .canvas-tag-group,
-.node-canvas[data-performance="reduced"] .canvas-selection-box,
-.node-canvas[data-performance="reduced"] .canvas-remote-selection-box,
-.node-canvas[data-performance="reduced"] .canvas-note-card,
-.node-canvas[data-performance="reduced"] .node-position > .canvas-node,
-.node-canvas[data-performance="reduced"] .canvas-collaborator-cursor,
-.node-canvas[data-performance="reduced"] .canvas-collaborator-offscreen > i { box-shadow: none; filter: none; }
-.node-canvas[data-performance="reduced"] .wire-visible,
-.node-canvas[data-performance="reduced"] .wire-connected-selected,
-.node-canvas[data-performance="reduced"] .wire-group.is-primary-selection .wire-visible { filter: none; }
-.node-canvas[data-performance="reduced"] .wire-visible-active,
-.node-canvas[data-performance="reduced"] .wire-cut-segment,
-.node-canvas[data-performance="reduced"] .collaboration-wire-preview path,
-.node-canvas[data-performance="reduced"] .node-position.is-shaking { animation: none; }
-.node-canvas[data-performance="reduced"] .canvas-world *,
-.node-canvas[data-performance="reduced"] .canvas-tag-group,
-.node-canvas[data-performance="reduced"] .canvas-remote-selection-box { transition: none !important; }
-.node-canvas[data-performance="reduced"] .canvas-note-timeline { backdrop-filter: none; }
+.node-canvas[data-canvas-quality="optimal"] .canvas-tag-group,
+.node-canvas[data-canvas-quality="fast"] .canvas-tag-group,
+.node-canvas[data-canvas-quality="fast"] .canvas-selection-box,
+.node-canvas[data-canvas-quality="fast"] .canvas-note-card:not(.is-collaborator-active):not(.is-collaborator-selected):not(.is-locked) { box-shadow: none; }
+.node-canvas[data-canvas-quality="optimal"] .canvas-surface::after { opacity: .55; }
+.node-canvas[data-canvas-quality="fast"] .canvas-surface::after { display: none; }
+.node-canvas[data-canvas-quality="optimal"] .canvas-note-timeline,
+.node-canvas[data-canvas-quality="fast"] .canvas-note-timeline { backdrop-filter: none; }
+.node-canvas[data-canvas-quality="optimal"] .wire-group .wire-visible,
+.node-canvas[data-canvas-quality="fast"] .wire-group .wire-visible { filter: none; }
+.node-canvas[data-canvas-quality="optimal"] .node-position:not(.is-selected):not(.is-collaborator-active):not(.is-collaborator-selected) > .canvas-node { box-shadow: 0 4px 14px rgba(0, 0, 0, .14); }
+.node-canvas[data-canvas-quality="fast"] .node-position:not(.is-selected):not(.is-collaborator-active):not(.is-collaborator-selected) > .canvas-node { box-shadow: none; filter: none; }
+.node-canvas[data-canvas-quality="fast"] .wire-visible-active,
+.node-canvas[data-canvas-quality="fast"] .wire-cut-segment,
+.node-canvas[data-canvas-quality="fast"] .node-position.is-shaking { animation: none; }
 .canvas-surface { position: absolute; inset: 0; background-color: var(--canvas); background-image: radial-gradient(circle, color-mix(in srgb, var(--muted) 31%, transparent) 1px, transparent 1.1px); background-position: var(--grid-x) var(--grid-y); background-size: var(--grid-size) var(--grid-size); }
 .canvas-surface.is-grid-hidden { background-image: none; }
 .canvas-surface::after { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 48%, transparent 22%, color-mix(in srgb, var(--canvas) 40%, transparent) 100%); content: ""; pointer-events: none; }
@@ -463,7 +459,7 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .canvas-tag-group-members span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .canvas-tag-group-members small { color: var(--muted); }
 .wire-layer { position: absolute; z-index: 1; inset: 0; overflow: visible; pointer-events: none; }
-.wire-layer.wire-layer-selected { z-index: 13; }
+.wire-layer.wire-layer-selected { z-index: 15; }
 .wire-group { pointer-events: none; }
 .wire-hit-area { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
 .wire-visible { fill: none; stroke: var(--wire-color); stroke-width: 1.9; stroke-opacity: var(--wire-opacity, .78); pointer-events: none; filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--wire-color) 12%, transparent)); transition: stroke-width .2s ease, stroke-opacity .2s ease; }
@@ -478,8 +474,8 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .wire-group.is-primary-selection .wire-visible { stroke-width: 2.8; stroke-opacity: 1; filter: drop-shadow(0 0 3px color-mix(in srgb, var(--wire-color) 48%, transparent)); }
 .wire-preview { fill: none; stroke: var(--wire-color); stroke-width: 2; stroke-dasharray: 5 5; opacity: .85; pointer-events: none; }
 @keyframes wireTravel { to { stroke-dashoffset: -28; } }
-.node-position { position: absolute; inset: 0 auto auto 0; }
-.node-position.is-selected { z-index: 14; }
+.node-position { position: absolute; z-index: 2; inset: 0 auto auto 0; }
+.node-position.is-selected { z-index: 16; }
 .node-position:has(> .canvas-node:hover) { z-index: 3; }
 .node-position:has(.node-pin-row:hover) { z-index: 13; }
 .node-position:has(.arc-dropdown.is-open) { z-index: 30; }
@@ -2508,7 +2504,6 @@ a.embed-preview-title:hover { text-decoration: underline; }
 .canvas-context-label .canvas-collaborators { max-width: min(320px, 34vw); overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; pointer-events: auto; }
 .canvas-context-label .collaboration-connection { display: inline-flex; align-items: center; gap: 5px; color: var(--warning); white-space: nowrap; }
 .canvas-context-label .collaboration-connection.is-flaky { color: var(--warning); }
-.canvas-context-label .workspace-compatibility-status { color: var(--warning); white-space: nowrap; }
 .collaboration-connection-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: statusPulse 1.2s ease infinite; }
 .canvas-chat-bubble-layer { position: absolute; z-index: 40; inset: 0; overflow: visible; pointer-events: none; }
 .canvas-chat-bubble { position: absolute; display: grid; gap: 4px; width: max-content; max-width: min(280px, 42vw); padding: 8px 10px; transform: translate(12px, calc(-100% - 14px)); border: 1px solid color-mix(in srgb, var(--collaborator-color) 48%, var(--line)); border-radius: 9px 9px 9px 3px; color: var(--text); background: color-mix(in srgb, var(--panel-raised) 95%, var(--collaborator-color) 5%); box-shadow: 0 8px 28px rgba(0, 0, 0, .32), 0 0 0 1px color-mix(in srgb, var(--collaborator-color) 12%, transparent); opacity: var(--chat-start-opacity, 1); animation: canvas-chat-bubble-fade var(--chat-fade-duration, 22s) linear var(--chat-fade-delay, 0ms) forwards; pointer-events: auto; touch-action: none; user-select: none; }
