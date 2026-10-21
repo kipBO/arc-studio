@@ -10,7 +10,7 @@ function safeHttpUrl(value) {
 }
 
 function renderInline(source, keyPrefix) {
-  const tokenPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|`([^`\n]+)`|\*([^*\n]+)\*/g;
+  const tokenPattern = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+)\*\*|__([^_\n]+)__|~~([^~\n]+)~~|`([^`\n]+)`|\*([^*\n]+)\*|(https?:\/\/[^\s<>()]+)/g;
   const result = [];
   let cursor = 0;
   let match;
@@ -25,7 +25,15 @@ function renderInline(source, keyPrefix) {
     else if (match[4] !== undefined) result.push(<u key={key}>{match[4]}</u>);
     else if (match[5] !== undefined) result.push(<s key={key}>{match[5]}</s>);
     else if (match[6] !== undefined) result.push(<code key={key}>{match[6]}</code>);
-    else result.push(<em key={key}>{match[7]}</em>);
+    else if (match[7] !== undefined) result.push(<em key={key}>{match[7]}</em>);
+    else {
+      const bareUrl = match[8];
+      const trailingPunctuation = /[.,!?;:]+$/.exec(bareUrl)?.[0] || '';
+      const linkText = trailingPunctuation ? bareUrl.slice(0, -trailingPunctuation.length) : bareUrl;
+      const href = safeHttpUrl(linkText);
+      result.push(href ? <a key={key} href={href} target="_blank" rel="noreferrer">{linkText}</a> : bareUrl);
+      if (trailingPunctuation) result.push(trailingPunctuation);
+    }
     cursor = tokenPattern.lastIndex;
   }
 
