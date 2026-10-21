@@ -1310,7 +1310,8 @@ fn start_studio_server<R: tauri::Runtime>(
     let server_error_log = server_log.try_clone()?;
     let bot_token_key = bot_token_encryption_key()
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
-    let mut server_command = Command::new(node_path)
+    let mut server_command = Command::new(node_path);
+    server_command
         .arg(entry_path)
         .current_dir(&app_root)
         .env("ARC_DESKTOP_MODE", "1")
