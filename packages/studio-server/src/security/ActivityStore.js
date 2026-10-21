@@ -17,6 +17,16 @@ export class ActivityStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
       this.entries = Array.isArray(parsed) ? parsed.slice(0, MAX_ENTRIES) : [];
+      let changed = false;
+      for (const entry of this.entries) {
+        if (entry?.webhookDelivery === 'in_progress') {
+          entry.webhookDelivery = 'failed';
+          changed = true;
+        }
+      }
+      if (changed) {
+        try { this.persist(); } catch {}
+      }
     } catch {
       this.entries = [];
     }
@@ -35,6 +45,24 @@ export class ActivityStore {
     this.entries.length = Math.min(this.entries.length, MAX_ENTRIES);
     this.persist();
     return entry;
+  }
+
+  updateWebhookStatus(entryId, status) {
+    if (!['in_progress', 'success', 'failed'].includes(status)) return false;
+    const entry = this.entries.find((item) => item.id === entryId);
+    if (!entry) return false;
+    entry.webhookDelivery = status;
+    this.persist();
+    return true;
+  }
+
+  importLegacyEntries(entries) {
+    if (this.entries.length || !Array.isArray(entries)) return false;
+    this.entries = entries.slice(0, MAX_ENTRIES).map((entry) => entry?.webhookDelivery === 'in_progress'
+      ? { ...entry, webhookDelivery: 'failed' }
+      : entry);
+    if (this.entries.length) this.persist();
+    return this.entries.length > 0;
   }
 
   list(limit = 100) {
