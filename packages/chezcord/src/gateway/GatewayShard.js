@@ -56,7 +56,7 @@ export class GatewayShard extends EventEmitter {
   }
 
   connect() {
-    if (this.destroyed) return;
+    if (this.destroyed || this.ws) return;
     this.status = ShardStatus.CONNECTING;
     this.emit('status', this.status);
     this.emitDiagnostics();
@@ -67,21 +67,25 @@ export class GatewayShard extends EventEmitter {
 
     this.emit('debug', `[Shard ${this.shardId}] Connecting to ${gatewayUrl}`);
 
+    let socket;
     try {
-      this.ws = new globalThis.WebSocket(gatewayUrl);
+      socket = new globalThis.WebSocket(gatewayUrl);
+      this.ws = socket;
     } catch (err) {
       this.emit('error', err);
       this.scheduleReconnect();
       return;
     }
 
-    this.ws.onopen = () => {
+    socket.onopen = () => {
+      if (this.destroyed || this.ws !== socket) return;
       this.status = ShardStatus.HANDSHAKING;
       this.emit('status', this.status);
       this.emit('debug', `[Shard ${this.shardId}] WebSocket connection established`);
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.destroyed || this.ws !== socket) return;
       try {
         const payload = JSON.parse(event.data);
         this.handleMessage(payload);
@@ -90,11 +94,18 @@ export class GatewayShard extends EventEmitter {
       }
     };
 
-    this.ws.onerror = (event) => {
+    socket.onerror = () => {
+      if (this.destroyed || this.ws !== socket) return;
       this.emit('debug', `[Shard ${this.shardId}] WebSocket error`);
     };
 
-    this.ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (this.destroyed || this.ws !== socket) return;
+      this.ws = null;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
       this.handleClose(event.code, event.reason);
     };
   }
@@ -103,6 +114,7 @@ export class GatewayShard extends EventEmitter {
    * @param {object} payload
    */
   handleMessage(payload) {
+    if (this.destroyed) return;
     const { op, d, s, t } = payload;
 
     if (s !== null && s !== undefined) {
@@ -181,6 +193,7 @@ export class GatewayShard extends EventEmitter {
    * @param {any} data
    */
   handleDispatch(eventName, data) {
+    if (this.destroyed) return;
     this.emit('dispatch', eventName, data);
     if (eventName === 'READY') {
       this.sessionId = data.session_id;
@@ -296,7 +309,12 @@ export class GatewayShard extends EventEmitter {
   }
 
   handleClose(code, reason) {
+    if (this.destroyed) return;
     this.stopHeartbeat();
+    clearTimeout(this.heartbeatStartTimer);
+    clearTimeout(this.invalidSessionTimer);
+    this.heartbeatStartTimer = null;
+    this.invalidSessionTimer = null;
     this.status = ShardStatus.DISCONNECTED;
     this.emit('status', this.status);
     this.lastCloseCode = Number.isFinite(Number(code)) ? Number(code) : null;
@@ -362,6 +380,7 @@ export class GatewayShard extends EventEmitter {
   }
 //
   destroy() {
+    if (this.destroyed) return;
     this.destroyed = true;
     clearTimeout(this.heartbeatStartTimer);
     clearTimeout(this.invalidSessionTimer);
@@ -370,13 +389,23 @@ export class GatewayShard extends EventEmitter {
     this.invalidSessionTimer = null;
     this.reconnectTimer = null;
     this.stopHeartbeat();
-    if (this.ws) {
+    const socket = this.ws;
+    this.ws = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
       try {
-        this.ws.close(1000);
+        socket.close(1000);
       } catch {}
-      this.ws = null;
     }
+    const wasDisconnected = this.status === ShardStatus.DISCONNECTED;
     this.status = ShardStatus.DISCONNECTED;
-    this.emit('status', this.status);
+    try {
+      if (!wasDisconnected) this.emit('status', this.status);
+    } finally {
+      this.removeAllListeners();
+    }
   }
 }
