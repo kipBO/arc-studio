@@ -71,6 +71,7 @@ const LEGACY_EMBED_PIN_FIELDS = {
 const DEFAULT_SETTINGS = {
   snapToGrid: true,
   zoomCanvasWithScroll: false,
+  canvasQuality: 'auto',
   wirePulse: true,
   wireStyle: 'bezier',
   doubleClickWireToCut: false,
@@ -815,7 +816,8 @@ export function App() {
 
   useEffect(() => {
     if (settings.autoUpdateChecks === false) { setServerUpdate(null); return undefined; }
-    if (!networkOnline || !studioServerVersion || (desktopMode && workspaceMode === 'local')) return undefined;
+    if (desktopMode && workspaceMode === 'local') { setServerUpdate(null); return undefined; }
+    if (!networkOnline || !studioServerVersion) return undefined;
     let active = true;
     const checkForServerUpdate = async () => {
       try {
@@ -5605,7 +5607,6 @@ export function App() {
               : 'Open a graph to run checks.'}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite"><span className="collaboration-connection-dot" />{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite"><span className="collaboration-connection-dot" />Flaky connection</span>}
-            {desktopMode && workspaceMode === 'remote' && workspaceCompatibilityNotice && <span className="workspace-compatibility-status" title={workspaceCompatibilityNotice}>Compatibility limits apply</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
@@ -5756,6 +5757,7 @@ export function App() {
         authToken={authToken}
         activeProjectId={activeProjectId}
         canManageLogRetention={currentUser?.permissions?.includes('*')}
+        canManageActivityWebhook={currentUser?.isPrimaryAdmin === true}
         idleDisconnectMinutes={projects.find((project) => project.id === activeProjectId)?.idleDisconnectMinutes ?? 15}
         canManageIdleDisconnect={Boolean(currentUser?.permissions?.includes('*') || projects.find((project) => project.id === activeProjectId)?.ownerId === currentUser?.id)}
         onSetIdleDisconnectMinutes={handleSetIdleDisconnectMinutes}
