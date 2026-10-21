@@ -112,11 +112,10 @@ function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', 
 
 function CanvasNodeView({
   node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false,
-  snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
+  snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
-  const pinClickRef = React.useRef(null);
   const inputs = execFirst(nodeDef.inputs);
   const outputs = execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
@@ -157,17 +156,6 @@ function CanvasNodeView({
         data-tooltip={`${pin.label} · ${displayType}`}
         data-pin-description={`${pin.label} · ${description} · ${displayType}`}
         onPointerDown={(event) => {
-          const now = performance.now();
-          const previousClick = pinClickRef.current;
-          const isDoublePress = event.button === 0 && previousClick?.nodeId === node.id && previousClick?.pinId === pin.id
-            && previousClick?.direction === direction && now - previousClick.at <= 600;
-          pinClickRef.current = isDoublePress ? null : { nodeId: node.id, pinId: pin.id, direction, at: now };
-          if (isDoublePress) {
-            event.preventDefault();
-            event.stopPropagation();
-            onPinDoubleClick?.(event, node.id, pin.id, direction, pin.type, index);
-            return;
-          }
           if (direction !== 'output') { event.stopPropagation(); return; }
           onPinStartConnect?.(event, node.id, pin.id, direction, pin.type, index);
         }}
