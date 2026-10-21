@@ -88,6 +88,8 @@ npm run start:server
 
 Set a private `ARC_SETUP_KEY` in `.env` before exposing the server. This starts only the API and WebSocket server, it does not build or serve the web client. Desktop clients can connect to it, while browser users cannot open the editor from this server.
 
+Set `ARC_ACTIVITY_WEBHOOK_URL` to send workspace activity to a Discord webhook. Delivery starts enabled when the variable is set. The primary workspace owner can disable notifications or save an encrypted replacement in Editor Settings. The URL is never returned to the client. This setting is available for hosted workspaces and desktop clients connected to a hosted workspace, not the desktop Local Workspace.
+
 Put the server behind HTTPS. If you use a reverse proxy, make sure it passes WebSocket connections too. Keep `packages/studio-server/data` so projects and accounts survive restarts. The admin can add subusers and choose their roles. Everyone signs in to the same workspace, opens a project, and sees each other's graph edits live. Save the graph to keep those changes.
 
 The server only accepts connections from the same machine by default. Keep that setting when your HTTPS proxy runs on the same host. Change `HOST` only if the server needs to accept connections directly. And change the sample setup key before your team uses it.
