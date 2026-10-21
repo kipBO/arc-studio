@@ -25,6 +25,7 @@ packages/studio-desktop/src-tauri/icons/ios/
 
 # Tauri editor schemas
 packages/studio-desktop/src-tauri/gen/schemas/
+packages/studio-desktop/src-tauri/.arc-build-config-*.json
 
 # Local environment and secrets
 .env
