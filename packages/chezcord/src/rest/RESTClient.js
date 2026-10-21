@@ -8,6 +8,7 @@ const COMMAND_DEPLOY_COOLDOWN_MS = 30 * 1000;
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_REQUEST_BYTES = 24 * 1024 * 1024;
+const INTERACTION_RESPONSE_RETENTION_MS = 15 * 60 * 1000;
 const commandDeployments = new Map();
 const sharedRateLimiters = new Map();
 //
@@ -102,6 +103,15 @@ export class DiscordAPIError extends Error {
     this.raw = raw;
   }
 }
+
+export class InteractionAlreadyAcknowledgedError extends Error {
+  constructor(interactionId) {
+    super('A response has already been sent or attempted for this interaction.');
+    this.name = 'InteractionAlreadyAcknowledgedError';
+    this.code = 'INTERACTION_ALREADY_ACKNOWLEDGED';
+    this.interactionId = String(interactionId);
+  }
+}
 //
 export class RESTClient {
   /**
@@ -114,6 +124,25 @@ export class RESTClient {
     this.apiBase = options.apiBase || API_BASE;
     this.rateLimiter = getRateLimiter(this.token, this.apiBase);
     this.userAgent = 'DiscordBot (https://github.com/arc-studio, 2026.1.0)';
+    this.interactionResponseAttempts = new Map();
+    this.interactionResponseAttemptQueue = [];
+    this.interactionResponseAttemptQueueHead = 0;
+  }
+
+  pruneInteractionResponseAttempts(now = Date.now()) {
+    const queue = this.interactionResponseAttemptQueue;
+    while (this.interactionResponseAttemptQueueHead < queue.length) {
+      const attempt = queue[this.interactionResponseAttemptQueueHead];
+      if (attempt.expiresAt > now) break;
+      this.interactionResponseAttemptQueueHead += 1;
+      if (this.interactionResponseAttempts.get(attempt.interactionId) === attempt.expiresAt) {
+        this.interactionResponseAttempts.delete(attempt.interactionId);
+      }
+    }
+    if (this.interactionResponseAttemptQueueHead > 1024 && this.interactionResponseAttemptQueueHead * 2 > queue.length) {
+      queue.splice(0, this.interactionResponseAttemptQueueHead);
+      this.interactionResponseAttemptQueueHead = 0;
+    }
   }
 
   setToken(token) {
@@ -210,6 +239,10 @@ export class RESTClient {
       this.rateLimiter.handleHeaders(routeKey, response.headers, response.status, parsedData);
 
       if (response.status === 429) {
+        if (attempts >= maxRetries) {
+          const errorMsg = parsedData?.message || 'Discord API rate limit exceeded.';
+          throw new DiscordAPIError(errorMsg, 429, parsedData?.code || 0, parsedData);
+        }
         const retryAfterMs = (parsedData && parsedData.retry_after)
           ? parsedData.retry_after * 1000
           : 1000;
@@ -449,11 +482,23 @@ export class RESTClient {
   }
 
   createInteractionResponse(interactionId, interactionToken, responseData) {
+    if (interactionId == null || !String(interactionId).trim()) throw new TypeError('An interaction ID is required.');
+    if (interactionToken == null || !String(interactionToken).trim()) throw new TypeError('An interaction token is required.');
     const body = responseData && typeof responseData === 'object' ? { ...responseData } : responseData;
     if (body?.data && typeof body.data === 'object') body.data = buildMultipartBody(body.data);
-    return this.request('POST', `/interactions/${interactionId}/${interactionToken}/callback`, {
+    const normalizedInteractionId = String(interactionId);
+    const now = Date.now();
+    this.pruneInteractionResponseAttempts(now);
+    if (this.interactionResponseAttempts.has(normalizedInteractionId)) {
+      throw new InteractionAlreadyAcknowledgedError(normalizedInteractionId);
+    }
+    const expiresAt = now + INTERACTION_RESPONSE_RETENTION_MS;
+    this.interactionResponseAttempts.set(normalizedInteractionId, expiresAt);
+    this.interactionResponseAttemptQueue.push({ interactionId: normalizedInteractionId, expiresAt });
+    return this.request('POST', `/interactions/${normalizedInteractionId}/${interactionToken}/callback`, {
       body,
-      auth: false
+      auth: false,
+      maxRetries: 1
     });
   }
 
