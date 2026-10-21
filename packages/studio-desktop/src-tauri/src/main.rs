@@ -994,6 +994,10 @@ fn main() {
             };
             let mut window = WebviewWindowBuilder::from_config(app.handle(), &window_config)?
                 .inner_size(window_size.width, window_size.height);
+            #[cfg(target_os = "linux")]
+            if let Some(icon) = app.default_window_icon().cloned() {
+                window = window.icon(icon)?;
+            }
             let local_username = os_login_name();
             let api_base_url = api_base_url
                 .as_deref()
