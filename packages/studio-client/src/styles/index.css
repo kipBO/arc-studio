@@ -95,10 +95,13 @@ button:disabled { cursor: not-allowed !important; opacity: .48; }
 .app-root { position: relative; width: calc(100% / var(--arc-ui-scale, 1)); height: calc(100% / var(--arc-ui-scale, 1)); min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--page); color: var(--text); transform: scale(var(--arc-ui-scale, 1)); transform-origin: top left; container: arc-app / inline-size; }
 .app-client-surface { position: relative; display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .app-client-surface[inert] { pointer-events: none; user-select: none; }
-.app-root.workspace-paused::after { position: fixed; z-index: 19; inset: 0; content: ""; background: rgb(10 12 15 / 22%); pointer-events: auto; }
-.app-root.workspace-paused .app-client-surface > :not(.topbar) { filter: grayscale(1) brightness(.76); }
-.app-root.workspace-paused .topbar > :not(.topbar-actions), .app-root.workspace-paused .topbar-actions > :not(.profile-menu) { filter: grayscale(1); opacity: .42; }
-.app-root.workspace-paused .profile-menu { filter: none; opacity: 1; }
+.app-root.workspace-paused::after { position: fixed; z-index: 19; inset: 0; content: ""; background: transparent; pointer-events: auto; }
+.workspace-connection-banner { position: absolute; z-index: 21; top: 66px; right: 14px; display: grid; gap: 3px; width: min(390px, calc(100% - 28px)); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warning) 46%, var(--line-strong)); border-radius: 8px; color: var(--text); background: var(--chrome-raised); box-shadow: 0 8px 24px rgba(0, 0, 0, .24); font-size: 11px; }
+.workspace-connection-banner strong { color: var(--warning); font-size: 11px; font-weight: 650; }
+.workspace-connection-banner span { color: var(--text-secondary); line-height: 1.45; }
+.workspace-connection-banner.is-flaky strong { color: var(--warning); }
+.workspace-connection-banner.is-paused { border-color: color-mix(in srgb, var(--danger) 38%, var(--line-strong)); }
+.workspace-connection-banner.is-paused strong { color: var(--danger); }
 .boot-screen { display: grid; place-items: center; width: 100%; height: 100%; background: var(--page); }
 .boot-mark { width: 38px; height: 38px; animation: bootFade .7s ease infinite alternate; }
 .boot-mark img { width: 100%; height: 100%; object-fit: contain; }
