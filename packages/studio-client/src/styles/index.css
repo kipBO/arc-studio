@@ -1404,6 +1404,7 @@ body.is-resizing-sidebar .slash-command-studio { transition: none !important; }
 .settings-shortcut-record:hover, .settings-shortcut-record.is-recording { border-color: var(--accent); color: var(--accent); }
 .settings-shortcut-record.is-recording { min-width: 108px; background: color-mix(in srgb, var(--accent) 9%, var(--field)); }
 .settings-shortcut-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; }
+.settings-shortcut-actions-buttons { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
 .settings-shortcut-actions small { max-width: 210px; color: var(--muted); font-size: 8px; line-height: 1.4; }
 .plugin-store-toolbar { display: flex; gap: 8px; margin-bottom: 9px; }
 .plugin-source-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 6px; background: var(--panel); }
