@@ -78,6 +78,7 @@ const artifactFor = (targetMarker, suffix) => {
   if (matches.length !== 1) throw new Error(`Expected one ${suffix} update artifact for ${targetMarker}; found ${matches.length}.`);
   return matches[0];
 };
+const publishedAssetName = (name) => name.replace(/ /g, '.');
 const signedArtifact = (artifactPath) => {
   const basename = path.basename(artifactPath);
   const originalName = basename.replace(/-unsigned(?=\.(?:exe|AppImage)$)/, '');
@@ -87,7 +88,7 @@ const signedArtifact = (artifactPath) => {
   if (!signature || signature.length < 80) throw new Error(`Tauri signature is empty or invalid for ${basename}.`);
   return {
     signature,
-    url: `https://github.com/${repository}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(basename)}`
+    url: `https://github.com/${repository}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(publishedAssetName(basename))}`
   };
 };
 
