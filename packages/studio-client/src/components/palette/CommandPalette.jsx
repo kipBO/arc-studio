@@ -1,64 +1,65 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Puzzle, Search, X, Plus, Workflow } from 'lucide-react';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
-import { NODE_SEARCH_ALIASES, scoreSearchMatch } from './nodeSearch.js';
+import { createSearchIndex } from './nodeSearch.js';
 //
 export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins = [], onClose, onAddNode, onOpenGraph, onOpenPlugin, onGoToNode }) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef(null);
 
-  const items = useMemo(() => {
+  const allItems = useMemo(() => {
+    const definitionsByType = new Map(definitions.map((definition) => [definition.type, definition]));
     const nodeItems = definitions.filter((node) => !node.hidden).map((node) => ({
       id: `add:${node.type}`, kind: 'add', group: node.pluginAdapter ? 'Plugin nodes' : 'Nodes', label: node.label,
-      detail: `${node.category || 'Node'}${node.pluginName ? ` · ${node.pluginName}` : ''}`, searchText: `${node.label} ${node.description || ''} ${node.category || ''} ${node.pluginName || ''} ${(NODE_SEARCH_ALIASES[node.type] || []).join(' ')} ${node.type.replaceAll('_', ' ')}`,
+      detail: `${node.category || 'Node'}${node.pluginName ? ` · ${node.pluginName}` : ''}`,
+      searchFields: [node.label, node.description, node.category, node.pluginName, node.type.replaceAll('_', ' '), ...(node.inputs || []).map((pin) => pin.label), ...(node.outputs || []).map((pin) => pin.label)],
       icon: node, onSelect: () => onAddNode?.(node.type)
     }));
     const graphItems = graphs.map((graph) => ({
       id: `graph:${graph.id}`, kind: 'graph', group: 'Graphs', label: graph.name || 'Untitled graph',
-      detail: graph.graphType === 'function' ? 'Function graph' : 'Open graph', searchText: `${graph.name || ''} ${graph.graphType || ''} ${graph.id}`,
+      detail: graph.graphType === 'function' ? 'Function graph' : 'Open graph', searchFields: [graph.name, graph.graphType, graph.id],
       icon: null, onSelect: () => onOpenGraph?.(graph)
     }));
     const instanceItems = graphs.flatMap((graph) => (graph.nodes || []).map((node) => {
-      const definition = definitions.find((item) => item.type === node.type);
+      const definition = definitionsByType.get(node.type);
       return {
         id: `node:${graph.id}:${node.id}`, kind: 'instance', group: 'Nodes in graphs', label: node.label || definition?.label || node.type,
         detail: `${graph.name || 'Untitled graph'} · ${definition?.label || node.type}`,
-        searchText: `${node.label || ''} ${node.type} ${definition?.label || ''} ${definition?.description || ''} ${(NODE_SEARCH_ALIASES[node.type] || definition?.aliases || []).join(' ')} ${graph.name || ''}`,
+        searchFields: [node.label, node.type.replaceAll('_', ' '), definition?.label, definition?.description, graph.name, ...(definition?.inputs || []).map((pin) => pin.label), ...(definition?.outputs || []).map((pin) => pin.label)],
         graphId: graph.id, nodeId: node.id, icon: definition || null, onSelect: () => onGoToNode?.(graph.id, node.id)
       };
     }));
     const pluginMap = new Map(plugins.map((plugin) => [plugin.id, {
       id: `plugin:${plugin.id}`, kind: 'plugin', group: 'Plugins', label: plugin.name || plugin.id,
-      detail: 'Installed plugin', searchText: `${plugin.name || ''} ${plugin.id || ''} ${plugin.description || ''}`,
+      detail: 'Installed plugin', searchFields: [plugin.name, plugin.id, plugin.description],
       icon: null, pluginId: plugin.id, nodeCount: 0
     }]));
     for (const node of definitions.filter((item) => item.pluginAdapter)) {
       const id = node.pluginId || node.pluginName || 'plugin';
-      const entry = pluginMap.get(id) || { id: `plugin:${id}`, kind: 'plugin', group: 'Plugins', label: node.pluginName || node.pluginId || 'Installed plugin', detail: 'Installed node pack', searchText: '', icon: null, pluginId: id, nodeCount: 0 };
-      entry.searchText += ` ${node.pluginName || ''} ${node.pluginId || ''} ${node.label || ''}`;
+      const entry = pluginMap.get(id) || { id: `plugin:${id}`, kind: 'plugin', group: 'Plugins', label: node.pluginName || node.pluginId || 'Installed plugin', detail: 'Installed node pack', searchFields: [], icon: null, pluginId: id, nodeCount: 0 };
+      entry.searchFields.push(node.pluginName, node.pluginId, node.label, node.description, node.type.replaceAll('_', ' '));
       entry.nodeCount += 1;
       pluginMap.set(id, entry);
     }
     const pluginItems = [...pluginMap.values()].map((item) => ({ ...item, detail: `${item.nodeCount} node${item.nodeCount === 1 ? '' : 's'} · installed`, onSelect: () => onOpenPlugin?.(item.pluginId) }));
-    const all = [...nodeItems, ...instanceItems, ...graphItems, ...pluginItems];
+    return [...nodeItems, ...instanceItems, ...graphItems, ...pluginItems];
+  }, [definitions, graphs, onAddNode, onGoToNode, onOpenGraph, onOpenPlugin, plugins]);
+  const searchIndex = useMemo(() => createSearchIndex(allItems, (item) => [item.label, item.detail, ...item.searchFields]), [allItems]);
+  const items = useMemo(() => {
     const rawQuery = query.trim();
     const command = rawQuery.match(/^([!@#])\s*/);
-    const needle = rawQuery.replace(/^([!@#])\s*/, '').trim().toLowerCase();
+    const needle = rawQuery.replace(/^([!@#])\s*/, '').trim();
     const commandKind = command?.[1] === '!' ? 'add' : command?.[1] === '@' ? 'instance' : command?.[1] === '#' ? 'graph' : null;
-    const candidates = commandKind ? all.filter((item) => item.kind === commandKind) : all;
     if (!needle) {
+      const candidates = commandKind ? allItems.filter((item) => item.kind === commandKind) : allItems;
       if (commandKind) return candidates.slice(0, 80);
-      const suggestedNodes = nodeItems.filter((node) => ['event_message_create', 'event_slash_command', 'event_slash_autocomplete', 'action_send_message', 'branch_if', 'delay'].includes(node.icon?.type)).slice(0, 5);
-      const graphNodes = instanceItems.slice(0, 5);
+      const suggestedNodes = candidates.filter((node) => node.kind === 'add').slice(0, 5);
+      const graphNodes = candidates.filter((node) => node.kind === 'instance').slice(0, 5);
       return [...suggestedNodes, ...graphNodes];
     }
-    return candidates.map((item, order) => ({
-      item,
-      order,
-      score: scoreSearchMatch(needle, [item.label, item.detail, item.searchText])
-    })).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score || left.order - right.order).slice(0, 80).map((entry) => entry.item);
-  }, [definitions, graphs, onAddNode, onGoToNode, onOpenGraph, onOpenPlugin, plugins, query]);
+    return searchIndex.search(needle, 80, (item) => !commandKind || item.kind === commandKind).map((entry) => entry.item);
+  }, [allItems, query, searchIndex]);
 
   const groups = useMemo(() => {
     const result = [];
