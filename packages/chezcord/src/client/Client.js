@@ -25,6 +25,7 @@ export class Client extends EventEmitter {
     this.rest = new RESTClient({ token: this.token });
     /** @type {GatewayShard|null} */
     this.ws = null;
+    this.gatewayBindings = [];
     this.user = null;
     this.readyAt = null;
   }
@@ -38,32 +39,38 @@ export class Client extends EventEmitter {
     if (token) this.token = token;
     if (!this.token) throw new Error('A valid Discord Bot Token must be provided to login.');
 
+    this.disposeGateway();
     this.rest.setToken(this.token);
 
-    this.ws = new GatewayShard({
+    const shard = new GatewayShard({
       token: this.token,
       intents: this.intents
     });
+    this.ws = shard;
+    const listen = (eventName, listener) => {
+      shard.on(eventName, listener);
+      this.gatewayBindings.push({ shard, eventName, listener });
+    };
 //
-    this.ws.on('status', (status) => this.emit('status', status));
-    this.ws.on('heartbeatLatency', (latencyMs) => this.emit('heartbeatLatency', latencyMs));
-    this.ws.on('diagnostics', (diagnostics) => this.emit('gatewayDiagnostics', diagnostics));
-    this.ws.on('dispatch', (eventName, payload) => this.emit('gatewayDispatch', eventName, payload));
-    this.ws.on('debug', (msg) => this.emit('debug', msg));
-    this.ws.on('error', (err) => this.emit('error', err));
-    this.ws.on('fatalError', (err) => this.emit('fatalError', err));
-    this.emit('gatewayDiagnostics', this.ws.getDiagnostics());
+    listen('status', (status) => this.emit('status', status));
+    listen('heartbeatLatency', (latencyMs) => this.emit('heartbeatLatency', latencyMs));
+    listen('diagnostics', (diagnostics) => this.emit('gatewayDiagnostics', diagnostics));
+    listen('dispatch', (eventName, payload) => this.emit('gatewayDispatch', eventName, payload));
+    listen('debug', (msg) => this.emit('debug', msg));
+    listen('error', (err) => this.emit('error', err));
+    listen('fatalError', (err) => this.emit('fatalError', err));
+    this.emit('gatewayDiagnostics', shard.getDiagnostics());
 
-    this.ws.on('READY', (data) => {
+    listen('READY', (data) => {
       this.user = data.user;
       this.readyAt = new Date();
       this.emit('ready', this);
     });
 
-    this.ws.on('MESSAGE_CREATE', (msg) => this.emit('messageCreate', msg));
-    this.ws.on('INTERACTION_CREATE', (interaction) => this.emit('interactionCreate', interaction));
-    this.ws.on('GUILD_CREATE', (guild) => this.emit('guildCreate', guild));
-    this.ws.on('GUILD_MEMBER_ADD', (member) => this.emit('guildMemberAdd', member));
+    listen('MESSAGE_CREATE', (msg) => this.emit('messageCreate', msg));
+    listen('INTERACTION_CREATE', (interaction) => this.emit('interactionCreate', interaction));
+    listen('GUILD_CREATE', (guild) => this.emit('guildCreate', guild));
+    listen('GUILD_MEMBER_ADD', (member) => this.emit('guildMemberAdd', member));
 
     for (const eventName of [
       'MESSAGE_UPDATE', 'MESSAGE_DELETE', 'MESSAGE_REACTION_ADD', 'MESSAGE_REACTION_REMOVE',
@@ -74,17 +81,33 @@ export class Client extends EventEmitter {
       'GUILD_ROLE_CREATE', 'GUILD_ROLE_UPDATE', 'GUILD_ROLE_DELETE', 'THREAD_CREATE', 'THREAD_UPDATE',
       'THREAD_DELETE', 'TYPING_START', 'CHANNEL_PINS_UPDATE', 'MESSAGE_REACTION_REMOVE_ALL',
       'INVITE_CREATE', 'INVITE_DELETE'
-    ]) this.ws.on(eventName, (payload) => this.emit(eventName, payload));
+    ]) listen(eventName, (payload) => this.emit(eventName, payload));
 
-    this.ws.connect();
+    shard.connect();
     return this;
   }
 //
-  destroy() {
-    if (this.ws) {
-      this.ws.destroy();
-      this.ws = null;
+  disposeGateway() {
+    const shard = this.ws;
+    if (!shard) {
+      this.gatewayBindings = [];
+      return;
     }
+
+    try {
+      shard.destroy();
+    } finally {
+      for (const binding of this.gatewayBindings) {
+        if (binding.shard === shard) shard.off(binding.eventName, binding.listener);
+      }
+      this.gatewayBindings = this.gatewayBindings.filter((binding) => binding.shard !== shard);
+      shard.removeAllListeners();
+      if (this.ws === shard) this.ws = null;
+    }
+  }
+
+  destroy() {
+    this.disposeGateway();
     this.user = null;
     this.readyAt = null;
     this.emit('destroy');
