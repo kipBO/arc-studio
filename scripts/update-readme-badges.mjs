@@ -65,14 +65,6 @@ try {
 }
 
 const repositoryData = await optional('Repository', () => apiJson(apiRoot, token), null);
-const releases = await optional('Release downloads', async () => {
-  let total = 0;
-  for (let page = 1; ; page += 1) {
-    const entries = await apiJson(`${apiRoot}/releases?per_page=100&page=${page}`, token);
-    total += entries.flatMap((release) => release.assets || []).reduce((sum, asset) => sum + (asset.download_count || 0), 0);
-    if (entries.length < 100) return compact(total);
-  }
-});
 const tauriVersion = /^\s*tauri\s*=\s*\{\s*version\s*=\s*"([^"]+)"/m.exec(desktop)?.[1] || 'unknown';
 const cleanVersion = (value) => String(value || 'unknown').replace(/^[~^>=\s]+/, '');
 const badgeSpecs = [
@@ -82,7 +74,6 @@ const badgeSpecs = [
   ['node-version', 'Node.js', '22+', '#43853d'],
   ['license', 'License', studio.license || 'Apache-2.0', '#2da44e'],
   ['commits', 'Commits', commits, '#0969da'],
-  ['release-downloads', 'Release downloads', releases, '#0969da'],
   ['stars', 'Stars', repositoryData ? compact(repositoryData.stargazers_count) : 'unavailable', '#e3b341'],
   ['forks', 'Forks', repositoryData ? compact(repositoryData.forks_count) : 'unavailable', '#6f42c1'],
   ['vite-version', 'Vite', cleanVersion(studioClient.devDependencies?.vite || studioClient.dependencies?.vite), '#646cff']
@@ -112,7 +103,6 @@ const badgeMarkdown = [
   ['ci', 'CI status', `https://github.com/${repository}/actions/workflows/ci.yml`],
   ['desktop-builds', 'Desktop builds', `https://github.com/${repository}/actions/workflows/desktop-builds.yml`],
   ['commits', 'Commits', `https://github.com/${repository}/commits`],
-  ['release-downloads', 'GitHub release downloads', `https://github.com/${repository}/releases`],
   ['stars', 'GitHub stars', `https://github.com/${repository}`],
   ['forks', 'GitHub forks', `https://github.com/${repository}/network/members`]
 ].map(([filename, alt, href]) => ['ci', 'desktop-builds'].includes(filename)
