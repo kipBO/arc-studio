@@ -8,13 +8,15 @@ const MAX_PROJECTS = 500;
 const MAX_GRAPHS = 5000;
 const MAX_USERS_PER_ENTRY = 20;
 const MIN_RECORD_INTERVAL_MS = 60_000;
+const PERSIST_DEBOUNCE_MS = 300;
 //
 export class CollaborationLastSeen {
   constructor(targetPath = filePath) {
     this.filePath = targetPath;
     this.projects = {};
     this.graphs = {};
-    this.lastPersistAt = 0;
+    this.persistTimer = null;
+    this.persistChain = Promise.resolve();
     try {
       const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
       if (data && typeof data === 'object') {
@@ -33,7 +35,7 @@ export class CollaborationLastSeen {
       const key = `${projectId}:${graphId}`;
       changed = this.#recordEntry(this.graphs, key, { ...seen, graphId }, now) || changed;
     }
-    if (changed) this.#persist();
+    if (changed) this.#schedulePersist();
     return changed;
   }
 
@@ -75,20 +77,37 @@ export class CollaborationLastSeen {
     }).sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
   }
 
-  #persist() {
-    const prune = (store, limit) => Object.fromEntries(Object.entries(store)
-      .sort((a, b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))
+  #pruneStore(store, limit) {
+    const latestTimestamp = (history) => this.#entries(history).reduce((latest, entry) => Math.max(latest, Number(entry.updatedAt) || 0), 0);
+    return Object.fromEntries(Object.entries(store)
+      .sort((a, b) => latestTimestamp(b[1]) - latestTimestamp(a[1]))
       .slice(0, limit));
-    this.projects = prune(this.projects, MAX_PROJECTS);
-    this.graphs = prune(this.graphs, MAX_GRAPHS);
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-    const temporaryPath = `${this.filePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    try {
-      fs.writeFileSync(temporaryPath, JSON.stringify({ projects: this.projects, graphs: this.graphs }), { mode: 0o600 });
-      fs.renameSync(temporaryPath, this.filePath);
-      try { fs.chmodSync(this.filePath, 0o600); } catch {}
-    } finally {
-      try { fs.rmSync(temporaryPath, { force: true }); } catch {}
-    }
+  }
+
+  #schedulePersist() {
+    clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.#persist().catch((error) => console.error('Could not persist collaboration activity:', error.message));
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  #persist() {
+    this.projects = this.#pruneStore(this.projects, MAX_PROJECTS);
+    this.graphs = this.#pruneStore(this.graphs, MAX_GRAPHS);
+    const snapshot = JSON.stringify({ projects: this.projects, graphs: this.graphs });
+    const persist = this.persistChain.catch(() => {}).then(async () => {
+      await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+      const temporaryPath = `${this.filePath}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+      try {
+        await fs.promises.writeFile(temporaryPath, snapshot, { mode: 0o600 });
+        await fs.promises.rename(temporaryPath, this.filePath);
+        try { await fs.promises.chmod(this.filePath, 0o600); } catch {}
+      } finally {
+        try { await fs.promises.rm(temporaryPath, { force: true }); } catch {}
+      }
+    });
+    this.persistChain = persist;
+    return persist;
   }
 }
