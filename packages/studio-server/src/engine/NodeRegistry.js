@@ -638,6 +638,95 @@ export const NodeDefinitions = {
     ]
   },
 
+  action_set_custom_status: {
+    type: 'action_set_custom_status',
+    category: NodeCategories.ACTIONS,
+    label: 'Set Custom Status',
+    color: '#10b981',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'status_text', label: 'Status Text', type: PinTypes.STRING, defaultValue: 'ARC Studio' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC }
+    ]
+  },
+
+  action_fetch_user: {
+    type: 'action_fetch_user',
+    category: NodeCategories.ACTIONS,
+    label: 'Get User Info',
+    color: '#10b981',
+    description: 'Fetches a Discord user profile and exposes both the full user object and common profile fields',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'user_id', label: 'User ID', type: PinTypes.STRING, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'user', label: 'User Object', type: PinTypes.OBJECT },
+      { id: 'user_id_out', label: 'User ID', type: PinTypes.STRING },
+      { id: 'username', label: 'Username', type: PinTypes.STRING },
+      { id: 'global_name', label: 'Display Name', type: PinTypes.STRING },
+      { id: 'discriminator', label: 'Discriminator', type: PinTypes.STRING },
+      { id: 'avatar', label: 'Avatar Hash', type: PinTypes.STRING },
+      { id: 'bot', label: 'Is Bot', type: PinTypes.BOOLEAN },
+      { id: 'public_flags', label: 'Public Flags', type: PinTypes.NUMBER }
+    ]
+  },
+
+  action_fetch_guild: {
+    type: 'action_fetch_guild',
+    category: NodeCategories.ACTIONS,
+    label: 'Get Server Info',
+    color: '#10b981',
+    description: 'Fetches a Discord server and exposes its full server object, owner, features, and common settings',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'guild_id', label: 'Server ID', type: PinTypes.STRING, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'guild', label: 'Server Object', type: PinTypes.OBJECT },
+      { id: 'guild_id_out', label: 'Server ID', type: PinTypes.STRING },
+      { id: 'name', label: 'Name', type: PinTypes.STRING },
+      { id: 'owner_id', label: 'Owner ID', type: PinTypes.STRING },
+      { id: 'description', label: 'Description', type: PinTypes.STRING },
+      { id: 'icon', label: 'Icon Hash', type: PinTypes.STRING },
+      { id: 'member_count', label: 'Approx. Members', type: PinTypes.NUMBER },
+      { id: 'features', label: 'Features', type: PinTypes.OBJECT },
+      { id: 'preferred_locale', label: 'Preferred Locale', type: PinTypes.STRING },
+      { id: 'verification_level', label: 'Verification Level', type: PinTypes.NUMBER }
+    ]
+  },
+
+  action_fetch_member: {
+    type: 'action_fetch_member',
+    category: NodeCategories.ACTIONS,
+    label: 'Get Server Member',
+    color: '#10b981',
+    description: 'Fetches a member in a server and exposes the full member and user objects, roles, and profile fields',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'guild_id', label: 'Server ID', type: PinTypes.STRING, defaultValue: '' },
+      { id: 'user_id', label: 'User ID', type: PinTypes.STRING, defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: PinTypes.EXEC },
+      { id: 'member', label: 'Member Object', type: PinTypes.OBJECT },
+      { id: 'user', label: 'User Object', type: PinTypes.OBJECT },
+      { id: 'user_id_out', label: 'User ID', type: PinTypes.STRING },
+      { id: 'username', label: 'Username', type: PinTypes.STRING },
+      { id: 'nickname', label: 'Nickname', type: PinTypes.STRING },
+      { id: 'roles', label: 'Role IDs', type: PinTypes.OBJECT },
+      { id: 'joined_at', label: 'Joined At', type: PinTypes.STRING },
+      { id: 'premium_since', label: 'Boosted Since', type: PinTypes.STRING },
+      { id: 'deaf', label: 'Server Deafened', type: PinTypes.BOOLEAN },
+      { id: 'mute', label: 'Server Muted', type: PinTypes.BOOLEAN },
+      { id: 'pending', label: 'Membership Pending', type: PinTypes.BOOLEAN }
+    ]
+  },
+
   action_set_presence: {
     type: 'action_set_presence',
     category: NodeCategories.ACTIONS,
