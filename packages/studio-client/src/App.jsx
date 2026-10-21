@@ -21,6 +21,7 @@ function formatCompactLastSeen(value) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 const createEditorId = (prefix) => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`}`;
+const isNamespacedAdapterNodeType = (type) => typeof type === 'string' && type.includes('.');
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -654,6 +655,8 @@ export function App() {
   const [projectImportFile, setProjectImportFile] = useState(null);
   const projectImportPathRef = useRef(null);
   const [openedProjectFiles, setOpenedProjectFiles] = useState([]);
+  const [desktopFileImportBusy, setDesktopFileImportBusy] = useState(false);
+  const desktopGraphImportHandlerRef = useRef(null);
   const [projectImportTrusted, setProjectImportTrusted] = useState(false);
   const [projectImportError, setProjectImportError] = useState('');
   const [projectImportCompatibility, setProjectImportCompatibility] = useState(null);
@@ -738,6 +741,7 @@ export function App() {
   const liveGraphReadyRef = useRef(new Set());
   const autoSaveInFlightRef = useRef(new Set());
   const collaborationClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const graphSaveClientIdRef = useRef(globalThis.crypto?.randomUUID?.() || `arc-save-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const collaborationActionTimerRef = useRef(null);
   const collaborationMotionSendIntervalRef = useRef(16);
   const pendingCollaborationActionRef = useRef(new Map());
@@ -748,29 +752,43 @@ export function App() {
   const autoSnapshotInFlightRef = useRef(false);
   useEffect(() => {
     if (!desktopMode) return undefined;
-    const queue = window.__ARC_STUDIO_OPEN_PROJECT_FILES__;
+    const queue = window.__ARC_STUDIO_OPEN_FILES__;
     if (Array.isArray(queue) && queue.length) {
-        setOpenedProjectFiles((current) => [...new Set([...current, ...queue.filter((path) => typeof path === 'string')])]);
-      window.__ARC_STUDIO_OPEN_PROJECT_FILES__ = [];
+      setOpenedProjectFiles((current) => [...new Set([...current, ...queue.filter((path) => typeof path === 'string')])]);
+      window.__ARC_STUDIO_OPEN_FILES__ = [];
     }
     const onFileOpened = (event) => {
       if (typeof event.detail === 'string') {
-        const queuedIndex = window.__ARC_STUDIO_OPEN_PROJECT_FILES__?.indexOf(event.detail) ?? -1;
-        if (queuedIndex >= 0) window.__ARC_STUDIO_OPEN_PROJECT_FILES__.splice(queuedIndex, 1);
+        const queuedIndex = window.__ARC_STUDIO_OPEN_FILES__?.indexOf(event.detail) ?? -1;
+        if (queuedIndex >= 0) window.__ARC_STUDIO_OPEN_FILES__.splice(queuedIndex, 1);
         setOpenedProjectFiles((current) => current.includes(event.detail) || projectImportPathRef.current === event.detail ? current : [...current, event.detail]);
       }
     };
-    window.addEventListener('arc:project-file-opened', onFileOpened);
-    return () => window.removeEventListener('arc:project-file-opened', onFileOpened);
+    window.addEventListener('arc:desktop-file-opened', onFileOpened);
+    return () => window.removeEventListener('arc:desktop-file-opened', onFileOpened);
   }, [desktopMode]);
   useEffect(() => {
-    if (!desktopMode || projectImportFile || !openedProjectFiles.length) return;
+    if (!desktopMode || projectImportFile || desktopFileImportBusy || !openedProjectFiles.length) return;
     const [path, ...remaining] = openedProjectFiles;
     setOpenedProjectFiles(remaining);
     const normalizedPath = String(path).replace(/\\/g, '/');
     const name = normalizedPath.split('/').pop() || 'project.arcproject';
-    if (!name.toLowerCase().endsWith('.arcproject')) {
-      arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arcproject file.', type: 'error' });
+    const lowerName = name.toLowerCase();
+    if (lowerName.endsWith('.arc.json')) {
+      const invoke = window.__TAURI_INTERNALS__?.invoke;
+      if (typeof invoke !== 'function') {
+        arcEvents.emit('toast:notify', { title: 'Open failed', message: 'ARC Studio could not read this graph file.', type: 'error' });
+        return;
+      }
+      setDesktopFileImportBusy(true);
+      invoke('read_arc_graph_file', { path })
+        .then((contents) => desktopGraphImportHandlerRef.current?.({ name, text: async () => contents }))
+        .catch((error) => arcEvents.emit('toast:notify', { title: 'Open failed', message: error.message || 'Could not read this graph file.', type: 'error' }))
+        .finally(() => setDesktopFileImportBusy(false));
+      return;
+    }
+    if (!lowerName.endsWith('.arcproject')) {
+      arcEvents.emit('toast:notify', { title: 'Unsupported file', message: 'Choose an .arc.json graph or .arcproject file.', type: 'error' });
       return;
     }
     projectImportPathRef.current = path;
@@ -783,7 +801,7 @@ export function App() {
     setProjectImportError('');
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
-  }, [desktopMode, openedProjectFiles, projectImportFile]);
+  }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
   useEffect(() => {
     const updateNetworkState = () => setNetworkOnline(navigator.onLine !== false);
     window.addEventListener('online', updateNetworkState);
@@ -1501,16 +1519,18 @@ export function App() {
           if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app. Update the workspace server before connecting.`);
           if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app. Update the desktop app before connecting.`);
           let serverNodeTypes = system.supportedNodeTypes;
-          if (!Array.isArray(serverNodeTypes)) {
-            const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-store' });
-            const registry = registryResponse.ok ? await registryResponse.json().catch(() => null) : null;
-            const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
-            serverNodeTypes = definitions?.map((definition) => definition?.type) || null;
+          let serverAdapterNodeTypes = new Set();
+          const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-store' });
+          const registry = registryResponse.ok ? await registryResponse.json().catch(() => null) : null;
+          const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
+          if (definitions?.length) {
+            serverNodeTypes = definitions.map((definition) => definition?.type);
+            serverAdapterNodeTypes = new Set(definitions.filter((definition) => definition?.pluginAdapter === true).map((definition) => definition.type));
           }
           if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
           const serverNodeTypeSet = new Set(serverNodeTypes);
           const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
-          const unsupportedCount = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type)).length;
+          const unsupportedCount = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type) && !serverAdapterNodeTypes.has(type) && !isNamespacedAdapterNodeType(type)).length;
           if (unsupportedCount) throw new Error(`This workspace uses ${unsupportedCount} node feature${unsupportedCount === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
           const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
           setSupportedWorkspaceNodeTypes(serverNodeTypeSet);
@@ -2151,13 +2171,14 @@ export function App() {
           } else if (msg.type === 'GRAPH_UPDATED' && msg.payload?.graph?.id) {
             const incoming = msg.payload.graph;
             if (deletedGraphsRef.current.has(`${activeProjectIdRef.current}:${incoming.id}`)) return;
+            const isOwnSave = msg.payload.saveClientId === graphSaveClientIdRef.current;
             liveGraphBaseRef.current.set(incoming.id, snapshotGraph(incoming));
             liveGraphRevisionRef.current.delete(incoming.id);
             setSavedGraphs((current) => [incoming, ...current.filter((graph) => graph.id !== incoming.id)]);
             setTabs((current) => current.map((tab) => {
               if (tab.id !== incoming.id) return tab;
               if (tab.isDirty && !sameGraphContent(tab, incoming)) {
-                if (!remoteGraphConflictsRef.current.has(tab.id)) {
+                if (!isOwnSave && !remoteGraphConflictsRef.current.has(tab.id)) {
                   remoteGraphConflictsRef.current.add(tab.id);
                   arcEvents.emit('toast:notify', { title: 'Shared graph updated', message: `A collaborator saved “${incoming.name || incoming.id}” while you had local edits. Your draft is preserved; review it before saving.`, type: 'warning' });
                 }
@@ -2772,7 +2793,7 @@ export function App() {
       if (hasAttachments) setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent: 0 });
       const response = await xhrJson(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken, 'x-arc-save-client-id': graphSaveClientIdRef.current },
         body,
         onUploadProgress: hasAttachments ? (percent) => setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent }) : undefined
       });
@@ -2808,7 +2829,7 @@ export function App() {
     try {
       const response = await xhrJson(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken, 'x-arc-save-client-id': graphSaveClientIdRef.current },
         body: JSON.stringify(graphToSave),
         onUploadProgress: hasAttachments ? (percent) => setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent }) : undefined
       });
@@ -3221,6 +3242,7 @@ export function App() {
       arcEvents.emit('toast:notify', { title: 'Import failed', message: error.message || 'Could not read this graph file.', type: 'error' });
     }
   }, [authToken, handleOpenGraph]);
+  desktopGraphImportHandlerRef.current = handleImportGraph;
 
   const handleDeleteSavedGraph = useCallback(async (graph) => {
     if (!authToken) return;
@@ -4321,8 +4343,8 @@ export function App() {
     projectImportPathRef.current = null;
     if (canceledPath) {
       setOpenedProjectFiles((current) => current.filter((path) => path !== canceledPath));
-      const queue = window.__ARC_STUDIO_OPEN_PROJECT_FILES__;
-      if (Array.isArray(queue)) window.__ARC_STUDIO_OPEN_PROJECT_FILES__ = queue.filter((path) => path !== canceledPath);
+      const queue = window.__ARC_STUDIO_OPEN_FILES__;
+      if (Array.isArray(queue)) window.__ARC_STUDIO_OPEN_FILES__ = queue.filter((path) => path !== canceledPath);
     }
     setProjectImportFile(null);
     setProjectImportTrusted(false);
@@ -4330,6 +4352,59 @@ export function App() {
     setProjectImportCompatibility(null);
     setProjectImportOldVersionApproved(false);
   };
+
+  useEffect(() => {
+    if (!desktopMode) return undefined;
+    const openFilePicker = (accept, onFile) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = accept;
+      input.hidden = true;
+      document.body.append(input);
+      input.addEventListener('change', () => {
+        const file = input.files?.[0];
+        if (file) onFile(file);
+        input.remove();
+      }, { once: true });
+      window.addEventListener('focus', () => window.setTimeout(() => input.remove(), 0), { once: true });
+      input.click();
+    };
+    const onMenuAction = (event) => {
+      switch (event.detail) {
+        case 'file.new-graph': handleAddTab(); break;
+        case 'file.new-blank-graph': handleAddBlankGraph(); break;
+        case 'file.open-graph': openFilePicker('.arc.json,application/json', (file) => handleImportGraph(file)); break;
+        case 'file.open-project': openFilePicker('.arcproject,.arcproject.json,application/json', (file) => {
+          setProjectImportFile(file);
+          setProjectImportTrusted(false);
+          setProjectImportError('');
+          setProjectImportCompatibility(null);
+          setProjectImportOldVersionApproved(false);
+        }); break;
+        case 'file.save-graph': handleSaveGraph(); break;
+        case 'file.export-graph': handleExportGraph(); break;
+        case 'file.export-project': {
+          const project = projects.find((item) => item.id === activeProjectId);
+          if (project) handleExportProject(project);
+          break;
+        }
+        case 'edit.undo': handleUndo(); break;
+        case 'edit.redo': handleRedo(); break;
+        case 'view.library': {
+          const shouldOpen = !isLibraryOpen;
+          setIsLibraryOpen(shouldOpen);
+          if (shouldOpen) { setIsProjectsOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(false); }
+          break;
+        }
+        case 'view.console': setConsoleOpenRequest((request) => request + 1); break;
+        case 'view.settings': setIsSettingsOpen(true); break;
+        case 'help.shortcuts': setIsShortcutsOpen(true); break;
+        default: break;
+      }
+    };
+    window.addEventListener('arc:desktop-menu-action', onMenuAction);
+    return () => window.removeEventListener('arc:desktop-menu-action', onMenuAction);
+  }, [activeProjectId, desktopMode, handleAddBlankGraph, handleAddTab, handleExportGraph, handleExportProject, handleImportGraph, handleRedo, handleSaveGraph, handleUndo, isLibraryOpen, projects]);
 
   const handleSetProjectLimit = async (value) => {
     if (localDesktopWorkspace) return;
@@ -4835,17 +4910,21 @@ export function App() {
         if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app (${studioPackage.version}). Update the workspace server before connecting.`);
         if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app (${studioPackage.version}). Update the desktop app before connecting.`);
         let serverNodeTypes = status.supportedNodeTypes;
-        if (!Array.isArray(serverNodeTypes)) {
-          const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
-          if (!registryResponse.ok) throw new Error('Could not check which node features this workspace supports. Update the workspace server or use the matching desktop version.');
+        let serverAdapterNodeTypes = new Set();
+        const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
+        if (registryResponse.ok) {
           const registry = await registryResponse.json().catch(() => null);
           const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
-          serverNodeTypes = definitions?.map((definition) => definition?.type) || null;
+          if (definitions?.length) {
+            serverNodeTypes = definitions.map((definition) => definition?.type);
+            serverAdapterNodeTypes = new Set(definitions.filter((definition) => definition?.pluginAdapter === true).map((definition) => definition.type));
+          }
         }
+        if (!Array.isArray(serverNodeTypes) && !registryResponse.ok) throw new Error('Could not check which node features this workspace supports. Update the workspace server or use the matching desktop version.');
         if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
         const serverNodeTypeSet = new Set(serverNodeTypes);
         const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
-        const unsupported = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type));
+        const unsupported = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type) && !serverAdapterNodeTypes.has(type) && !isNamespacedAdapterNodeType(type));
         if (unsupported.length) throw new Error(`This workspace uses ${unsupported.length} node feature${unsupported.length === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
         const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
         supportedNodeTypes = serverNodeTypeSet;
@@ -5189,7 +5268,8 @@ export function App() {
       setUpdateNotice(null);
       await update.close().catch(() => {});
     } catch (error) {
-      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: error?.message || 'ARC Studio could not install the update.', type: 'error', duration: 7000 });
+      const message = typeof error === 'string' ? error.trim() : typeof error?.message === 'string' ? error.message.trim() : '';
+      arcEvents.emit('toast:notify', { id: 'arc-studio-update-progress', title: 'Update failed', message: message || 'ARC Studio could not install the update.', type: 'error', duration: 10000 });
     } finally {
       setUpdateInstalling(false);
     }
@@ -6187,6 +6267,23 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
   const disabledPrivilegedIntents = [...privilegedEventIntents].filter((intent) => intentSummary?.some((item) => item.key === intent && item.portalEnabled === false));
   if (disabledPrivilegedIntents.length) warnings.push(`Enable ${disabledPrivilegedIntents.map((intent) => ({ GUILD_MEMBERS: 'Server Members', GUILD_PRESENCES: 'Presence', MESSAGE_CONTENT: 'Message Content' })[intent]).join(' and ')} intent${disabledPrivilegedIntents.length > 1 ? 's' : ''} in the Discord Developer Portal, then reconnect the gateway.`);
 
+  const hasConfiguredEmbed = (node) => {
+    const blocks = Array.isArray(node.data?.blocks) ? node.data.blocks : null;
+    const hasValue = (block, key) => Boolean(String(block?.[key] ?? '').trim())
+      || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === `block_${block?.id}_${key}`);
+    if (blocks) return blocks.some((block) => {
+      if (block?.type === 'title' || block?.type === 'description') return hasValue(block, 'value');
+      if (block?.type === 'field') return hasValue(block, 'name') && hasValue(block, 'value');
+      if (block?.type === 'image' || block?.type === 'thumbnail') return hasValue(block, 'url');
+      if (block?.type === 'author') return hasValue(block, 'name');
+      if (block?.type === 'footer') return hasValue(block, 'text');
+      return false;
+    });
+    return Boolean(node.data?.title || node.data?.description || node.data?.image_url || node.data?.thumbnail_url
+      || node.data?.author_name || node.data?.footer_text
+      || (Array.isArray(node.data?.fields) && node.data.fields.some((field) => field?.name && field?.value)));
+  };
+
   const slashCommandNames = new Set();
   for (const node of nodes) {
     if (!definitions.has(node.type)) errors.push(`${node.label || node.type}: node type is unavailable.`);
@@ -6249,7 +6346,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'channel_id');
       const hasMessageId = Boolean(String(node.data?.message_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'message_id');
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
-      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
+      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
       const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
       if (!hasChannel) errors.push(`${label}: connect a channel ID.`);
       if (isEdit && !hasMessageId) errors.push(`${label}: connect a message ID.`);
@@ -6271,7 +6368,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const hasInteractionId = Boolean(String(node.data?.interaction_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'interaction_id');
       if (!hasInteractionId && !hasUpstreamDefer(node.id)) warnings.push(`${label}: connect an Interaction ID.`);
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
-      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed');
+      const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
       const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
       if (!hasContent && !hasEmbed && !hasComponents) errors.push(`${label}: add reply content, an embed, or components.`);
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
