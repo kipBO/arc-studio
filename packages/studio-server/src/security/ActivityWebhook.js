@@ -27,7 +27,7 @@ function parseWebhookUrl(value) {
 }
 
 function cleanText(value, limit = 256) {
-  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/https?:\/\/\S+/gi, '[link]').replace(/[—;]/g, ',').trim().slice(0, limit) || 'Unknown';
+  return String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/https?:\/\/\S+/gi, '[link]').trim().slice(0, limit) || 'Unknown';
 }
 
 function embedForActivity(entry) {
@@ -157,14 +157,19 @@ export class ActivityWebhookDispatcher {
     this.nextSendAt = 0;
   }
 
-  enqueue(entry) {
+  enqueue(entry, avatarUrl = '') {
     if (!this.store.isEnabled()) return false;
     if (this.queue.length >= MAX_QUEUE_SIZE) {
       const droppedIndex = this.sending ? 1 : 0;
       const [dropped] = this.queue.splice(droppedIndex, 1);
       this.#setStatus(dropped?.entry, 'failed');
     }
-    this.queue.push({ entry, failures: 0 });
+    let safeAvatarUrl = '';
+    try {
+      const parsedAvatarUrl = new URL(String(avatarUrl || ''));
+      if (parsedAvatarUrl.protocol === 'https:' && !parsedAvatarUrl.username && !parsedAvatarUrl.password) safeAvatarUrl = parsedAvatarUrl.href;
+    } catch {}
+    this.queue.push({ entry, avatarUrl: safeAvatarUrl, failures: 0 });
     this.#setStatus(entry, 'in_progress');
     this.#schedule(0);
     return true;
@@ -210,6 +215,7 @@ export class ActivityWebhookDispatcher {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: 'ARC Studio',
+          ...(pending.avatarUrl ? { avatar_url: pending.avatarUrl } : {}),
           embeds: [embedForActivity(pending.entry)],
           allowed_mentions: { parse: [] }
         }),
@@ -262,4 +268,3 @@ export class ActivityWebhookDispatcher {
     try { this.onStatusChange(entry?.id, status, entry); } catch {}
   }
 }
-
