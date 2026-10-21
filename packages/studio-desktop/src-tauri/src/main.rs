@@ -392,6 +392,23 @@ fn read_arc_project_file(path: String) -> Result<String, String> {
     fs::read_to_string(path).map_err(|error| format!("Could not read the project file: {error}"))
 }
 
+fn is_arc_graph_path(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.to_ascii_lowercase().ends_with(".arc.json"))
+}
+
+#[tauri::command]
+fn read_arc_graph_file(path: String) -> Result<String, String> {
+    let path = PathBuf::from(path);
+    if !is_arc_graph_path(&path) {
+        return Err("Choose an .arc.json graph file.".to_string());
+    }
+    let metadata = fs::metadata(&path).map_err(|error| format!("Could not read the graph file: {error}"))?;
+    if !metadata.is_file() || metadata.len() > 128 * 1024 * 1024 {
+        return Err("The graph file is too large to open.".to_string());
+    }
+    fs::read_to_string(path).map_err(|error| format!("Could not read the graph file: {error}"))
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectExportReceipt {
@@ -474,11 +491,11 @@ fn is_arc_project_path(path: &Path) -> bool {
 
 #[cfg(target_os = "macos")]
 fn notify_project_file_opened<R: tauri::Runtime>(app: &tauri::AppHandle<R>, path: &Path) {
-    if !is_arc_project_path(path) { return; }
+    if !is_arc_project_path(path) && !is_arc_graph_path(path) { return; }
     let Some(window) = app.get_webview_window("main") else { return; };
     let path = js_string_literal(&path.to_string_lossy());
     let script = format!(
-        "window.__ARC_STUDIO_OPEN_PROJECT_FILES__ ||= []; window.__ARC_STUDIO_OPEN_PROJECT_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:project-file-opened', {{ detail: {path} }}));"
+        "window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));"
     );
     let _ = window.eval(&script);
 }
@@ -868,6 +885,7 @@ fn main() {
             delete_local_session_token,
             set_release_channel_icon,
             read_arc_project_file,
+            read_arc_graph_file,
             save_project_export,
             open_project_window,
             reset_local_data,
@@ -881,6 +899,20 @@ fn main() {
             clear_discord_presence,
             restart_app
         ])
+        .on_menu_event(|app, event| {
+            let action = event.id().as_ref();
+            if action == "help.github" {
+                let _ = open_external_url("https://github.com/relentiousdragon/arc-studio".to_string());
+                return;
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let script = format!(
+                    "window.dispatchEvent(new CustomEvent('arc:desktop-menu-action', {{ detail: {} }}));",
+                    js_string_literal(action)
+                );
+                let _ = window.eval(&script);
+            }
+        })
         .manage(StudioServer { child: Mutex::new(None), port: Mutex::new(None) })
         .manage(DiscordPresence {
             client: Mutex::new(None),
@@ -888,6 +920,56 @@ fn main() {
         })
         .setup(|app| {
             mark_update_starting(app.handle());
+            use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+            let handle = app.handle();
+            let new_graph = MenuItemBuilder::with_id("file.new-graph", "New Graph").accelerator("CmdOrCtrl+T").build(handle)?;
+            let new_blank_graph = MenuItemBuilder::with_id("file.new-blank-graph", "New Blank Graph").accelerator("CmdOrCtrl+Shift+T").build(handle)?;
+            let open_graph = MenuItemBuilder::with_id("file.open-graph", "Open Graph File…").accelerator("CmdOrCtrl+O").build(handle)?;
+            let open_project = MenuItemBuilder::with_id("file.open-project", "Import Project File…").build(handle)?;
+            let save_graph = MenuItemBuilder::with_id("file.save-graph", "Save Graph").accelerator("CmdOrCtrl+S").build(handle)?;
+            let export_graph = MenuItemBuilder::with_id("file.export-graph", "Export Graph…").build(handle)?;
+            let export_project = MenuItemBuilder::with_id("file.export-project", "Export Project…").build(handle)?;
+            let file_menu = SubmenuBuilder::new(handle, "File")
+                .item(&new_graph).item(&new_blank_graph).separator().item(&open_graph).item(&open_project)
+                .separator().item(&save_graph).item(&export_graph).item(&export_project).build()?;
+
+            let undo = MenuItemBuilder::with_id("edit.undo", "Undo").accelerator("CmdOrCtrl+Z").build(handle)?;
+            let redo = MenuItemBuilder::with_id("edit.redo", "Redo").accelerator("CmdOrCtrl+Shift+Z").build(handle)?;
+            let cut = PredefinedMenuItem::cut(handle, None)?;
+            let copy = PredefinedMenuItem::copy(handle, None)?;
+            let paste = PredefinedMenuItem::paste(handle, None)?;
+            let select_all = PredefinedMenuItem::select_all(handle, None)?;
+            let edit_menu = SubmenuBuilder::new(handle, "Edit")
+                .item(&undo).item(&redo).separator().item(&cut).item(&copy).item(&paste).separator().item(&select_all).build()?;
+
+            let library = MenuItemBuilder::with_id("view.library", "Toggle Library").accelerator("Shift+L").build(handle)?;
+            let console = MenuItemBuilder::with_id("view.console", "Open Console").accelerator("CmdOrCtrl+Shift+J").build(handle)?;
+            let settings = MenuItemBuilder::with_id("view.settings", "Editor Settings…").build(handle)?;
+            let view_menu = SubmenuBuilder::new(handle, "View")
+                .item(&library).item(&console).separator().item(&settings).build()?;
+
+            let minimize = PredefinedMenuItem::minimize(handle, None)?;
+            let maximize = PredefinedMenuItem::maximize(handle, None)?;
+            let close = PredefinedMenuItem::close_window(handle, None)?;
+            let window_menu = SubmenuBuilder::new(handle, "Window")
+                .item(&minimize).item(&maximize).item(&close).build()?;
+
+            let help_shortcuts = MenuItemBuilder::with_id("help.shortcuts", "Keyboard Shortcuts").build(handle)?;
+            let github = MenuItemBuilder::with_id("help.github", "ARC Studio on GitHub").build(handle)?;
+            let help_menu = SubmenuBuilder::new(handle, "Help").item(&help_shortcuts).separator().item(&github).build()?;
+            let menu_builder = MenuBuilder::new(handle);
+            #[cfg(target_os = "macos")]
+            let menu_builder = {
+                let about = PredefinedMenuItem::about(handle, None, None)?;
+                let hide = PredefinedMenuItem::hide(handle, None)?;
+                let hide_others = PredefinedMenuItem::hide_others(handle, None)?;
+                let quit = PredefinedMenuItem::quit(handle, None)?;
+                let app_menu = SubmenuBuilder::new(handle, "ARC Studio")
+                    .item(&about).separator().item(&hide).item(&hide_others).separator().item(&quit).build()?;
+                menu_builder.item(&app_menu)
+            };
+            let menu = menu_builder.item(&file_menu).item(&edit_menu).item(&view_menu).item(&window_menu).item(&help_menu).build()?;
+            app.set_menu(menu)?;
             let window_config = app
                 .config()
                 .app
@@ -928,7 +1010,7 @@ fn main() {
             let release_channel = build_release_channel();
             let startup_project_files = std::env::args_os().skip(1)
                 .map(PathBuf::from)
-                .filter(|path| is_arc_project_path(path))
+                .filter(|path| is_arc_project_path(path) || is_arc_graph_path(path))
                 .map(|path| js_string_literal(&path.to_string_lossy()))
                 .collect::<Vec<_>>()
                 .join(",");
@@ -940,7 +1022,7 @@ fn main() {
                 .map(js_string_literal)
                 .unwrap_or_else(|| "null".to_string());
             let init_script = format!(
-                "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_PROJECT_FILES__ = [{}];",
+                "window.__ARC_STUDIO_CONFIG__ = Object.freeze({{ desktop: true, platform: {}, target: {}, releaseChannel: {}, localUsername: {}, apiBaseUrl: {}, startupError: {}, startupProjectId: {} }}); window.__ARC_STUDIO_OPEN_FILES__ = [{}];",
                 js_string_literal(platform),
                 js_string_literal(&desktop_target),
                 js_string_literal(release_channel),
@@ -961,6 +1043,16 @@ fn main() {
             let save_path = window_size_path.clone();
             window.on_window_event(move |event| {
                 let next_size = match event {
+                    WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                        if let Some(window) = app_handle.get_webview_window(&window_label) {
+                            for path in paths.iter().filter(|path| is_arc_project_path(path) || is_arc_graph_path(path)) {
+                                let path = js_string_literal(&path.to_string_lossy());
+                                let script = format!("window.__ARC_STUDIO_OPEN_FILES__ ||= []; window.__ARC_STUDIO_OPEN_FILES__.push({path}); window.dispatchEvent(new CustomEvent('arc:desktop-file-opened', {{ detail: {path} }}));");
+                                let _ = window.eval(&script);
+                            }
+                        }
+                        None
+                    }
                     WindowEvent::Resized(size) => Some((size.width, size.height, None)),
                     WindowEvent::ScaleFactorChanged { scale_factor, new_inner_size, .. } => Some((new_inner_size.width, new_inner_size.height, Some(*scale_factor))),
                     WindowEvent::CloseRequested { .. } => {
