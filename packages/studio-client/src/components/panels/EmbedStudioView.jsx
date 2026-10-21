@@ -8,6 +8,7 @@ import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { useStudioEscape } from './useStudioEscape.js';
+import { onPageBlur } from '../../core/pageFocus.js';
 
 const EMPTY_ATTACHMENTS = [];
 //
@@ -172,9 +173,11 @@ export function EmbedStudioView({
     };
     window.addEventListener('pointerdown', close, true);
     window.addEventListener('keydown', close, true);
+    const removePageBlurListener = onPageBlur(() => setThumbnailContextMenu(null));
     return () => {
       window.removeEventListener('pointerdown', close, true);
       window.removeEventListener('keydown', close, true);
+      removePageBlurListener();
     };
   }, [thumbnailContextMenu]);
 
