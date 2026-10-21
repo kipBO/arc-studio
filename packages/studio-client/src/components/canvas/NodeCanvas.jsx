@@ -388,7 +388,9 @@ export function NodeCanvas({
   const pointerMoveHandlerRef = useRef(null);
   const canvasInteractionActiveRef = useRef(false);
   const pinDoubleClickRef = useRef(null);
+  const pendingPinDragRef = useRef(null);
   const frameTimingRef = useRef({ last: 0, samples: 0, slow: 0, fast: 0 });
+  const autoPanFrameTimeRef = useRef(0);
   const [performanceReduced, setPerformanceReduced] = useState(() => {
     if (typeof navigator === 'undefined') return false;
     const lowMemory = Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4;
@@ -419,6 +421,8 @@ export function NodeCanvas({
   const [deleteConfirmationNoteIds, setDeleteConfirmationNoteIds] = useState([]);
   const [selectionBox, setSelectionBox] = useState(null);
   const [draggingNode, setDraggingNode] = useState(null);
+  const draggingNodeRef = useRef(draggingNode);
+  draggingNodeRef.current = draggingNode;
   const [draggingNote, setDraggingNote] = useState(null);
   const [focusedNote, setFocusedNote] = useState(null);
   const [graphChatComposerOpen, setGraphChatComposerOpen] = useState(false);
@@ -576,7 +580,7 @@ export function NodeCanvas({
   const altDownRef = useRef(false);
   const cancelConnectingWire = useCallback(() => {
     const current = connectingWireRef.current;
-    if (current?.originalConnection) onConnectionsChange?.([...connections.filter((item) => item.id !== current.originalConnection.id), current.originalConnection]);
+    if (current?.originalConnection && !current.clickToConnect) onConnectionsChange?.([...connections.filter((item) => item.id !== current.originalConnection.id), current.originalConnection]);
     setConnectingWire(null);
   }, [connections, onConnectionsChange]);
   const snapToGrid = settings.snapToGrid ?? true;
@@ -1525,8 +1529,33 @@ export function NodeCanvas({
     if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
   };
 
+  const activatePendingPinDrag = (event) => {
+    const pending = pendingPinDragRef.current;
+    if (!pending || (Number.isInteger(pending.pointerId) && pending.pointerId !== event.pointerId)
+      || Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < 4) return false;
+    pendingPinDragRef.current = null;
+    pinDoubleClickRef.current = null;
+    const bounds = containerRef.current?.getBoundingClientRect();
+    if (!bounds) return false;
+    const displayScale = getCanvasDisplayScale(containerRef.current);
+    const wire = {
+      nodeId: pending.nodeId,
+      pinId: pending.pinId,
+      direction: pending.direction,
+      pinType: pending.pinType,
+      startPos: getSocketPosition(pending.nodeId, pending.pinId, pending.direction),
+      currentPos: { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom },
+      snapTarget: null
+    };
+    connectingWireRef.current = wire;
+    setConnectingWire(wire);
+    onCollaborationAction?.({ kind: 'wire-drag', cursor: wire.currentPos, start: wire.startPos, pinType: wire.pinType, nodeId: wire.nodeId, pinId: wire.pinId, direction: wire.direction });
+    return true;
+  };
+
   const movePointer = (event) => {
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
+    activatePendingPinDrag(event);
     if (textInputPopupOpen() && (isPanning || touchPinchRef.current)) {
       setIsPanning(false);
       rightPanOriginRef.current = null;
@@ -1567,8 +1596,9 @@ export function NodeCanvas({
       collaborationCursorRef.current = cursor;
       if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, nodeId: connectingWire.nodeId, pinId: connectingWire.pinId, direction: connectingWire.direction, snapTarget: connectingWire.snapTarget ? { nodeId: connectingWire.snapTarget.nodeId, pinId: connectingWire.snapTarget.pinId } : null, selectedNodeIds });
       else if (draggingNode) {
-        const deltaX = (event.clientX - draggingNode.startX) / displayScale / zoom;
-        const deltaY = (event.clientY - draggingNode.startY) / displayScale / zoom;
+        const currentPan = viewportRef.current.pan;
+        const deltaX = ((event.clientX - draggingNode.startX) / displayScale - (currentPan.x - draggingNode.startPan.x)) / zoom;
+        const deltaY = ((event.clientY - draggingNode.startY) / displayScale - (currentPan.y - draggingNode.startPan.y)) / zoom;
         let x = draggingNode.initialX + deltaX;
         let y = draggingNode.initialY + deltaY;
         if (snapToGrid) { x = Math.round(x / GRID_SIZE) * GRID_SIZE; y = Math.round(y / GRID_SIZE) * GRID_SIZE; }
@@ -1637,8 +1667,9 @@ export function NodeCanvas({
     }
     if (draggingNode) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
-      const deltaX = (event.clientX - draggingNode.startX) / displayScale;
-      const deltaY = (event.clientY - draggingNode.startY) / displayScale;
+      const currentPan = viewportRef.current.pan;
+      const deltaX = (event.clientX - draggingNode.startX) / displayScale - (currentPan.x - draggingNode.startPan.x);
+      const deltaY = (event.clientY - draggingNode.startY) / displayScale - (currentPan.y - draggingNode.startPan.y);
       if (!draggingNode.historyStarted && Math.hypot(deltaX, deltaY) < 2) return;
       if (!draggingNode.historyStarted) {
         onHistoryGroupStart?.();
@@ -1692,6 +1723,35 @@ export function NodeCanvas({
       const pending = pendingPointerMoveRef.current;
       pendingPointerMoveRef.current = null;
       if (pending) pointerMoveHandlerRef.current?.(pending);
+
+      const activeDrag = draggingNodeRef.current;
+      const pointer = pointerPositionRef.current;
+      const container = containerRef.current;
+      if (activeDrag && pointer && container && document.visibilityState !== 'hidden') {
+        const bounds = container.getBoundingClientRect();
+        const edgeSize = 56;
+        const speed = 760;
+        const axisVelocity = (position, size) => {
+          if (position < edgeSize) return speed * Math.max(0, Math.min(1, (edgeSize - position) / edgeSize));
+          if (position > size - edgeSize) return -speed * Math.max(0, Math.min(1, (position - (size - edgeSize)) / edgeSize));
+          return 0;
+        };
+        const elapsed = autoPanFrameTimeRef.current ? Math.min(32, timestamp - autoPanFrameTimeRef.current) : 16;
+        autoPanFrameTimeRef.current = timestamp;
+        const displayScale = getCanvasDisplayScale(container);
+        const deltaPanX = axisVelocity(pointer.x - bounds.left, bounds.width) * elapsed / 1000 / displayScale;
+        const deltaPanY = axisVelocity(pointer.y - bounds.top, bounds.height) * elapsed / 1000 / displayScale;
+        if (deltaPanX || deltaPanY) {
+          const nextPan = { x: viewportRef.current.pan.x + deltaPanX, y: viewportRef.current.pan.y + deltaPanY };
+          setPan(nextPan);
+          if (!activeDrag.historyStarted) onHistoryGroupStart?.();
+          const deltaX = ((pointer.x - activeDrag.startX) / displayScale - (nextPan.x - activeDrag.startPan.x)) / zoom;
+          const deltaY = ((pointer.y - activeDrag.startY) / displayScale - (nextPan.y - activeDrag.startPan.y)) / zoom;
+          const x = snapToGrid ? Math.round((activeDrag.initialX + deltaX) / GRID_SIZE) * GRID_SIZE : activeDrag.initialX + deltaX;
+          const y = snapToGrid ? Math.round((activeDrag.initialY + deltaY) / GRID_SIZE) * GRID_SIZE : activeDrag.initialY + deltaY;
+          setDraggingNode((current) => current ? { ...current, historyStarted: true, deltaX: x - current.initialX, deltaY: y - current.initialY } : current);
+        }
+      } else autoPanFrameTimeRef.current = 0;
 
       const timing = frameTimingRef.current;
       if (document.visibilityState === 'hidden') {
@@ -1768,7 +1828,7 @@ export function NodeCanvas({
     onConnectionsChange?.(next);
   };
 
-  const finishPointer = (event) => {
+  const finishPointer = (event, activeWire = connectingWire) => {
     let finalSelectedNodeIds = selectedNodeIds;
     let finalSelectedNoteIds = selectedNoteIds;
     const finishedDraggingNode = draggingNode;
@@ -1779,8 +1839,8 @@ export function NodeCanvas({
       y: ((event.clientY - finishBounds.top) / finishScale - pan.y) / zoom
     } : collaborationCursorRef.current;
     const finalNodeDelta = finishedDraggingNode ? {
-      x: (event.clientX - finishedDraggingNode.startX) / finishScale / zoom,
-      y: (event.clientY - finishedDraggingNode.startY) / finishScale / zoom
+      x: ((event.clientX - finishedDraggingNode.startX) / finishScale - (pan.x - finishedDraggingNode.startPan.x)) / zoom,
+      y: ((event.clientY - finishedDraggingNode.startY) / finishScale - (pan.y - finishedDraggingNode.startPan.y)) / zoom
     } : null;
     let finalNodeX = finishedDraggingNode ? finishedDraggingNode.initialX + finalNodeDelta.x : 0;
     let finalNodeY = finishedDraggingNode ? finishedDraggingNode.initialY + finalNodeDelta.y : 0;
@@ -1885,13 +1945,18 @@ export function NodeCanvas({
       setDraggingNote(null);
     }
     onHistoryGroupEnd?.();
-    if (connectingWire) {
-      const snapTarget = settings.magneticSnap === false ? null : findClosestPin(event.clientX, event.clientY, connectingWire, 30);
+    if (activeWire?.clickToConnect) {
+      setConnectingWire((current) => current ? { ...current, currentPos: finishBounds ? {
+        x: ((event.clientX - finishBounds.left) / finishScale - pan.x) / zoom,
+        y: ((event.clientY - finishBounds.top) / finishScale - pan.y) / zoom
+      } : current.currentPos } : null);
+    } else if (activeWire) {
+      const snapTarget = settings.magneticSnap === false ? null : findClosestPin(event.clientX, event.clientY, activeWire, 30);
       const targetRow = document.elementFromPoint(event.clientX, event.clientY)?.closest('.node-pin-row');
       const target = snapTarget || pinFromRow(targetRow);
-      if (isCompatiblePin(connectingWire, target)) connectPins(connectingWire, target, connectingWire.connectionId);
-      else if (connectingWire.originalConnection) onConnectionsChange?.([...connections.filter((item) => item.id !== connectingWire.originalConnection.id), connectingWire.originalConnection]);
-      else if (targetRow && targetRow.dataset.nodeId !== connectingWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
+      if (isCompatiblePin(activeWire, target)) connectPins(activeWire, target, activeWire.connectionId);
+      else if (activeWire.originalConnection) onConnectionsChange?.([...connections.filter((item) => item.id !== activeWire.originalConnection.id), activeWire.originalConnection]);
+      else if (targetRow && targetRow.dataset.nodeId !== activeWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
       setConnectingWire(null);
     }
     if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
@@ -1904,6 +1969,7 @@ export function NodeCanvas({
     pendingPointerMoveRef.current = null;
     canvasInteractionActiveRef.current = false;
     movePointer(event);
+    pendingPinDragRef.current = null;
     const wasPinching = event.pointerType === 'touch' && Boolean(touchPinchRef.current);
     if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
     if (wasPinching) {
@@ -1917,11 +1983,11 @@ export function NodeCanvas({
       if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds }, true);
       return;
     }
-    finishPointer(event);
+    finishPointer(event, connectingWireRef.current || connectingWire);
   };
 
   const startWire = (event, nodeId, pinId, direction, pinType) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || isLocked) return;
     event.stopPropagation();
     const position = getSocketPosition(nodeId, pinId, direction);
     const bounds = containerRef.current.getBoundingClientRect();
@@ -1964,28 +2030,82 @@ export function NodeCanvas({
 
   const handlePinPointerDownCapture = (event) => {
     const row = event.target instanceof Element ? event.target.closest('.node-pin-row') : null;
-    if (event.button !== 0 || event.pointerType === 'touch' || !row || !containerRef.current?.contains(row)) {
+    if (event.button !== 0 || !row || !containerRef.current?.contains(row)) {
       pinDoubleClickRef.current = null;
+      if (event.button === 0 && connectingWireRef.current?.clickToConnect && containerRef.current?.contains(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelConnectingWire();
+      }
       return;
     }
 
     const { nodeId, pinId, direction } = row.dataset;
+    const target = { nodeId, pinId, direction, pinType: row.dataset.pinType };
+    const activeWire = connectingWireRef.current;
+    if (activeWire?.clickToConnect) {
+      event.preventDefault();
+      event.stopPropagation();
+      pinDoubleClickRef.current = null;
+      if (!isLocked && isCompatiblePin(activeWire, target)) {
+        connectPins(activeWire, target, activeWire.connectionId);
+        setConnectingWire(null);
+      } else cancelConnectingWire();
+      return;
+    }
+
     const now = performance.now();
     const previous = pinDoubleClickRef.current;
     const isDoubleClick = previous?.nodeId === nodeId && previous.pinId === pinId && previous.direction === direction
-      && now - previous.at <= 650 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 10;
-    pinDoubleClickRef.current = isDoubleClick ? null : { nodeId, pinId, direction, at: now, x: event.clientX, y: event.clientY };
-    if (!isDoubleClick || isLocked) return;
-
-    const hasConnection = direction === 'input'
-      ? connections.some((connection) => connection.targetNodeId === nodeId && connection.targetPinId === pinId)
-      : connections.some((connection) => connection.sourceNodeId === nodeId && connection.sourcePinId === pinId);
-    if (!hasConnection) return;
+      && previous.pointerType === event.pointerType && now - previous.at <= 650 && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 18;
+    pinDoubleClickRef.current = isDoubleClick ? null : { nodeId, pinId, direction, pointerType: event.pointerType, at: now, x: event.clientX, y: event.clientY };
+    if (!isDoubleClick || isLocked) {
+      if (direction === 'output' && !isLocked) {
+        event.preventDefault();
+        event.stopPropagation();
+        pendingPinDragRef.current = {
+          nodeId,
+          pinId,
+          direction,
+          pinType: target.pinType,
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY
+        };
+        if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
+      }
+      return;
+    }
 
     event.preventDefault();
     event.stopPropagation();
-    if (direction === 'input') startWireFromInput(event, nodeId, pinId);
-    else startWireFromOutput(event, nodeId, pinId);
+    const originalConnection = direction === 'input'
+      ? connections.find((connection) => connection.targetNodeId === nodeId && connection.targetPinId === pinId)
+      : null;
+    if (direction === 'input' && !originalConnection) return;
+    const wireStart = direction === 'input' && originalConnection
+      ? {
+          nodeId: originalConnection.sourceNodeId,
+          pinId: originalConnection.sourcePinId,
+          direction: 'output',
+          pinType: originalConnection.type || target.pinType
+        }
+      : target;
+    const bounds = containerRef.current.getBoundingClientRect();
+    const displayScale = getCanvasDisplayScale(containerRef.current);
+    const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
+    const nextWire = {
+      ...wireStart,
+      startPos: getSocketPosition(wireStart.nodeId, wireStart.pinId, wireStart.direction),
+      currentPos: pointer,
+      snapTarget: null,
+      clickToConnect: true,
+      connectionId: originalConnection?.id || null,
+      originalConnection: originalConnection || null
+    };
+    connectingWireRef.current = nextWire;
+    setConnectingWire(nextWire);
+    onCollaborationAction?.({ kind: 'wire-drag', cursor: pointer, start: getSocketPosition(wireStart.nodeId, wireStart.pinId, wireStart.direction), pinType: wireStart.pinType, nodeId: wireStart.nodeId, pinId: wireStart.pinId, direction: wireStart.direction });
   };
 
   const cutWire = (event, connection) => {
@@ -2027,7 +2147,7 @@ export function NodeCanvas({
     selectNodes(nextIds, node.id);
     const movingIds = nextIds.includes(node.id) ? nextIds : [node.id];
     const initialPositions = Object.fromEntries(nodes.filter((item) => movingIds.includes(item.id)).map((item) => [item.id, { x: item.x, y: item.y }]));
-    setDraggingNode({ id: node.id, nodeIds: movingIds, initialPositions, startX: event.clientX, startY: event.clientY, initialX: node.x, initialY: node.y, historyStarted: false, altKey: event.altKey });
+    setDraggingNode({ id: node.id, nodeIds: movingIds, initialPositions, startX: event.clientX, startY: event.clientY, startPan: viewportRef.current.pan, initialX: node.x, initialY: node.y, historyStarted: false, altKey: event.altKey });
     containerRef.current?.setPointerCapture?.(event.pointerId);
   };
 
@@ -2461,6 +2581,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   }), []);
 
   const renderWire = (connection, isSelectedNodeWire, isPrimarySelectedWire = false) => {
+    if (connectingWire?.clickToConnect && connectingWire.direction === 'output' && connectingWire.originalConnection?.id === connection.id) return null;
     const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
     const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
     const path = computePath(start.x, start.y, end.x, end.y);
@@ -2620,7 +2741,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return (
     <div
       ref={containerRef}
-      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
+      className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${connectingWire?.clickToConnect ? 'is-click-connecting' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
       data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-canvas-quality={effectiveCanvasQuality}
       data-pin-descriptions={settings.pinDescriptionsAlways || shiftHeld ? 'true' : undefined}
@@ -2643,6 +2764,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       onPointerCancel={() => {
         if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
         pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
+        pendingPinDragRef.current = null;
         touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false);
         const nodePositions = collaborationMotionSupported && draggingNode ? (draggingNode.nodeIds || [draggingNode.id]).map((id) => { const node = nodes.find((item) => item.id === id); return node ? { id, x: node.x, y: node.y } : null; }).filter(Boolean) : undefined;
         if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds, nodePositions }, true);
@@ -2696,6 +2818,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       style={{ '--grid-size': `${gridSize}px`, '--grid-x': `${pan.x}px`, '--grid-y': `${pan.y}px` }}
     >
       <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" />
+      {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd> cancels</div>}
       <div className="canvas-world" style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}>
         {tagGroupLayouts.map((group) => <div key={group.id} className="canvas-tag-group" aria-hidden="true" style={{ left: group.left, top: group.top, width: group.width, height: group.height, '--tag-group-color': group.color }} />)}
         {remoteActions.filter((peer) => peer.action?.kind === 'selection' && peer.action.selectionRect).map((peer) => {
