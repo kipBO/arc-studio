@@ -1,26 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowRight, Puzzle, Search, X, Plus, Workflow } from 'lucide-react';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
-
-const NODE_SEARCH_ALIASES = {
-  event_message_create: ['message', 'message received', 'message trigger', 'chat message'],
-  event_slash_command: ['slash', 'command', 'interaction command', 'slash command'],
-  event_slash_autocomplete: ['slash', 'command', 'autocomplete', 'suggestions', 'choices'],
-  action_respond_autocomplete: ['autocomplete', 'suggestions', 'choices', 'respond', 'dynamic options'],
-  event_button: ['button click', 'component interaction'],
-  action_send_message: ['send', 'reply', 'create message', 'send reply'],
-  action_edit_message: ['edit message', 'update message'],
-  math_random: ['random', 'rand', 'random number', 'random integer', 'random float'],
-  branch_if: ['if', 'condition', 'conditional', 'branch'],
-  delay: ['wait', 'sleep', 'timeout'],
-  repeat_while: ['loop', 'repeat', 'interval', 'retry'],
-  variable_get: ['get variable', 'read variable', 'variable'],
-  variable_set: ['set variable', 'write variable', 'assign variable'],
-  build_embed: ['embed', 'create embed', 'embed builder'],
-  data_permission_overwrites: ['permissions', 'channel permissions', 'permission overwrites'],
-  function_call: ['call graph', 'subgraph', 'function'],
-  action_http_request: ['http', 'fetch', 'api request', 'web request']
-};
+import { NODE_SEARCH_ALIASES, scoreSearchMatch } from './nodeSearch.js';
 //
 export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins = [], onClose, onAddNode, onOpenGraph, onOpenPlugin, onGoToNode }) {
   const [query, setQuery] = useState('');
@@ -72,7 +53,11 @@ export function CommandPalette({ isOpen, graphs = [], definitions = [], plugins 
       const graphNodes = instanceItems.slice(0, 5);
       return [...suggestedNodes, ...graphNodes];
     }
-    return candidates.filter((item) => `${item.label} ${item.detail} ${item.searchText}`.toLowerCase().includes(needle)).slice(0, 80);
+    return candidates.map((item, order) => ({
+      item,
+      order,
+      score: scoreSearchMatch(needle, [item.label, item.detail, item.searchText])
+    })).filter((entry) => entry.score > 0).sort((left, right) => right.score - left.score || left.order - right.order).slice(0, 80).map((entry) => entry.item);
   }, [definitions, graphs, onAddNode, onGoToNode, onOpenGraph, onOpenPlugin, plugins, query]);
 
   const groups = useMemo(() => {
