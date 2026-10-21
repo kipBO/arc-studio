@@ -161,33 +161,42 @@ function publishProjectCollaboration(projectId) {
     const graphId = client.arcPresence?.projectId === projectId ? client.arcPresence.graphId : '';
     if (graphId && !collaborator.graphIds.includes(graphId)) collaborator.graphIds.push(graphId);
   }
-  const activity = new Map(collaborationLastSeen.graphSnapshot(projectId).map((entry) => [entry.graphId, entry]));
-  for (const state of liveGraphStates.values()) {
-    if (state.projectId !== projectId || Date.now() - state.updatedAt > 30 * 60 * 1000 || !state.user?.id) continue;
-    activity.set(state.graphId, { graphId: state.graphId, userId: state.user.id, updatedAt: state.updatedAt });
-  }
-  for (const [key, entry] of recentProjectGraphUse) {
-    if (!key.startsWith(`${projectId}:`)) continue;
-    if (Date.now() - entry.updatedAt > 30 * 60 * 1000) { recentProjectGraphUse.delete(key); continue; }
-    const previous = activity.get(entry.graphId);
-    if (!previous || previous.updatedAt < entry.updatedAt) activity.set(entry.graphId, { graphId: entry.graphId, userId: entry.userId, updatedAt: entry.updatedAt });
-  }
   const openGraphIds = new Set();
   let tabsInitialized = false;
   for (const client of clients) {
     tabsInitialized ||= client.arcTabsInitialized === true;
     for (const graphId of client.arcOpenGraphIds || []) openGraphIds.add(graphId);
   }
-  const payload = {
-    projectId,
-    graphIds: [...openGraphIds].slice(0, 12),
-    tabsInitialized,
-    graphActivity: [...activity.values()],
-    projectLastSeen: collaborationLastSeen.projectSnapshot(),
-    users: [...users.values()]
-  };
-  const message = JSON.stringify({ type: 'PROJECT_COLLABORATION_UPDATED', payload });
-  for (const client of clients) client.send(message);
+  const now = Date.now();
+  for (const client of clients) {
+    const currentUserId = String(client.arcUser?.id || '');
+    const activity = new Map(collaborationLastSeen.graphSnapshot(projectId, currentUserId).map((entry) => [entry.graphId, entry]));
+    const addOtherUserActivity = (graphId, userId, updatedAt) => {
+      if (!graphId || !userId || String(userId) === currentUserId) return;
+      const previous = activity.get(graphId);
+      if (!previous || Number(previous.updatedAt) < Number(updatedAt)) activity.set(graphId, { graphId, userId: String(userId), updatedAt });
+    };
+    for (const state of liveGraphStates.values()) {
+      if (state.projectId !== projectId || now - state.updatedAt > 30 * 60 * 1000 || !state.user?.id) continue;
+      addOtherUserActivity(state.graphId, state.user.id, state.updatedAt);
+    }
+    for (const [key, entry] of recentProjectGraphUse) {
+      if (!key.startsWith(`${projectId}:`)) continue;
+      if (now - entry.updatedAt > 30 * 60 * 1000) { recentProjectGraphUse.delete(key); continue; }
+      addOtherUserActivity(entry.graphId, entry.userId, entry.updatedAt);
+    }
+    client.send(JSON.stringify({
+      type: 'PROJECT_COLLABORATION_UPDATED',
+      payload: {
+        projectId,
+        graphIds: [...openGraphIds].slice(0, 12),
+        tabsInitialized,
+        graphActivity: [...activity.values()],
+        projectLastSeen: collaborationLastSeen.projectSnapshot(currentUserId),
+        users: [...users.values()]
+      }
+    }));
+  }
 }
 
 function clearDeletedGraphCollaboration(projectId, graphId) {
@@ -227,8 +236,11 @@ function clearDeletedGraphCollaboration(projectId, graphId) {
   publishPresence();
 }
 function broadcastProjectLastSeen() {
-  const serialized = JSON.stringify({ type: 'PROJECT_LAST_SEEN_UPDATED', payload: collaborationLastSeen.projectSnapshot() });
-  for (const client of wss.clients) if (client.arcAuthenticated && client.readyState === WebSocket.OPEN) client.send(serialized);
+  for (const client of wss.clients) {
+    if (!client.arcAuthenticated || client.readyState !== WebSocket.OPEN) continue;
+    const payload = collaborationLastSeen.projectSnapshot(client.arcUser?.id || '');
+    client.send(JSON.stringify({ type: 'PROJECT_LAST_SEEN_UPDATED', payload }));
+  }
 }
 
 const desktopOrigins = (process.env.ARC_CORS_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
@@ -517,7 +529,7 @@ wss.on('connection', (ws) => {
             chezcordVersion: serverConfig.chezcordVersion,
             collaborationFeatures: { transientCanvasMotion: true },
             diagnostics,
-            projectLastSeen: collaborationLastSeen.projectSnapshot()
+            projectLastSeen: collaborationLastSeen.projectSnapshot(ws.arcUser?.id || '')
           }
         }));
         publishPresence();
