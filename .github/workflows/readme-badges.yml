@@ -2,6 +2,7 @@ name: Update README badges
 
 on:
   push:
+    branches: [main]
     paths:
       - README.md
 
@@ -41,5 +42,5 @@ jobs:
             echo "README badges are already current."
           else
             git commit -m "docs: refresh README badges [skip ci]"
-            git push origin "HEAD:refs/heads/${GITHUB_REF_NAME}"
+            git push origin HEAD:refs/heads/main
           fi
