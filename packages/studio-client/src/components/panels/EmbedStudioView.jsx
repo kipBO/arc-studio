@@ -659,7 +659,15 @@ export function EmbedStudioView({
                         )}
                       </div>
 
-                      {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : safePreviewUrl(thumbnail) ? (failedThumbnailUrl === safePreviewUrl(thumbnail) ? (
+                      {thumbnailWire ? <div className="embed-preview-wire-media is-thumbnail">{thumbnailWire.token}</div> : attachedThumbnail ? (
+                        <div
+                          className="embed-preview-attachment-thumb is-interactive"
+                          onClick={() => focusEditorBlock('thumbnail')}
+                          title="Uploaded image"
+                        >
+                          <Upload size={18} aria-label="Uploaded image" />
+                        </div>
+                      ) : safePreviewUrl(thumbnail) ? (failedThumbnailUrl === safePreviewUrl(thumbnail) ? (
                         <div className="embed-preview-image-error" onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setThumbnailContextMenu({ x: event.clientX, y: event.clientY, url: safePreviewUrl(thumbnail) }); }}>
                           <span>Image could not be loaded</span>
                           <a href={safePreviewUrl(thumbnail)} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open image <ExternalLink size={11} /></a>
@@ -675,18 +683,19 @@ export function EmbedStudioView({
                           onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setThumbnailContextMenu({ x: event.clientX, y: event.clientY, url: safePreviewUrl(thumbnail) }); }}
                           title="Click to edit thumbnail · Right-click to open image"
                         />
-                      )) : attachedThumbnail ? (
-                        <div
-                          className="embed-preview-attachment-thumb is-interactive"
-                          onClick={() => focusEditorBlock('thumbnail')}
-                          title={`Uploaded attachment: ${attachedThumbnail}`}
-                        >
-                          📎
-                        </div>
-                      ) : null}
+                      )) : null}
                     </div>
 
-                    {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : safePreviewUrl(image) && failedImageUrl !== safePreviewUrl(image) ? (
+                    {imageWire ? <div className="embed-preview-wire-media">{imageWire.token}</div> : attachedImage ? (
+                      <div
+                        className="embed-preview-attachment-image is-interactive"
+                        onClick={() => focusEditorBlock('image')}
+                        title="Uploaded image"
+                      >
+                        <Upload size={15} aria-hidden="true" />
+                        <span>Uploaded image</span>
+                      </div>
+                    ) : safePreviewUrl(image) && failedImageUrl !== safePreviewUrl(image) ? (
                       <img
                         className="embed-preview-image is-interactive"
                         src={safePreviewUrl(image)}
@@ -700,13 +709,6 @@ export function EmbedStudioView({
                       <div className="embed-preview-image-error embed-preview-image-error-large">
                         <span>Image could not be loaded</span>
                         <a href={safePreviewUrl(image)} target="_blank" rel="noreferrer">Open image <ExternalLink size={11} /></a>
-                      </div>
-                    ) : attachedImage ? (
-                      <div
-                        className="embed-preview-attachment-image is-interactive"
-                        onClick={() => focusEditorBlock('image')}
-                      >
-                        <span>Attached image:</span> <code>{attachedImage}</code>
                       </div>
                     ) : null}
 
