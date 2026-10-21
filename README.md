@@ -28,9 +28,9 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 
 ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
 
-![A Discord command graph in ARC Studio](docs/screenshots/graph-editor.jpg)
+![A Discord command graph in ARC Studio](docs/screenshots/graph-editor.png)
 
-![An embed being edited with a live Discord preview](docs/screenshots/embed-studio.jpg)
+![An embed being edited with a live Discord preview](docs/screenshots/embed-studio.png)
 
 ![Real time collaboration](docs/screenshots/collab.png)
 
