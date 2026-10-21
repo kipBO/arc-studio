@@ -497,6 +497,7 @@ wss.on('connection', (ws) => {
       if (!ws.arcAuthenticated) {
         const user = msg.type === 'AUTH' ? userStore.validateSession(msg.token) : null;
         if (!user) {
+          if (msg.type === 'AUTH' && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'SESSION_EXPIRED' }));
           ws.close(1008, 'Authentication required.');
           return;
         }
@@ -537,6 +538,7 @@ wss.on('connection', (ws) => {
         const currentUser = userStore.validateSession(ws.arcToken);
         if (!currentUser) {
           ws.arcAuthenticated = false;
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'SESSION_EXPIRED' }));
           ws.close(1008, 'Session expired or permissions changed. Sign in again.');
           return;
         }
