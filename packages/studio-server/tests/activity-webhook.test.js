@@ -62,16 +62,18 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
     timestamp: '2026-10-21T10:00:00.000Z',
     actor: { username: 'ARC Studio' },
     action: 'graph.updated',
-    summary: 'Updated graph “Welcome” saved, ready',
+    summary: 'Updated - graph “Welcome”, saved, ready',
     details: { projectName: 'Community Bot', graphName: 'Welcome' }
-  });
+  }, 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png');
   for (let attempt = 0; attempt < 30 && !request; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.ok(request);
   assert.equal(request.url, secretUrl);
   assert.equal(request.options.redirect, 'error');
   const payload = JSON.parse(request.options.body);
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
+  assert.equal(payload.avatar_url, 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png');
   assert.equal(payload.embeds.length, 1);
+  assert.equal(payload.embeds[0].description, 'Updated - graph “Welcome”, saved, ready');
   assert.equal(payload.embeds[0].fields[0].value, 'ARC Studio');
   assert.equal(payload.embeds[0].fields[1].value, 'Welcome · Community Bot');
   assert.equal(payload.embeds[0].footer.text, 'ARC Studio');
