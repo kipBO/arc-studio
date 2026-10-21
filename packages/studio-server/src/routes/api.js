@@ -11,6 +11,7 @@ import { PluginStore } from '../engine/PluginStore.js';
 import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
 import { EmbedStore } from '../engine/EmbedStore.js';
 import { ActivityStore } from '../security/ActivityStore.js';
+import { ActivityWebhookDispatcher, ActivityWebhookStore } from '../security/ActivityWebhook.js';
 import { StarterProjects } from '../storage/StarterProjects.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -54,12 +55,18 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     return embedStores.get(filePath);
   };
   const activityStore = new ActivityStore();
+  const activityWebhookStore = new ActivityWebhookStore();
+  const activityWebhookDispatcher = new ActivityWebhookDispatcher(activityWebhookStore, logger);
   const resetPasswordAttempts = new Map();
   const releaseNotesCache = new Map();
   const recordTeamActivity = (req, action, summary, details) => {
-    if (serverConfig.desktopMode || userStore.listUsers().length < 2) return;
-    try { activityStore.record(req.user, action, summary, details); }
-    catch (error) { logger.log('ERROR', `Could not persist team activity: ${error.message}`); }
+    if (serverConfig.desktopMode || (userStore.listUsers().length < 2 && !activityWebhookStore.isEnabled())) return;
+    try {
+      const projectName = managerForUser(req.user)?.project?.name || botManager.project?.name || 'Workspace';
+      const entry = activityStore.record(req.user, action, summary, { ...(details || {}), projectName: details?.projectName || projectName });
+      activityWebhookDispatcher.enqueue(entry);
+    }
+    catch (error) { logger.log('ERROR', `Could not record team activity: ${error.message}`); }
   };
   const installedPluginsForResponse = (projectManager = botManager) => {
     const showInstaller = !serverConfig.desktopMode && userStore.listUsers().length > 1;
@@ -526,6 +533,25 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     res.json({ activity: userStore.listUsers().length > 1 ? activityStore.list(req.query.limit) : [] });
     });
   }
+
+  router.get('/activity-webhook/settings', requirePermission('*'), (req, res) => {
+    if (serverConfig.desktopMode) return res.sendStatus(404);
+    if (req.user?.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can manage the activity webhook.' });
+    res.json(activityWebhookStore.settings());
+  });
+
+  router.put('/activity-webhook/settings', requirePermission('*'), (req, res) => {
+    if (serverConfig.desktopMode) return res.sendStatus(404);
+    if (req.user?.isPrimaryAdmin !== true) return res.status(403).json({ error: 'Only the primary workspace owner can manage the activity webhook.' });
+    try {
+      const settings = activityWebhookStore.update(req.body);
+      activityWebhookDispatcher.settingsChanged();
+      recordTeamActivity(req, 'activity.webhook_updated', 'Updated Discord activity webhook settings', {});
+      res.json(settings);
+    } catch (error) {
+      res.status(400).json({ error: error.message || 'Could not save activity webhook settings.' });
+    }
+  });
 
   router.get('/embeds', (req, res) => {
     res.json({ embeds: getEmbedStore().list() });
