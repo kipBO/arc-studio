@@ -19,6 +19,8 @@ import path from 'node:path';
 import { dataDir } from '../storage.js';
 import { botManagerContext } from '../engine/RequestBotManager.js';
 //
+const ACTIVITY_WEBHOOK_AVATAR_URL = 'https://raw.githubusercontent.com/relentiousdragon/arc-studio/main/packages/studio-client/public/arc.png';
+
 function graphNodeChanges(previous, next) {
   const before = new Map((previous?.nodes || []).filter((node) => node && typeof node === 'object').map((node) => [node.id, node]));
   const after = new Map((next?.nodes || []).filter((node) => node && typeof node === 'object').map((node) => [node.id, node]));
@@ -94,7 +96,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const projectName = projectManager?.project?.name || 'Workspace';
       const activityStore = activityStoreForProject(projectManager);
       const entry = activityStore.record(req.user, action, summary, { ...(details || {}), projectId, projectName: details?.projectName || projectName });
-      activityWebhookDispatcher.enqueue(entry);
+      activityWebhookDispatcher.enqueue(entry, ACTIVITY_WEBHOOK_AVATAR_URL);
     }
     catch (error) { logger.log('ERROR', `Could not record team activity: ${error.message}`); }
   };
