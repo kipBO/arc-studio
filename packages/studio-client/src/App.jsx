@@ -579,6 +579,7 @@ export function App() {
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
   const [collaborationConnectionFlaky, setCollaborationConnectionFlaky] = useState(false);
+  const [hasEstablishedCollaboration, setHasEstablishedCollaboration] = useState(false);
   const [transientCanvasMotionSupported, setTransientCanvasMotionSupported] = useState(false);
   const remoteGraphConflictsRef = useRef(new Set());
   const deletedGraphsRef = useRef(new Set());
@@ -1130,27 +1131,35 @@ export function App() {
   const remoteWorkspaceStateReady = localDesktopWorkspace || Boolean(
     networkOnline
     && collaborationSocketStatus === 'connected'
-    && !collaborationConnectionFlaky
     && graphsHydratedRef.current
     && (!activeProjectId || projectCollaboration.projectId === activeProjectId && projectCollaboration.tabsInitialized)
     && activeGraphSyncReady
   );
-  const remoteWorkspaceBlocked = Boolean(authToken && currentUser && !localDesktopWorkspace && !remoteWorkspaceStateReady);
+  const remoteWorkspaceBlocked = Boolean(
+    authToken && currentUser && !localDesktopWorkspace
+    && hasEstablishedCollaboration && !remoteWorkspaceStateReady
+  );
   useEffect(() => {
-    if (!remoteWorkspaceBlocked) return undefined;
-    const root = document.querySelector('.app-client-surface');
-    const topbar = root?.querySelector('.topbar');
-    const accountMenu = topbar?.querySelector('.profile-menu');
-    const blockedElements = [
-      ...(root ? [...root.children].filter((element) => element !== topbar) : []),
-      ...(topbar ? [...topbar.children].filter((element) => element !== accountMenu && !element.contains(accountMenu)) : []),
-      ...(topbar?.querySelector('.topbar-actions') ? [...topbar.querySelector('.topbar-actions').children].filter((element) => element !== accountMenu && !element.contains(accountMenu)) : []),
-      ...[...document.body.children].filter((element) => !element.contains(document.querySelector('#root')))
-    ];
-    const previousInertStates = [...new Set(blockedElements)].map((element) => [element, element.inert]);
-    for (const [element] of previousInertStates) element.inert = true;
-    return () => { for (const [element, wasInert] of previousInertStates) if (element.isConnected) element.inert = wasInert; };
-  }, [remoteWorkspaceBlocked]);
+    if (remoteWorkspaceStateReady) setHasEstablishedCollaboration(true);
+  }, [remoteWorkspaceStateReady]);
+  const workspaceConnectionNotice = !localDesktopWorkspace && authToken && currentUser
+    ? collaborationSocketStatus === 'connecting'
+      ? { title: 'Connecting to workspace', message: 'You can continue using the editor while ARC Studio connects.' }
+      : collaborationSocketStatus === 'reconnecting'
+        ? {
+          title: networkOnline ? 'Workspace sync unavailable' : 'Internet connection unavailable',
+          message: remoteWorkspaceBlocked
+            ? networkOnline
+              ? 'Editing is paused until shared workspace state is safe. This may be a network or workspace server issue. ARC Studio is retrying automatically.'
+              : 'Editing is paused until the connection returns. ARC Studio will retry automatically.'
+            : networkOnline
+              ? 'This may be a network or workspace server issue. ARC Studio is retrying automatically.'
+              : 'ARC Studio will retry automatically when your device is back online.'
+        }
+        : collaborationConnectionFlaky
+          ? { title: 'Workspace connection is unstable', message: 'Live updates may be delayed. Editing remains available.' }
+          : null
+    : null;
   const graphVariables = useMemo(() => {
     const savedVariables = Array.isArray(activeGraph?.variables) ? activeGraph.variables : [];
     const graphNodes = activeGraph?.nodes || [];
@@ -1762,6 +1771,7 @@ export function App() {
   }, [authToken, activeProjectId, workspaceMode, workspaceRevision, networkOnline, emojiCacheStorageKey, botMetrics?.rateLimitedUntil]);
 
   useEffect(() => {
+    setHasEstablishedCollaboration(false);
     if (!authToken) {
       setCollaborationSocketStatus('disconnected');
       setCollaborators([]);
@@ -1774,15 +1784,39 @@ export function App() {
     let initialConnectTimer;
     let heartbeatTimer;
     let socket;
+    let reconnectAttempts = 0;
 
+    const scheduleReconnect = () => {
+      if (!active || reconnectTimer) return;
+      setCollaborationSocketStatus('reconnecting');
+      if (navigator.onLine === false) return;
+      const baseDelay = Math.min(30_000, 1000 * (2 ** Math.min(reconnectAttempts, 5)));
+      reconnectAttempts += 1;
+      const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4));
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    };
     const connect = () => {
       if (!active) return;
+      if (socket && [WebSocket.CONNECTING, WebSocket.OPEN, WebSocket.CLOSING].includes(socket.readyState)) return;
+      if (navigator.onLine === false) {
+        setCollaborationSocketStatus('reconnecting');
+        return;
+      }
       collaborationClientIdRef.current = globalThis.crypto?.randomUUID?.() || `arc-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setCollaborationSocketStatus('connecting');
+      setCollaborationSocketStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
       setCollaborationConnectionFlaky(false);
       collaborationMotionSendIntervalRef.current = 16;
-      socket = new WebSocket(wsUrl);
-      wsRef.current = socket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
+      const currentSocket = socket;
+      wsRef.current = currentSocket;
       let lastPongAt = Date.now();
       let pingSequence = 0;
       let pendingPing = null;
@@ -1799,7 +1833,7 @@ export function App() {
         const averageRtt = rttSamples.length ? rttSamples.reduce((total, value) => total + value, 0) / rttSamples.length : 0;
         const jitter = Number.isFinite(rtt) && Number.isFinite(previousRtt) ? Math.abs(rtt - previousRtt) : 0;
         if (Number.isFinite(rtt)) previousRtt = rtt;
-        const congested = socket.readyState === WebSocket.OPEN && socket.bufferedAmount >= 32 * 1024;
+        const congested = currentSocket.readyState === WebSocket.OPEN && currentSocket.bufferedAmount >= 32 * 1024;
         const isBad = missed || congested || averageRtt >= 350 || jitter >= 180;
         collaborationMotionSendIntervalRef.current = missed || congested || averageRtt >= 350 || jitter >= 180
           ? 50
@@ -1814,32 +1848,32 @@ export function App() {
           if (consecutiveGoodSamples >= 3) setCollaborationConnectionFlaky(false);
         }
       };
-      socket.onopen = () => {
-        if (socket.readyState === WebSocket.OPEN) {
+      currentSocket.onopen = () => {
+        if (currentSocket.readyState === WebSocket.OPEN) {
           collaborationPresenceRef.current = { projectId: '', graphId: '' };
-          socket.send(JSON.stringify({ type: 'AUTH', token: authToken }));
+          currentSocket.send(JSON.stringify({ type: 'AUTH', token: authToken }));
           heartbeatTimer = window.setInterval(() => {
-            if (socket.readyState !== WebSocket.OPEN) return;
+            if (currentSocket.readyState !== WebSocket.OPEN) return;
             if (document.visibilityState !== 'visible') { pendingPing = null; return; }
-            if (Date.now() - lastPongAt > 45000) { socket.close(); return; }
+            if (Date.now() - lastPongAt > 45000) { currentSocket.close(); return; }
             if (pendingPing && performance.now() - pendingPing.sentAt > 12_000) {
               pendingPing = null;
               missedPongs += 1;
               recordConnectionSample(null, true);
-              if (missedPongs >= 2) { socket.close(4000, 'Collaboration heartbeat missed'); return; }
+              if (missedPongs >= 2) { currentSocket.close(4000, 'Collaboration heartbeat missed'); return; }
             }
             if (!pendingPing && document.visibilityState === 'visible') {
               const id = ++pingSequence;
               pendingPing = { id, sentAt: performance.now() };
-              socket.send(JSON.stringify({ type: 'PING', pingId: id, clientSentAt: pendingPing.sentAt }));
+              currentSocket.send(JSON.stringify({ type: 'PING', pingId: id, clientSentAt: pendingPing.sentAt }));
             }
           }, 5000);
           let lastActivitySentAt = 0;
           const reportActivity = () => {
             const now = Date.now();
-            if (now - lastActivitySentAt < 15000 || socket.readyState !== WebSocket.OPEN) return;
+            if (now - lastActivitySentAt < 15000 || currentSocket.readyState !== WebSocket.OPEN) return;
             lastActivitySentAt = now;
-            socket.send(JSON.stringify({ type: 'USER_ACTIVITY' }));
+            currentSocket.send(JSON.stringify({ type: 'USER_ACTIVITY' }));
           };
           const activityEvents = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'];
           activityEvents.forEach((name) => window.addEventListener(name, reportActivity, { passive: true, capture: true }));
@@ -1850,13 +1884,13 @@ export function App() {
             reportActivity();
           };
           document.addEventListener('visibilitychange', reportVisibility);
-          socket.addEventListener('close', () => {
+          currentSocket.addEventListener('close', () => {
             activityEvents.forEach((name) => window.removeEventListener(name, reportActivity, true));
             document.removeEventListener('visibilitychange', reportVisibility);
           }, { once: true });
         }
       };
-      socket.onmessage = (event) => {
+      currentSocket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
           if (msg.type === 'PONG') {
@@ -1907,6 +1941,7 @@ export function App() {
           if (msg.type === 'INIT_STATE') {
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
             setCollaborationSocketStatus('connected');
+            reconnectAttempts = 0;
             setTransientCanvasMotionSupported(msg.payload.collaborationFeatures?.transientCanvasMotion === true);
             setProjectLastSeen(msg.payload.projectLastSeen && typeof msg.payload.projectLastSeen === 'object' ? msg.payload.projectLastSeen : {});
             window.clearTimeout(collaborationActionTimerRef.current);
@@ -2441,7 +2476,7 @@ export function App() {
           }
         } catch { /* malformed/unrelated socket messages. */ }
       };
-      socket.onclose = (event) => {
+      currentSocket.onclose = (event) => {
         const closeReason = String(event?.reason || '').toLowerCase();
         const authenticationClose = event?.code === 1008 && (
           closeReason.includes('authentication required')
@@ -2475,14 +2510,24 @@ export function App() {
         setNoteEditLockState({ roomKey: '', locks: {} });
         setFollowCollaboratorRequest(null);
         if (active) setCollaborationSocketStatus('reconnecting');
-        if (active) reconnectTimer = window.setTimeout(connect, 2500);
+        if (socket === currentSocket) socket = null;
+        if (wsRef.current === currentSocket) wsRef.current = null;
+        scheduleReconnect();
       };
-      socket.onerror = () => socket.close();
+      currentSocket.onerror = () => currentSocket.close();
     };
+    const reconnectWhenOnline = () => {
+      if (!active || socket) return;
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      connect();
+    };
+    window.addEventListener('online', reconnectWhenOnline);
     //
     initialConnectTimer = window.setTimeout(connect, 0);
     return () => {
       active = false;
+      window.removeEventListener('online', reconnectWhenOnline);
       window.clearTimeout(initialConnectTimer);
       window.clearTimeout(reconnectTimer);
       window.clearInterval(heartbeatTimer);
@@ -6053,6 +6098,10 @@ export function App() {
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       </div>
+      {workspaceConnectionNotice && <div className={`workspace-connection-banner ${collaborationSocketStatus === 'reconnecting' && remoteWorkspaceBlocked ? 'is-paused' : ''} ${collaborationConnectionFlaky ? 'is-flaky' : ''}`} role="status" aria-live="polite">
+        <strong>{workspaceConnectionNotice.title}</strong>
+        <span>{workspaceConnectionNotice.message}</span>
+      </div>}
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
