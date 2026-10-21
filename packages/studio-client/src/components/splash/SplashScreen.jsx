@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
 import { Modal } from '../ui/Modal.jsx';
@@ -11,6 +11,7 @@ const getLocalUsername = () => {
   try { return localStorage.getItem('arc_local_username') || desktopConfig.localUsername || 'Admin'; }
   catch { return desktopConfig.localUsername || 'Admin'; }
 };
+const isUnsupportedNodeCompatibilityError = (message) => /node feature(?:s)? this desktop app does not support/i.test(String(message || ''));
 //
 export function SplashScreen({
   studioVersion = studioPackage.version,
@@ -219,8 +220,9 @@ export function SplashScreen({
           setShowWorkspaceUrl(false);
           setError('');
         } catch (connectionError) {
-          setConnectError(connectionError.message || 'Could not connect to this workspace.');
-          shakeFields(['remoteUrl']);
+          const message = connectionError.message || 'Could not connect to this workspace.';
+          setConnectError(message);
+          if (!isUnsupportedNodeCompatibilityError(message)) shakeFields(['remoteUrl']);
         } finally { setConnecting(false); }
         return;
       }
@@ -228,8 +230,9 @@ export function SplashScreen({
       setRememberTrustedWorkspace(true);
       setTrustPrompt(url);
     } catch (connectionError) {
-      setConnectError(connectionError.message || 'Could not connect to this workspace.');
-      shakeFields(['remoteUrl']);
+      const message = connectionError.message || 'Could not connect to this workspace.';
+      setConnectError(message);
+      if (!isUnsupportedNodeCompatibilityError(message)) shakeFields(['remoteUrl']);
     }
   };
 
@@ -250,8 +253,9 @@ export function SplashScreen({
       setError('');
       setTrustPrompt(null);
     } catch (connectionError) {
-      setConnectError(connectionError.message || 'Could not connect to this workspace.');
-      shakeFields(['remoteUrl']);
+      const message = connectionError.message || 'Could not connect to this workspace.';
+      setConnectError(message);
+      if (!isUnsupportedNodeCompatibilityError(message)) shakeFields(['remoteUrl']);
     } finally {
       setConnecting(false);
     }
@@ -465,6 +469,7 @@ export function SplashScreen({
   const remotePending = desktopMode && workspaceChoice === 'remote' && (showWorkspaceUrl || workspaceMode !== 'remote' || remoteUrl.trim().replace(/\/$/, '') !== remoteWorkspaceUrl.trim().replace(/\/$/, ''));
   const startupError = desktopMode && workspaceMode === 'local' ? desktopConfig.startupError : null;
   const desktopServerError = desktopMode && /\b500\b/.test(`${workspaceError} ${startupError || ''}`);
+  const unsupportedNodeCompatibilityError = desktopMode && isUnsupportedNodeCompatibilityError(connectError || workspaceError);
   const activeWorkspaceName = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
 
   return (
@@ -494,9 +499,11 @@ export function SplashScreen({
           {desktopMode && (compatibilityNotice || workspaceCompatibilityNotice) && <p className="workspace-compatibility-note" role="status">{compatibilityNotice || workspaceCompatibilityNotice}</p>}
           {!needsProjectOnboarding && desktopMode && workspaceChoice === 'remote' && showWorkspaceUrl && <form className="workspace-connect" noValidate onSubmit={handleConnectWorkspace}>
             <label className="field-label" htmlFor="workspace-url">Workspace URL</label>
-            <div ref={(element) => { fieldRefs.current.remoteUrl = element; }} className={`auth-input-wrap ${connectError || workspaceError ? 'has-error' : ''}`}><Globe2 size={15} /><input id="workspace-url" type="url" autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={remoteUrl} onChange={(event) => { setRemoteUrl(event.target.value); setConnectError(''); setCompatibilityNotice(''); }} placeholder="https://studio.example.com" aria-invalid={Boolean(connectError || workspaceError)} /></div>
+            <div ref={(element) => { fieldRefs.current.remoteUrl = element; }} className={`auth-input-wrap ${(connectError || workspaceError) && !unsupportedNodeCompatibilityError ? 'has-error' : ''}`}><Globe2 size={15} /><input id="workspace-url" type="url" autoComplete="url" autoCapitalize="none" autoCorrect="off" spellCheck="false" value={remoteUrl} onChange={(event) => { setRemoteUrl(event.target.value); setConnectError(''); setCompatibilityNotice(''); }} placeholder="https://studio.example.com" aria-invalid={Boolean((connectError || workspaceError) && !unsupportedNodeCompatibilityError)} /></div>
             {trustedWorkspaces.length > 0 && <div className="saved-workspaces" aria-label="Saved workspaces"><span>Saved workspaces</span>{trustedWorkspaces.map((workspace) => <button key={workspace} type="button" onClick={() => { setRemoteUrl(workspace); setConnectError(''); }}>{workspace}</button>)}</div>}
-            {(connectError || workspaceError) && <p className="form-error" role="alert">{connectError || workspaceError}</p>}
+            {(connectError || workspaceError) && (unsupportedNodeCompatibilityError
+              ? <div className="workspace-connect-warning" role="alert"><AlertTriangle size={15} aria-hidden="true" /><span>{connectError || workspaceError}</span></div>
+              : <p className="form-error" role="alert">{connectError || workspaceError}</p>)}
             <button className="workspace-connect-button" type="submit" disabled={!networkOnline || connecting || !remoteUrl.trim()}>{connecting ? <><LoaderCircle size={14} className="is-spinning" /> Connecting</> : <>Continue <ArrowRight size={14} /></>}</button>
             {workspaceMode === 'remote' && <button className="auth-back" type="button" onClick={() => { setShowWorkspaceUrl(false); setConnectError(''); setError(''); }}><ArrowLeft size={14} /> Back to sign in</button>}
           </form>}
