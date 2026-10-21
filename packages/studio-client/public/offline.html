@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#171a1f">
+    <title>ARC Studio</title>
+    <script>
+      (() => {
+        const savedTheme = document.cookie.split('; ').find((item) => item.startsWith('arc_theme='))?.split('=')[1];
+        const theme = savedTheme === 'light' || savedTheme === 'dark'
+          ? savedTheme
+          : window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === 'light' ? '#f5f6f7' : '#171a1f';
+      })();
+    </script>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; --page: #171a1f; --panel: #1d2127; --line: #303741; --text: #edf0f4; --muted: #a2aab5; }
+      :root[data-theme="light"] { color-scheme: light; --page: #f1f3f5; --panel: #fff; --line: #dce1e7; --text: #252b33; --muted: #68727e; }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; min-width: 320px; min-height: 100%; margin: 0; }
+      body { display: grid; min-height: 100vh; place-items: center; padding: 32px; color: var(--text); background: var(--page); }
+      main { display: flex; width: min(760px, 100%); min-height: 260px; align-items: center; gap: clamp(30px, 7vw, 72px); padding: clamp(32px, 7vw, 64px); border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: 0 28px 90px rgb(0 0 0 / 14%); }
+      .brand { display: grid; flex: 0 0 130px; justify-items: center; gap: 14px; }
+      .brand img { display: block; width: 88px; height: 88px; object-fit: contain; }
+      .brand span { color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .15em; }
+      .divider { align-self: stretch; width: 1px; background: var(--line); }
+      .message { max-width: 360px; }
+      .message p { margin: 0; font-size: clamp(20px, 3.4vw, 27px); font-weight: 560; line-height: 1.42; letter-spacing: -.025em; }
+      @media (max-width: 560px) { body { padding: 20px; } main { min-height: 0; flex-direction: column; align-items: stretch; gap: 26px; padding: 30px; } .brand { flex-basis: auto; grid-template-columns: 42px auto; justify-content: start; align-items: center; gap: 12px; } .brand img { width: 42px; height: 42px; } .divider { width: 100%; height: 1px; } }
+    </style>
+  </head>
+  <body>
+    <main aria-label="Workspace connection status">
+      <div class="brand"><img src="/arc.png" alt="ARC Studio logo"><span>ARC STUDIO</span></div>
+      <div class="divider" aria-hidden="true"></div>
+      <div class="message"><p>Unable to connect to this private workspace.</p></div>
+    </main>
+  </body>
+</html>
