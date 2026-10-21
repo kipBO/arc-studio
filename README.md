@@ -10,7 +10,6 @@
 [![CI status](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml)
 [![Desktop builds](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml/badge.svg?event=push)](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml)
 [![Commits](docs/badges/commits.svg)](https://github.com/relentiousdragon/arc-studio/commits)
-[![GitHub release downloads](docs/badges/release-downloads.svg)](https://github.com/relentiousdragon/arc-studio/releases)
 [![GitHub stars](docs/badges/stars.svg)](https://github.com/relentiousdragon/arc-studio)
 [![GitHub forks](docs/badges/forks.svg)](https://github.com/relentiousdragon/arc-studio/network/members)
 <!-- ARC_BADGES:END -->
