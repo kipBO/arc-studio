@@ -13,8 +13,14 @@ import { Button } from '../ui/Button.jsx';
 const GRID_SIZE = 24;
 const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
+const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
+const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
 const LARGE_GRAPH_NODE_LIMIT = 48;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
+const NODE_CULL_OVERSCAN_MIN = 520;
+const NODE_CULL_OVERSCAN_MAX = 1120;
+const BUILTIN_NODE_DEFINITIONS_BY_TYPE = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+const EMPTY_NODE_CONNECTIONS = Object.freeze({ incoming: [], outgoing: [], incident: [] });
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const getCanvasDisplayScale = (element) => {
   if (!element) return 1;
@@ -25,6 +31,38 @@ const getCanvasDisplayScale = (element) => {
   const canvasBounds = element.getBoundingClientRect();
   return canvasBounds.width > 0 && element.clientWidth > 0 ? canvasBounds.width / element.clientWidth : 1;
 };
+
+function equalDefinitionValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => equalDefinitionValue(value, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && equalDefinitionValue(left[key], right[key]));
+}
+
+function equalPinLists(left = [], right = []) {
+  return left.length === right.length && left.every((pin, index) => {
+    const candidate = right[index];
+    if (!candidate) return false;
+    const keys = Object.keys(pin);
+    return keys.length === Object.keys(candidate).length && keys.every((key) => equalDefinitionValue(pin[key], candidate[key]));
+  });
+}
+
+function equalNodeDefinitions(left, right) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  return keys.every((key) => key === 'inputs' || key === 'outputs'
+    ? equalPinLists(left[key] || [], right[key] || [])
+    : Object.is(left[key], right[key]));
+}
 
 function GraphChatBubble({ bubble, isOwn, zoom, displayScale, onMove }) {
   const [position, setPosition] = useState({ x: bubble.x, y: bubble.y });
@@ -220,10 +258,146 @@ export function NodeCanvas({
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
-  const nodes = useMemo(() => Array.isArray(suppliedNodes) ? suppliedNodes.filter((node) => node && typeof node === 'object' && typeof node.type === 'string') : [], [suppliedNodes]);
-  const connections = useMemo(() => Array.isArray(suppliedConnections) ? suppliedConnections.filter((connection) => connection && typeof connection === 'object') : [], [suppliedConnections]);
+  const previousNodesRef = useRef([]);
+  const nodes = useMemo(() => {
+    const next = Array.isArray(suppliedNodes) ? suppliedNodes.filter((node) => node && typeof node === 'object' && typeof node.type === 'string') : [];
+    const previous = previousNodesRef.current;
+    if (previous.length === next.length && previous.every((node, index) => equalDefinitionValue(node, next[index]))) return previous;
+    previousNodesRef.current = next;
+    return next;
+  }, [suppliedNodes]);
+  const previousConnectionsRef = useRef([]);
+  const connections = useMemo(() => {
+    const next = Array.isArray(suppliedConnections) ? suppliedConnections.filter((connection) => connection && typeof connection === 'object') : [];
+    const previous = previousConnectionsRef.current;
+    if (previous.length === next.length && previous.every((connection, index) => equalDefinitionValue(connection, next[index]))) return previous;
+    previousConnectionsRef.current = next;
+    return next;
+  }, [suppliedConnections]);
+  const graphVariablesRef = useRef({ value: graphVariables });
+  const canvasGraphVariables = useMemo(() => {
+    const previous = graphVariablesRef.current;
+    if (equalDefinitionValue(previous.value, graphVariables)) return previous.value;
+    graphVariablesRef.current = { value: graphVariables };
+    return graphVariables;
+  }, [graphVariables]);
+  const functionGraphDefinitionViewsRef = useRef({ signature: '', value: [] });
+  const functionGraphDefinitionViews = useMemo(() => {
+    const availableFunctionGraphs = Array.isArray(functionGraphs) ? functionGraphs : [];
+    const availableCallableGraphs = Array.isArray(callableGraphs) ? callableGraphs : [];
+    const source = availableFunctionGraphs.length ? availableFunctionGraphs : availableCallableGraphs.filter((graph) => graph.graphType === 'function');
+    const signatureData = source.map((graph) => ({
+      id: graph.id,
+      name: graph.name,
+      nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return').map((node) => node.type === 'function_input'
+        ? [node.id, node.type, node.data?.paramId, node.data?.name, node.data?.optional, node.data?.valueType, node.data?.defaultValue]
+        : [node.id, node.type, node.data?.valueType])
+    }));
+    const signature = JSON.stringify(signatureData);
+    const previous = functionGraphDefinitionViewsRef.current;
+    if (signature === previous.signature) return previous.value;
+    const value = source.map((graph) => ({
+      id: graph.id,
+      name: graph.name,
+      graphType: 'function',
+      nodes: (graph.nodes || []).filter((node) => node.type === 'function_input' || node.type === 'function_return')
+    }));
+    functionGraphDefinitionViewsRef.current = { signature, value };
+    return value;
+  }, [functionGraphs, callableGraphs]);
+  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const previousNodePositionsRef = useRef(new Map());
+  const nodePositionById = useMemo(() => {
+    const previous = previousNodePositionsRef.current;
+    const positions = new Map(nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+    const unchanged = previous.size === positions.size && [...positions].every(([id, position]) => {
+      const oldPosition = previous.get(id);
+      return oldPosition?.x === position.x && oldPosition?.y === position.y;
+    });
+    if (unchanged) return previous;
+    previousNodePositionsRef.current = positions;
+    return positions;
+  }, [nodes]);
+  const nodeLayoutCacheKey = `${projectId}:${graphId}`;
+  const nodeWorldSizeCacheRef = useRef({ key: nodeLayoutCacheKey, sizes: new Map() });
+  if (nodeWorldSizeCacheRef.current.key !== nodeLayoutCacheKey) nodeWorldSizeCacheRef.current = { key: nodeLayoutCacheKey, sizes: new Map() };
+  const nodeDefinitionInputsRef = useRef({ token: {}, entries: new Map() });
+  const nodeDefinitionInputsToken = useMemo(() => {
+    const previous = nodeDefinitionInputsRef.current;
+    const unchanged = previous.entries.size === nodes.length && nodes.every((node) => {
+      const entry = previous.entries.get(node.id);
+      return entry?.type === node.type && entry?.label === node.label && equalDefinitionValue(entry.data, node.data);
+    });
+    if (unchanged) return previous.token;
+    const entries = new Map(nodes.map((node) => [node.id, { type: node.type, label: node.label, data: node.data }]));
+    for (const [id, entry] of previous.entries) {
+      const next = entries.get(id);
+      if (!next || next.type !== entry.type || next.label !== entry.label || !equalDefinitionValue(next.data, entry.data)) nodeWorldSizeCacheRef.current.sizes.delete(id);
+    }
+    for (const id of entries.keys()) if (!previous.entries.has(id)) nodeWorldSizeCacheRef.current.sizes.delete(id);
+    const token = {};
+    nodeDefinitionInputsRef.current = { token, entries };
+    return token;
+  }, [nodes]);
+  const nodeCardIdsRef = useRef({ token: {}, ids: [] });
+  const nodeCardIdsToken = useMemo(() => {
+    const previous = nodeCardIdsRef.current;
+    if (previous.ids.length === nodes.length && previous.ids.every((id, index) => id === nodes[index].id)) return previous.token;
+    const token = {};
+    nodeCardIdsRef.current = { token, ids: nodes.map((node) => node.id) };
+    return token;
+  }, [nodes]);
+  const definitionNodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodeDefinitionInputsToken]);
+  const nodeConnectionsById = useMemo(() => {
+    const byNode = new Map();
+    const ensure = (id) => {
+      let entry = byNode.get(id);
+      if (!entry) { entry = { incoming: [], outgoing: [], incident: [] }; byNode.set(id, entry); }
+      return entry;
+    };
+    for (const connection of connections) {
+      const outgoing = ensure(connection.sourceNodeId);
+      const incoming = ensure(connection.targetNodeId);
+      outgoing.outgoing.push(connection);
+      outgoing.incident.push(connection);
+      incoming.incoming.push(connection);
+      if (incoming !== outgoing) incoming.incident.push(connection);
+    }
+    return byNode;
+  }, [connections]);
+  const connectionByNodePin = useMemo(() => {
+    const incoming = new Map();
+    const outgoing = new Map();
+    for (const connection of connections) {
+      let targetPins = incoming.get(connection.targetNodeId);
+      if (!targetPins) { targetPins = new Map(); incoming.set(connection.targetNodeId, targetPins); }
+      if (!targetPins.has(connection.targetPinId)) targetPins.set(connection.targetPinId, connection);
+      let sourcePins = outgoing.get(connection.sourceNodeId);
+      if (!sourcePins) { sourcePins = new Map(); outgoing.set(connection.sourceNodeId, sourcePins); }
+      if (!sourcePins.has(connection.sourcePinId)) sourcePins.set(connection.sourcePinId, connection);
+    }
+    return { incoming, outgoing };
+  }, [connections]);
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const containerRef = useRef(null);
+  const visibleNodeIdsCacheRef = useRef(null);
+  const visibleWireIdsCacheRef = useRef(null);
+  const canvasRenderVersionRef = useRef(0);
+  const pointerMoveFrameRef = useRef(0);
+  const pendingPointerMoveRef = useRef(null);
+  const pointerMoveHandlerRef = useRef(null);
+  const canvasInteractionActiveRef = useRef(false);
+  const frameTimingRef = useRef({ last: 0, samples: 0, slow: 0, fast: 0 });
+  const [performanceReduced, setPerformanceReduced] = useState(() => {
+    if (typeof navigator === 'undefined') return false;
+    const lowMemory = Number.isFinite(navigator.deviceMemory) && navigator.deviceMemory <= 4;
+    const fewCores = Number.isFinite(navigator.hardwareConcurrency) && navigator.hardwareConcurrency <= 4;
+    return lowMemory || fewCores;
+  });
+  const performanceReducedRef = useRef(performanceReduced);
+  performanceReducedRef.current = performanceReduced;
+  canvasRenderVersionRef.current += 1;
+  const socketPositionCacheRef = useRef({ renderVersion: -1, positions: new Map() });
   const handledFocusRequestRef = useRef(null);
   const viewportGraphKey = graphId ? `arc_project_${projectId || 'default'}_arc_canvas_view_${graphId}` : '';
   const viewportGraphKeyRef = useRef(viewportGraphKey);
@@ -325,7 +499,38 @@ export function NodeCanvas({
   }, [graphId, onHistoryGroupEnd]);
   const [libraryDragPreview, setLibraryDragPreview] = useState(null);
   const [wireLayoutRevision, refreshWireLayout] = useState(0);
+  const [nodeBoundsRevision, refreshNodeBounds] = useState(0);
+  const nodeMeasurementInputsRef = useRef({ nodes, zoom });
+  nodeMeasurementInputsRef.current = { nodes, zoom };
+  const measureVisibleNodeCards = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const { nodes: currentNodes, zoom: currentZoom } = nodeMeasurementInputsRef.current;
+    const scale = getCanvasDisplayScale(container) * currentZoom;
+    if (!(scale > 0)) return;
+    const actualNodeIds = new Set(currentNodes.map((node) => node.id));
+    const sizes = nodeWorldSizeCacheRef.current.sizes;
+    let changed = false;
+    for (const card of container.querySelectorAll('[data-node-card-id]')) {
+      const rect = card.getBoundingClientRect();
+      if (!(rect.width > 0 && rect.height > 0)) continue;
+      const id = card.dataset.nodeCardId;
+      if (!actualNodeIds.has(id)) continue;
+      const next = {
+        width: Math.round(rect.width / scale * 100) / 100,
+        height: Math.round(rect.height / scale * 100) / 100
+      };
+      const previous = sizes.get(id);
+      if (!previous || Math.abs(previous.width - next.width) > 0.5 || Math.abs(previous.height - next.height) > 0.5) {
+        sizes.set(id, next);
+        changed = true;
+      }
+    }
+    for (const id of sizes.keys()) if (!actualNodeIds.has(id)) sizes.delete(id);
+    if (changed) refreshNodeBounds((revision) => revision + 1);
+  }, []);
   const [connectingWire, setConnectingWire] = useState(null);
+  canvasInteractionActiveRef.current = Boolean(isPanning || draggingNode || draggingNote || connectingWire || selectionBox);
   const connectingWireRef = useRef(connectingWire);
   connectingWireRef.current = connectingWire;
   const [wireCutAnimations, setWireCutAnimations] = useState([]);
@@ -620,7 +825,7 @@ export function NodeCanvas({
     if (selectedNodeId && !nodes.some((node) => node.id === selectedNodeId)) setSelectedNodeId(validIds[0] || null);
   }, [nodes, selectedNodeId, selectedNodeIds]);
 
-  const definitionsByType = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+  const definitionsByType = BUILTIN_NODE_DEFINITIONS_BY_TYPE;
   const modalFieldOptions = useMemo(() => nodes.flatMap((modalNode) => {
     if (modalNode.type !== 'build_modal') return [];
     const modal = modalNode.data?.modal || {};
@@ -628,20 +833,20 @@ export function NodeCanvas({
       value: field.customId,
       label: `${modal.title || modal.customId || 'Popup modal'} · ${field.label || field.customId} (${field.customId})`
     }));
-  }), [nodes]);
+  }), [nodeDefinitionInputsToken]);
 
   const getNodeDefinition = useCallback((node, seen = new Set()) => {
     const definition = definitionsByType.get(node.type);
     if (!definition) return undefined;
     if (seen.has(node.id)) return definition;
     const nextSeen = new Set(seen).add(node.id);
+    const nodeConnections = nodeConnectionsById.get(node.id) || EMPTY_NODE_CONNECTIONS;
     const withExecInputPins = (nextDefinition) => {
       const inputs = nextDefinition.inputs || [];
       const execPin = inputs.find((pin) => pin.type === 'exec');
       if (!execPin) return nextDefinition;
       const baseId = execPin.id;
-      const highestConnected = connections.reduce((highest, wire) => {
-        if (wire.targetNodeId !== node.id) return highest;
+      const highestConnected = nodeConnections.incoming.reduce((highest, wire) => {
         if (wire.targetPinId === baseId) return Math.max(highest, 1);
         const match = new RegExp(`^${baseId}_(\\d+)$`).exec(wire.targetPinId);
         return match ? Math.max(highest, Number(match[1])) : highest;
@@ -654,7 +859,7 @@ export function NodeCanvas({
         const key = `${nodeId}:${pinId}:${direction}`;
         if (seen.has(key)) return null;
         seen.add(key);
-        const candidate = nodes.find((item) => item.id === nodeId);
+        const candidate = definitionNodesById.get(nodeId);
         if (!candidate) return null;
         if (candidate.type !== 'utility_wire_extender') {
           const base = definitionsByType.get(candidate.type);
@@ -662,27 +867,28 @@ export function NodeCanvas({
         }
         const index = pinId.match(/_(\d+)$/)?.[1] || (pinId === 'value_in' || pinId === 'value_out' ? '1' : null);
         if (!index) return null;
+        const candidateConnections = nodeConnectionsById.get(candidate.id) || EMPTY_NODE_CONNECTIONS;
         const wire = direction === 'output'
-          ? connections.find((item) => item.targetNodeId === candidate.id && (item.targetPinId === `value_in_${index}` || (index === '1' && item.targetPinId === 'value_in')))
-          : connections.find((item) => item.sourceNodeId === candidate.id && (item.sourcePinId === `value_out_${index}` || (index === '1' && item.sourcePinId === 'value_out')));
+          ? candidateConnections.incoming.find((item) => item.targetPinId === `value_in_${index}` || (index === '1' && item.targetPinId === 'value_in'))
+          : candidateConnections.outgoing.find((item) => item.sourcePinId === `value_out_${index}` || (index === '1' && item.sourcePinId === 'value_out'));
         if (!wire) return null;
         return direction === 'output'
           ? resolvePin(wire.sourceNodeId, wire.sourcePinId, 'output', seen)
           : resolvePin(wire.targetNodeId, wire.targetPinId, 'input', seen);
       };
-      const highestUsed = connections.reduce((highest, wire) => {
+      const highestUsed = nodeConnections.incident.reduce((highest, wire) => {
         const endpoint = wire.sourceNodeId === node.id ? wire.sourcePinId : wire.targetNodeId === node.id ? wire.targetPinId : '';
         return Math.max(highest, Number(/^value_(?:in|out)_(\d+)$/.exec(endpoint)?.[1]) || (endpoint === 'value_in' || endpoint === 'value_out' ? 1 : 0));
       }, 0);
-      const legacyFirst = connections.some((wire) => (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out') || (wire.targetNodeId === node.id && wire.targetPinId === 'value_in'));
+      const legacyFirst = nodeConnections.incident.some((wire) => (wire.sourceNodeId === node.id && wire.sourcePinId === 'value_out') || (wire.targetNodeId === node.id && wire.targetPinId === 'value_in'));
       const pairCount = Math.min(7, Math.max(1, highestUsed + 1));
       const inputs = [{ ...definition.inputs[0] }];
       const outputs = [{ ...definition.outputs[0] }];
       for (let index = 1; index <= pairCount; index += 1) {
         const inputId = legacyFirst && index === 1 ? 'value_in' : `value_in_${index}`;
         const outputId = legacyFirst && index === 1 ? 'value_out' : `value_out_${index}`;
-        const incoming = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === inputId);
-        const outgoing = connections.find((wire) => wire.sourceNodeId === node.id && wire.sourcePinId === outputId);
+        const incoming = connectionByNodePin.incoming.get(node.id)?.get(inputId);
+        const outgoing = connectionByNodePin.outgoing.get(node.id)?.get(outputId);
         const inferred = (incoming && resolvePin(incoming.sourceNodeId, incoming.sourcePinId, 'output'))
           || (outgoing && resolvePin(outgoing.targetNodeId, outgoing.targetPinId, 'input'));
         const type = inferred?.type && inferred.type !== 'any' ? inferred.type : 'any';
@@ -693,12 +899,12 @@ export function NodeCanvas({
       return withExecInputPins({ ...definition, inputs, outputs });
     }
     const withArgumentPins = (nextDefinition) => {
-      const argumentPins = getNodeArgumentPins(node, nextDefinition.inputs || [], connections);
+      const argumentPins = getNodeArgumentPins(node, nextDefinition.inputs || [], nodeConnections.incident);
       const existingIds = new Set((nextDefinition.inputs || []).map((pin) => pin.id));
       const typedArgumentPins = argumentPins.map((pin) => {
-        const wire = connections.find((connection) => connection.targetNodeId === node.id && connection.targetPinId === pin.id);
+        const wire = connectionByNodePin.incoming.get(node.id)?.get(pin.id);
         if (!wire) return pin;
-        const sourceNode = nodes.find((item) => item.id === wire.sourceNodeId);
+        const sourceNode = definitionNodesById.get(wire.sourceNodeId);
         const sourceDefinition = sourceNode && getNodeDefinition(sourceNode, nextSeen);
         const sourcePin = sourceDefinition?.outputs?.find((item) => item.id === wire.sourcePinId);
         const declaredType = sourcePin?.colorType || sourcePin?.type;
@@ -709,7 +915,7 @@ export function NodeCanvas({
       return withExecInputPins(withArguments);
     };
     if (node.type === 'event_message_create') {
-      const highestArgument = connections.reduce((highest, wire) => wire.sourceNodeId === node.id ? Math.max(highest, Number(/^argument_(\d+)$/.exec(wire.sourcePinId)?.[1]) || 0) : highest, 0);
+      const highestArgument = nodeConnections.outgoing.reduce((highest, wire) => Math.max(highest, Number(/^argument_(\d+)$/.exec(wire.sourcePinId)?.[1]) || 0), 0);
       const argumentOutputs = Array.from({ length: Math.min(50, highestArgument) }, (_, index) => ({ id: `argument_${index + 1}`, label: `Legacy Argument ${index + 1}`, type: 'string' }));
       return withArgumentPins({ ...definition, outputs: [...definition.outputs.filter((pin) => !/^argument_\d+$/.test(pin.id)), ...argumentOutputs] });
     }
@@ -717,12 +923,11 @@ export function NodeCanvas({
       const optionOutputs = (Array.isArray(node.data?.options) ? node.data.options : []).filter((option) => /^[a-z0-9_-]{1,32}$/.test(String(option.name || ''))).map((option) => ({ id: `option_${option.name}`, label: option.name, type: ({ 4: 'number', 10: 'number', 5: 'boolean' })[Number(option.type)] || 'string' }));
       return withArgumentPins({ ...definition, outputs: [...definition.outputs.filter((pin) => !pin.id.startsWith('option_')), ...optionOutputs] });
     }
-    if (node.type === 'data_permission_overwrites') return withExecInputPins({ ...definition, inputs: getPermissionOverwritePins(node, connections) });
+    if (node.type === 'data_permission_overwrites') return withExecInputPins({ ...definition, inputs: getPermissionOverwritePins(node, nodeConnections.incident) });
     if (node.type === 'data_string_split' || node.type === 'data_parse_prefix_command') {
       const partPrefix = node.type === 'data_string_split' ? 'part_' : 'argument_';
       const partPattern = node.type === 'data_string_split' ? /^part_(\d+)$/ : /^argument_(\d+)$/;
-      const highest = connections.reduce((value, wire) => {
-        if (wire.sourceNodeId !== node.id) return value;
+      const highest = nodeConnections.outgoing.reduce((value, wire) => {
         return Math.max(value, Number(partPattern.exec(wire.sourcePinId)?.[1]) || 0);
       }, 0);
       const partCount = Math.min(50, Math.max(1, highest + 1));
@@ -733,34 +938,34 @@ export function NodeCanvas({
       }));
       return withExecInputPins({ ...definition, outputs: [...definition.outputs, ...partOutputs] });
     }
-    if (node.type === 'data_array_create') return withExecInputPins({ ...definition, inputs: getArrayCreatePins(node, connections) });
-    if (node.type === 'data_array_append') return withExecInputPins({ ...definition, inputs: [...definition.inputs.filter((pin) => pin.id === 'array'), ...getArrayAppendPins(node, connections)] });
-    if (node.type === 'data_array_concat') return withExecInputPins({ ...definition, inputs: getArrayCombinePins(node, connections) });
-    if (node.type === 'math_sum' || node.type === 'math_average') return withExecInputPins({ ...definition, inputs: getMathListPins(node, connections) });
+    if (node.type === 'data_array_create') return withExecInputPins({ ...definition, inputs: getArrayCreatePins(node, nodeConnections.incident) });
+    if (node.type === 'data_array_append') return withExecInputPins({ ...definition, inputs: [...definition.inputs.filter((pin) => pin.id === 'array'), ...getArrayAppendPins(node, nodeConnections.incident)] });
+    if (node.type === 'data_array_concat') return withExecInputPins({ ...definition, inputs: getArrayCombinePins(node, nodeConnections.incident) });
+    if (node.type === 'math_sum' || node.type === 'math_average') return withExecInputPins({ ...definition, inputs: getMathListPins(node, nodeConnections.incident) });
     if (node.type === 'branch_switch') return withExecInputPins({
       ...definition,
-      inputs: [...definition.inputs.filter((pin) => !/^case_\d+$/.test(pin.id)), ...getSwitchCasePins(node, connections, 'inputs')],
-      outputs: [...definition.outputs.filter((pin) => !/^case_\d+_exec$/.test(pin.id)), ...getSwitchCasePins(node, connections, 'outputs')]
+      inputs: [...definition.inputs.filter((pin) => !/^case_\d+$/.test(pin.id)), ...getSwitchCasePins(node, nodeConnections.incident, 'inputs')],
+      outputs: [...definition.outputs.filter((pin) => !/^case_\d+_exec$/.test(pin.id)), ...getSwitchCasePins(node, nodeConnections.incident, 'outputs')]
     });
     if (node.type === 'logic_xor_many') {
-      const highest = connections.reduce((value, wire) => wire.targetNodeId === node.id ? Math.max(value, Number(/^input_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0) : value, 0);
+      const highest = nodeConnections.incoming.reduce((value, wire) => Math.max(value, Number(/^input_(\d+)$/.exec(wire.targetPinId)?.[1]) || 0), 0);
       const count = Math.min(25, Math.max(2, highest + 1));
       const inputs = Array.from({ length: count }, (_, index) => ({ id: `input_${index + 1}`, label: `Input ${index + 1}`, type: 'boolean', defaultValue: false }));
       return withExecInputPins({ ...definition, inputs });
     }
     if (node.type === 'variable_create') {
-      const valueWire = connections.find((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'value');
-      const sourceNode = valueWire && nodes.find((item) => item.id === valueWire.sourceNodeId);
+      const valueWire = connectionByNodePin.incoming.get(node.id)?.get('value');
+      const sourceNode = valueWire && definitionNodesById.get(valueWire.sourceNodeId);
       const sourceDefinition = sourceNode && definitionsByType.get(sourceNode.type);
       const sourcePin = sourceDefinition?.outputs?.find((pin) => pin.id === valueWire?.sourcePinId);
       const createdSource = sourceNode?.type === 'variable_create'
-        ? graphVariables.find((variable) => variable.id === `nodevar_${sourceNode.id}`)
+        ? canvasGraphVariables.find((variable) => variable.id === `nodevar_${sourceNode.id}`)
         : sourceNode?.type === 'variable_get'
-          ? graphVariables.find((variable) => variable.id === sourceNode.data?.variableId || variable.sourceNodeId === connections.find((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === 'variable')?.sourceNodeId)
+          ? canvasGraphVariables.find((variable) => variable.id === sourceNode.data?.variableId || variable.sourceNodeId === connectionByNodePin.incoming.get(sourceNode.id)?.get('variable')?.sourceNodeId)
           : null;
       let inferredType = createdSource?.type || sourcePin?.type || node.data?.valueType || 'string';
       if (sourcePin?.type === 'object' && ['data_array_create', 'data_array_append', 'data_array_concat'].includes(sourceNode?.type)) inferredType = 'array';
-      if (sourceNode?.type === 'data_parse_json' && !connections.some((wire) => wire.targetNodeId === sourceNode.id && wire.targetPinId === 'json')) {
+      if (sourceNode?.type === 'data_parse_json' && !connectionByNodePin.incoming.get(sourceNode.id)?.has('json')) {
         try { inferredType = Array.isArray(JSON.parse(sourceNode.data?.json || '')) ? 'array' : 'object'; } catch {}
       }
       const socketType = ['array', 'object'].includes(inferredType) ? 'object' : inferredType;
@@ -772,14 +977,14 @@ export function NodeCanvas({
       const resolveVariable = (targetNode, seen = new Set()) => {
         if (!targetNode || seen.has(targetNode.id)) return null;
         const nextSeen = new Set(seen).add(targetNode.id);
-        const referenceWire = connections.find((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === 'variable');
+        const referenceWire = connectionByNodePin.incoming.get(targetNode.id)?.get('variable');
         if (referenceWire) {
-          const sourceNode = nodes.find((item) => item.id === referenceWire.sourceNodeId);
-          const sourceVariable = graphVariables.find((item) => item.sourceNodeId === sourceNode?.id);
+          const sourceNode = definitionNodesById.get(referenceWire.sourceNodeId);
+          const sourceVariable = canvasGraphVariables.find((item) => item.sourceNodeId === sourceNode?.id);
           if (sourceVariable) return sourceVariable;
           if (sourceNode && ['variable_get', 'variable_set'].includes(sourceNode.type)) return resolveVariable(sourceNode, nextSeen);
         }
-        return graphVariables.find((item) => item.id === targetNode.data?.variableId) || null;
+        return canvasGraphVariables.find((item) => item.id === targetNode.data?.variableId) || null;
       };
       const variable = resolveVariable(node);
       const pinType = ['array', 'object'].includes(variable?.type) ? 'object' : variable?.type || 'string';
@@ -805,7 +1010,7 @@ export function NodeCanvas({
       });
     }
     if (node.type === 'format_text') {
-      const variableNames = new Set(graphVariables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
+      const variableNames = new Set(canvasGraphVariables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
       const placeholders = getTextTemplateSlots(node.data?.template);
       return withArgumentPins({ ...definition, inputs: placeholders.flatMap((name) => {
         const argument = /^arg(\d+)$/i.exec(name);
@@ -824,7 +1029,7 @@ export function NodeCanvas({
       return withExecInputPins({ ...definition, inputs: [{ id: 'value', label: 'Return', type, defaultValue: defaultForType(type) }] });
     }
     if (node.type === 'function_call') {
-      const target = callableGraphs.find((graph) => graph.id === node.data?.graphId);
+      const target = functionGraphDefinitionViews.find((graph) => graph.id === node.data?.graphId);
       const params = (target?.nodes || []).filter((item) => item.type === 'function_input');
       const returnNode = target?.nodes?.find((item) => item.type === 'function_return');
       return withExecInputPins({
@@ -834,7 +1039,23 @@ export function NodeCanvas({
       });
     }
     return withArgumentPins(definition);
-  }, [definitionsByType, callableGraphs, graphVariables, connections, nodes]);
+  }, [definitionsByType, functionGraphDefinitionViews, canvasGraphVariables, nodeDefinitionInputsToken, definitionNodesById, nodeConnectionsById, connectionByNodePin]);
+  const previousNodeDefinitionsRef = useRef(new Map());
+  const nodeDefinitionsById = useMemo(() => {
+    const previous = previousNodeDefinitionsRef.current;
+    const next = new Map();
+    for (const node of nodes) {
+      const definition = getNodeDefinition(node);
+      const oldDefinition = previous.get(node.id);
+      if (equalNodeDefinitions(oldDefinition, definition)) next.set(node.id, oldDefinition);
+      else {
+        next.set(node.id, definition);
+        nodeWorldSizeCacheRef.current.sizes.delete(node.id);
+      }
+    }
+    previousNodeDefinitionsRef.current = next;
+    return next;
+  }, [nodeDefinitionInputsToken, getNodeDefinition]);
   const breadcrumbNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const breadcrumbNodeLabel = breadcrumbNode?.label || (breadcrumbNode ? getNodeDefinition(breadcrumbNode)?.label || breadcrumbNode.type : '');
 
@@ -848,8 +1069,9 @@ export function NodeCanvas({
       const displayScale = getCanvasDisplayScale(container);
       const card = [...container.querySelectorAll('[data-node-card-id]')].find((item) => item.dataset.nodeCardId === node.id);
       const cardBounds = card?.getBoundingClientRect();
-      const width = cardBounds?.width ? cardBounds.width / displayScale / zoom : NODE_WIDTH;
-      const height = cardBounds?.height ? cardBounds.height / displayScale / zoom : estimateNodeHeight(getNodeDefinition(node));
+      const cachedSize = nodeWorldSizeCacheRef.current.sizes.get(node.id);
+      const width = cardBounds?.width ? cardBounds.width / displayScale / zoom : cachedSize?.width || NODE_WIDTH;
+      const height = cardBounds?.height ? cardBounds.height / displayScale / zoom : cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node));
       const viewportWidth = bounds.width / displayScale;
       const viewportHeight = bounds.height / displayScale;
       setPan({
@@ -878,7 +1100,7 @@ export function NodeCanvas({
 
   useLayoutEffect(() => {
     refreshWireLayout((revision) => revision + 1);
-  }, [nodes, connections, pan, zoom, graphVariables, functionGraphs, callableGraphs, settings.uiScale]);
+  }, [nodes, connections, pan, zoom, nodeDefinitionsById, settings.uiScale]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -889,7 +1111,6 @@ export function NodeCanvas({
     if (appRoot) observer.observe(appRoot);
     const controlDock = document.querySelector('.control-dock');
     if (controlDock) observer.observe(controlDock);
-    container.querySelectorAll('[data-node-card-id]').forEach((node) => observer.observe(node));
     return () => observer.disconnect();
   }, [nodes.length]);
 
@@ -966,40 +1187,81 @@ export function NodeCanvas({
     };
   }, [desktopMode, dropLibraryPayload, showLibraryDragPreview]);
 
+  const previousRemoteNodePositionsRef = useRef(new Map());
   const remoteNodePositionById = useMemo(() => {
+    const previous = previousRemoteNodePositionsRef.current;
     const positions = new Map();
     for (const peer of remoteActions) if (Array.isArray(peer.action?.nodePositions)) {
       for (const position of peer.action.nodePositions) if (position && typeof position.id === 'string') positions.set(position.id, position);
     }
+    const unchanged = previous.size === positions.size && [...positions].every(([id, position]) => {
+      const oldPosition = previous.get(id);
+      return oldPosition?.x === position.x && oldPosition?.y === position.y;
+    });
+    if (unchanged) return previous;
+    previousRemoteNodePositionsRef.current = positions;
     return positions;
   }, [remoteActions]);
 
-  const getSocketPosition = useCallback((nodeId, pinId, direction) => {
-    const node = nodes.find((item) => item.id === nodeId);
-    if (!node) return { x: 0, y: 0 };
-    const nodePosition = remoteNodePositionById.get(nodeId) || node;
-    const row = [...(containerRef.current?.querySelectorAll('.node-pin-row') || [])].find((element) =>
-      element.dataset.nodeId === nodeId && element.dataset.pinId === pinId && element.dataset.direction === direction
-    );
-    const socket = row?.querySelector('.pin-socket');
-    const card = row?.closest('[data-node-card-id]');
-    const socketBounds = socket?.getBoundingClientRect();
-    const cardBounds = card?.getBoundingClientRect();
-    if (socketBounds && cardBounds && cardBounds.width > 0) {
-      const scale = cardBounds.width / NODE_WIDTH;
-      return {
-        x: nodePosition.x + (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
-        y: nodePosition.y + (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
-      };
+  const localNodePositionById = useMemo(() => {
+    if (!draggingNode?.historyStarted && !draggingNode?.deltaX && !draggingNode?.deltaY) return null;
+    const ids = new Set(draggingNode.nodeIds || [draggingNode.id]);
+    const initialPositions = draggingNode.initialPositions || {};
+    const positions = new Map();
+    for (const node of nodes) {
+      if (!ids.has(node.id)) continue;
+      const initial = initialPositions[node.id] || node;
+      positions.set(node.id, {
+        x: Math.round(initial.x + (draggingNode.deltaX || 0)),
+        y: Math.round(initial.y + (draggingNode.deltaY || 0))
+      });
     }
-    const definition = getNodeDefinition(node);
+    return positions;
+  }, [draggingNode, nodes]);
+
+  const getSocketPosition = useCallback((nodeId, pinId, direction) => {
+    let cache = socketPositionCacheRef.current;
+    const renderVersion = canvasRenderVersionRef.current;
+    if (cache.renderVersion !== renderVersion) {
+      const positions = new Map();
+      const container = containerRef.current;
+      if (container) {
+        const cardBoundsById = new Map();
+        for (const row of container.querySelectorAll('.node-pin-row')) {
+          const { nodeId: rowNodeId, pinId: rowPinId, direction: rowDirection } = row.dataset;
+          const socket = row.querySelector('.pin-socket');
+          const card = row.closest('[data-node-card-id]');
+          if (!nodePositionById.has(rowNodeId) || !socket || !card) continue;
+          let cardBounds = cardBoundsById.get(rowNodeId);
+          if (!cardBounds) {
+            cardBounds = card.getBoundingClientRect();
+            cardBoundsById.set(rowNodeId, cardBounds);
+          }
+          const socketBounds = socket.getBoundingClientRect();
+          if (!cardBounds.width) continue;
+          const nodePosition = localNodePositionById?.get(rowNodeId) || remoteNodePositionById.get(rowNodeId) || nodePositionById.get(rowNodeId);
+          const scale = cardBounds.width / NODE_WIDTH;
+          positions.set(`${rowNodeId}\u0000${rowPinId}\u0000${rowDirection}`, {
+            x: nodePosition.x + (socketBounds.left + socketBounds.width / 2 - cardBounds.left) / scale,
+            y: nodePosition.y + (socketBounds.top + socketBounds.height / 2 - cardBounds.top) / scale
+          });
+        }
+      }
+      cache = { renderVersion, positions };
+      socketPositionCacheRef.current = cache;
+    }
+    const cachedPosition = cache.positions.get(`${nodeId}\u0000${pinId}\u0000${direction}`);
+    if (cachedPosition) return cachedPosition;
+    if (!nodePositionById.has(nodeId)) return { x: 0, y: 0 };
+    const nodePosition = localNodePositionById?.get(nodeId) || remoteNodePositionById.get(nodeId) || nodePositionById.get(nodeId);
+    const definition = nodeDefinitionsById.get(nodeId);
     const pins = direction === 'output' ? definition?.outputs || [] : definition?.inputs || [];
     const index = Math.max(0, pins.findIndex((pin) => pin.id === pinId));
     return {
       x: nodePosition.x + (direction === 'output' ? NODE_WIDTH : 0),
       y: nodePosition.y + 72 + index * 23
     };
-  }, [nodes, getNodeDefinition, remoteNodePositionById]);
+  }, [nodePositionById, nodeDefinitionsById, remoteNodePositionById, localNodePositionById]);
 
   const pinFromRow = useCallback((row) => row ? ({
     nodeId: row.dataset.nodeId,
@@ -1298,7 +1560,7 @@ export function NodeCanvas({
       const displayScale = getCanvasDisplayScale(containerRef.current);
       const cursor = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
       collaborationCursorRef.current = cursor;
-      if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, selectedNodeIds });
+      if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, nodeId: connectingWire.nodeId, pinId: connectingWire.pinId, direction: connectingWire.direction, snapTarget: connectingWire.snapTarget ? { nodeId: connectingWire.snapTarget.nodeId, pinId: connectingWire.snapTarget.pinId } : null, selectedNodeIds });
       else if (draggingNode) {
         const deltaX = (event.clientX - draggingNode.startX) / displayScale / zoom;
         const deltaY = (event.clientY - draggingNode.startY) / displayScale / zoom;
@@ -1375,7 +1637,6 @@ export function NodeCanvas({
       if (!draggingNode.historyStarted && Math.hypot(deltaX, deltaY) < 2) return;
       if (!draggingNode.historyStarted) {
         onHistoryGroupStart?.();
-        setDraggingNode((current) => current ? { ...current, historyStarted: true } : current);
       }
       let x = draggingNode.initialX + deltaX / zoom;
       let y = draggingNode.initialY + deltaY / zoom;
@@ -1385,13 +1646,7 @@ export function NodeCanvas({
       }
       const groupDeltaX = x - draggingNode.initialX;
       const groupDeltaY = y - draggingNode.initialY;
-      const selectedIds = new Set(draggingNode.nodeIds || [draggingNode.id]);
-      const initialPositions = draggingNode.initialPositions || { [draggingNode.id]: { x: draggingNode.initialX, y: draggingNode.initialY } };
-      onNodesChange?.(nodes.map((node) => {
-        if (!selectedIds.has(node.id)) return node;
-        const initial = initialPositions[node.id] || { x: node.x, y: node.y };
-        return { ...node, x: Math.round(initial.x + groupDeltaX), y: Math.round(initial.y + groupDeltaY) };
-      }));
+      setDraggingNode((current) => current ? { ...current, historyStarted: true, deltaX: groupDeltaX, deltaY: groupDeltaY } : current);
       return;
     }
     if (draggingNote) {
@@ -1423,6 +1678,67 @@ export function NodeCanvas({
       }) : current);
     }
   };
+
+  pointerMoveHandlerRef.current = movePointer;
+  const schedulePointerMoveFrame = () => {
+    if (pointerMoveFrameRef.current) return;
+    pointerMoveFrameRef.current = window.requestAnimationFrame((timestamp) => {
+      pointerMoveFrameRef.current = 0;
+      const pending = pendingPointerMoveRef.current;
+      pendingPointerMoveRef.current = null;
+      if (pending) pointerMoveHandlerRef.current?.(pending);
+
+      const timing = frameTimingRef.current;
+      if (document.visibilityState === 'hidden') {
+        timing.last = 0;
+      } else if (timing.last) {
+        const interval = timestamp - timing.last;
+        timing.samples += 1;
+        if (interval > 24) { timing.slow += 1; timing.fast = 0; }
+        else if (interval <= 18) { timing.fast += 1; timing.slow = Math.max(0, timing.slow - 1); }
+        else { timing.fast = 0; }
+
+        if (!performanceReducedRef.current && timing.samples >= 30) {
+          if (timing.slow >= 8) setPerformanceReduced(true);
+          timing.samples = 0;
+          timing.slow = 0;
+        } else if (performanceReducedRef.current && timing.fast >= 180) {
+          setPerformanceReduced(false);
+          timing.samples = 0;
+          timing.fast = 0;
+        } else if (timing.samples >= 60) {
+          timing.samples = 0;
+          timing.slow = 0;
+        }
+      }
+      timing.last = document.visibilityState === 'hidden' ? 0 : timestamp;
+
+      if (canvasInteractionActiveRef.current) schedulePointerMoveFrame();
+      else timing.last = 0;
+    });
+  };
+  const queuePointerMove = (event) => {
+    if (event.pointerType === 'touch' && touchPinchRef.current && event.cancelable) event.preventDefault();
+    pendingPointerMoveRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      target: event.target,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      preventDefault() {}
+    };
+    canvasInteractionActiveRef.current = true;
+    schedulePointerMoveFrame();
+  };
+
+  useEffect(() => () => {
+    if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
+    pointerMoveFrameRef.current = 0;
+    pendingPointerMoveRef.current = null;
+  }, []);
 
   const connectPins = (start, end, replacedConnectionId = null) => {
     if (!isCompatiblePin(start, end)) return;
@@ -1461,12 +1777,13 @@ export function NodeCanvas({
     const finalNodeMoveX = finishedDraggingNode ? finalNodeX - finishedDraggingNode.initialX : 0;
     const finalNodeMoveY = finishedDraggingNode ? finalNodeY - finishedDraggingNode.initialY : 0;
     const nodeMoveStarted = Boolean(finishedDraggingNode && (finishedDraggingNode.historyStarted || Math.hypot(finalNodeDelta.x * zoom, finalNodeDelta.y * zoom) >= 2));
-    const finishedNodePositions = collaborationMotionSupported && nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
+    const finalNodePositions = nodeMoveStarted ? (finishedDraggingNode.nodeIds || [finishedDraggingNode.id]).map((id) => {
       const initial = finishedDraggingNode.initialPositions?.[id] || nodes.find((item) => item.id === id) || { x: 0, y: 0 };
       return { id, x: Math.round(initial.x + finalNodeMoveX), y: Math.round(initial.y + finalNodeMoveY) };
     }) : undefined;
-    if (nodeMoveStarted && finishedNodePositions?.length) {
-      const finalPositionsById = new Map(finishedNodePositions.map((position) => [position.id, position]));
+    const finishedNodePositions = collaborationMotionSupported ? finalNodePositions : undefined;
+    if (nodeMoveStarted && finalNodePositions?.length) {
+      const finalPositionsById = new Map(finalNodePositions.map((position) => [position.id, position]));
       onNodesChange?.(nodes.map((node) => finalPositionsById.has(node.id) ? { ...node, ...finalPositionsById.get(node.id) } : node));
     }
     const finalNoteDelta = draggingNote ? {
@@ -1491,15 +1808,17 @@ export function NodeCanvas({
       const targetGroup = point && tagGroupLayouts
         .filter((group) => point.x >= group.left && point.x <= group.left + group.width && point.y >= group.top && point.y <= group.top + group.height)
         .sort((a, b) => a.width * a.height - b.width * b.height)[0];
-      const finalNodes = new Map(nodes.map((node) => [node.id, node]));
+      const finalPositionById = new Map((finalNodePositions || []).map((position) => [position.id, position]));
+      const finalNodes = new Map(nodes.map((node) => [node.id, finalPositionById.has(node.id) ? { ...node, ...finalPositionById.get(node.id) } : node]));
       const cards = new Map(Array.from(containerRef.current?.querySelectorAll('[data-node-card-id]') || [], (card) => [card.dataset.nodeCardId, card]));
       const scale = getCanvasDisplayScale(containerRef.current) * zoom;
       const isInsideGroup = (nodeId, group) => {
         const node = finalNodes.get(nodeId);
         if (!node || !group) return false;
         const rect = cards.get(nodeId)?.getBoundingClientRect();
-        const width = rect?.width && scale ? rect.width / scale : NODE_WIDTH;
-        const height = rect?.height && scale ? rect.height / scale : estimateNodeHeight(getNodeDefinition(node));
+        const cachedSize = nodeWorldSizeCacheRef.current.sizes.get(nodeId);
+        const width = rect?.width && scale ? rect.width / scale : cachedSize?.width || NODE_WIDTH;
+        const height = rect?.height && scale ? rect.height / scale : cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node));
         return node.x >= group.left && node.y >= group.top && node.x + width <= group.left + group.width && node.y + height <= group.top + group.height;
       };
       const nextGroups = tagGroups.map((group) => {
@@ -1569,6 +1888,11 @@ export function NodeCanvas({
   };
 
   const finishCanvasPointer = (event) => {
+    if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
+    pointerMoveFrameRef.current = 0;
+    pendingPointerMoveRef.current = null;
+    canvasInteractionActiveRef.current = false;
+    movePointer(event);
     const wasPinching = event.pointerType === 'touch' && Boolean(touchPinchRef.current);
     if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
     if (wasPinching) {
@@ -1593,12 +1917,14 @@ export function NodeCanvas({
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
     setConnectingWire({ nodeId, pinId, direction, pinType, startPos: position, currentPos: pointer, snapTarget: null });
-    onCollaborationAction?.({ kind: 'wire-drag', cursor: pointer, start: position, pinType });
+      onCollaborationAction?.({ kind: 'wire-drag', cursor: pointer, start: position, pinType, nodeId, pinId, direction });
     if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
   };
 
   const startWireFromConnection = (event, connection, direction = 'output', moveExisting = false) => {
     if (isLocked || !containerRef.current) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
     const nodeId = direction === 'output' ? connection.sourceNodeId : connection.targetNodeId;
     const pinId = direction === 'output' ? connection.sourcePinId : connection.targetPinId;
     const node = nodeById.get(nodeId);
@@ -1610,8 +1936,9 @@ export function NodeCanvas({
     const displayScale = getCanvasDisplayScale(containerRef.current);
     const pointer = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
     setConnectingWire({ nodeId, pinId, direction, pinType: pin.type, startPos: getSocketPosition(nodeId, pinId, direction), currentPos: pointer, snapTarget: null, connectionId: moveExisting ? connection.id : null, originalConnection: moveExisting ? connection : null });
-    onCollaborationAction?.({ kind: 'wire-drag', cursor: pointer, start: getSocketPosition(nodeId, pinId, direction), pinType: pin.type });
+    onCollaborationAction?.({ kind: 'wire-drag', cursor: pointer, start: getSocketPosition(nodeId, pinId, direction), pinType: pin.type, nodeId, pinId, direction });
     if (moveExisting) onConnectionsChange?.(connections.filter((item) => item.id !== connection.id));
+    if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
   };
 
   const startWireFromInput = (event, nodeId, pinId) => {
@@ -1622,7 +1949,6 @@ export function NodeCanvas({
   const startWireFromOutput = (event, nodeId, pinId) => {
     const connection = connections.find((item) => item.sourceNodeId === nodeId && item.sourcePinId === pinId);
     if (connection) startWireFromConnection(event, connection, 'output', true);
-    else setConnectingWire(null);
   };
 
   const cutWire = (event, connection) => {
@@ -1678,8 +2004,8 @@ export function NodeCanvas({
     const minX = Math.min(...nodes.map((node) => node.x));
     const minY = Math.min(...nodes.map((node) => node.y));
     const cards = new Map([...(containerRef.current?.querySelectorAll('[data-node-card-id]') || [])].map((card) => [card.dataset.nodeCardId, card]));
-    const maxX = Math.max(...nodes.map((node) => node.x + (cards.get(node.id)?.getBoundingClientRect().width / displayScale / zoom || NODE_WIDTH)));
-    const maxY = Math.max(...nodes.map((node) => node.y + (cards.get(node.id)?.getBoundingClientRect().height / displayScale / zoom || estimateNodeHeight(getNodeDefinition(node)))));
+    const maxX = Math.max(...nodes.map((node) => node.x + (cards.get(node.id)?.getBoundingClientRect().width / displayScale / zoom || nodeWorldSizeCacheRef.current.sizes.get(node.id)?.width || NODE_WIDTH)));
+    const maxY = Math.max(...nodes.map((node) => node.y + (cards.get(node.id)?.getBoundingClientRect().height / displayScale / zoom || nodeWorldSizeCacheRef.current.sizes.get(node.id)?.height || estimateNodeCardHeight(node, getNodeDefinition(node)))));
     const nextZoom = clamp(Math.min((viewWidth - 120) / (maxX - minX + 32), (viewHeight - 120) / (maxY - minY + 32), 1.2), 0.25, 1.2);
     setZoom(nextZoom);
     setPan({ x: (viewWidth - (maxX - minX) * nextZoom) / 2 - minX * nextZoom, y: (viewHeight - (maxY - minY) * nextZoom) / 2 - minY * nextZoom });
@@ -1759,12 +2085,7 @@ export function NodeCanvas({
   };
 
   const gridSize = Math.max(12, GRID_SIZE * zoom);
-  const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-  const inputWiresByNode = useMemo(() => {
-    const result = new Map();
-    for (const wire of connections) { if (!result.has(wire.targetNodeId)) result.set(wire.targetNodeId, []); result.get(wire.targetNodeId).push(wire); }
-    return result;
-  }, [connections]);
+  const inputConnectionByNodePin = connectionByNodePin.incoming;
   const tagGroupLayouts = useMemo(() => tagGroups.map((group) => {
     const members = nodes.filter((node) => (group.nodeIds || []).includes(node.id));
     const noteMembers = notes.filter((note) => (group.noteIds || []).includes(note.id));
@@ -1774,8 +2095,9 @@ export function NodeCanvas({
     const measuredNodes = members.map((node) => {
       const card = cards.get(node.id);
       const rect = card?.getBoundingClientRect();
+      const cachedSize = nodeWorldSizeCacheRef.current.sizes.get(node.id);
       const initialPosition = draggingNode && (draggingNode.altKey || altDownRef.current) ? draggingNode.initialPositions?.[node.id] : null;
-      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: rect?.width && scale ? rect.width / scale : NODE_WIDTH, height: rect?.height && scale ? rect.height / scale : estimateNodeHeight(getNodeDefinition(node)) };
+      return { x: initialPosition?.x ?? node.x, y: initialPosition?.y ?? node.y, width: rect?.width && scale ? rect.width / scale : cachedSize?.width || NODE_WIDTH, height: rect?.height && scale ? rect.height / scale : cachedSize?.height || estimateNodeCardHeight(node, getNodeDefinition(node)) };
     });
     const measured = measuredNodes.length ? measuredNodes : noteMembers.map((note) => ({ x: note.x, y: note.y, width: 224, height: 156 }));
     const side = 28;
@@ -1785,14 +2107,14 @@ export function NodeCanvas({
     const right = Math.max(...measured.map((item) => item.x + item.width)) + side;
     const bottom = Math.max(...measured.map((item) => item.y + item.height)) + side;
     return { ...group, left, top, width: right - left, height: bottom - top };
-  }).filter(Boolean), [tagGroups, nodes, notes, zoom, wireLayoutRevision, getNodeDefinition, draggingNode]);
+  }).filter(Boolean), [tagGroups, nodes, notes, zoom, wireLayoutRevision, nodeBoundsRevision, getNodeDefinition, draggingNode]);
   const nearbyTagGroups = (nodeIds) => {
     const selectedNodes = nodes.filter((node) => nodeIds.includes(node.id));
     if (!selectedNodes.length) return [];
     const nearbyLimit = NODE_WIDTH * 2.5;
     return tagGroupLayouts.map((group) => {
       const distance = Math.min(...selectedNodes.map((node) => {
-        const nodeHeight = estimateNodeHeight(getNodeDefinition(node));
+        const nodeHeight = nodeWorldSizeCacheRef.current.sizes.get(node.id)?.height || estimateNodeCardHeight(node, getNodeDefinition(node));
         const dx = Math.max(group.left - (node.x + NODE_WIDTH), 0, node.x - (group.left + group.width));
         const dy = Math.max(group.top - (node.y + nodeHeight), 0, node.y - (group.top + group.height));
         return Math.hypot(dx, dy);
@@ -1826,54 +2148,45 @@ export function NodeCanvas({
       .sort((a, b) => a.width * a.height - b.width * b.height)[0];
     setViewportSectionId((current) => current === (section?.id || null) ? current : section?.id || null);
   }, [pan, zoom, tagGroupLayouts, wireLayoutRevision]);
+  const previousConnectedInputIdsRef = useRef(new Map());
   const connectedInputIds = useMemo(() => {
+    const previous = previousConnectedInputIdsRef.current;
     const byNode = new Map();
     for (const connection of connections) {
       if (!byNode.has(connection.targetNodeId)) byNode.set(connection.targetNodeId, new Set());
       byNode.get(connection.targetNodeId).add(connection.targetPinId);
     }
+    for (const [nodeId, pins] of byNode) {
+      const oldPins = previous.get(nodeId);
+      if (oldPins && oldPins.size === pins.size && [...pins].every((pinId) => oldPins.has(pinId))) byNode.set(nodeId, oldPins);
+    }
+    previousConnectedInputIdsRef.current = byNode;
     return byNode;
   }, [connections]);
   const { baseConnections, selectedConnections, primarySelectedConnections } = useMemo(() => {
     if (!selectedNodeIds.length) return { baseConnections: connections, selectedConnections: [], primarySelectedConnections: [] };
     const selectedIds = new Set(selectedNodeIds);
-    const primaryId = selectedIds.has(selectedNodeId) ? selectedNodeId : selectedNodeIds[selectedNodeIds.length - 1];
     const base = [];
-    const selected = [];
     const primary = [];
     for (const connection of connections) {
-      if (connection.sourceNodeId === primaryId || connection.targetNodeId === primaryId) {
+      if (selectedIds.has(connection.sourceNodeId)) {
         primary.push(connection);
-      } else if (selectedIds.has(connection.sourceNodeId) || selectedIds.has(connection.targetNodeId)) {
-        selected.push(connection);
       } else {
         base.push(connection);
       }
     }
-    return { baseConnections: base, selectedConnections: selected, primarySelectedConnections: primary };
-  }, [connections, selectedNodeId, selectedNodeIds]);
-  const connectedSelectedNodeIds = useMemo(() => {
-    if (!selectedNodeIds.length) return new Set();
-    const selectedIds = new Set(selectedNodeIds);
-    const connectedIds = new Set();
-    for (const connection of connections) {
-      if (selectedIds.has(connection.sourceNodeId)) connectedIds.add(connection.targetNodeId);
-      if (selectedIds.has(connection.targetNodeId)) connectedIds.add(connection.sourceNodeId);
-    }
-    for (const id of selectedIds) connectedIds.delete(id);
-    return connectedIds;
+    return { baseConnections: base, selectedConnections: [], primarySelectedConnections: primary };
   }, [connections, selectedNodeIds]);
-
 const previewOutput = (node, outputId, seen = new Set()) => {
   if (!node || seen.has(node.id) || seen.size > 24) return undefined;
   const nextSeen = new Set(seen).add(node.id);
   const data = node.data || {};
   if (node.type.startsWith('event_') || node.type === 'function_input' || node.type === 'function_call') return undefined;
   if (node.type === 'value_text' || node.type === 'value_number' || node.type === 'value_boolean') return data.value ?? (node.type === 'value_boolean');
-  if (node.type === 'variable_get') return graphVariables.find((item) => item.id === data.variableId)?.initialValue;
+  if (node.type === 'variable_get') return canvasGraphVariables.find((item) => item.id === data.variableId)?.initialValue;
   const definition = getNodeDefinition(node);
   const input = (id, fallback) => {
-    const wire = connections.find((item) => item.targetNodeId === node.id && item.targetPinId === id);
+    const wire = inputConnectionByNodePin.get(node.id)?.get(id);
     if (wire) return previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId, nextSeen);
     return data[id] ?? fallback;
   };
@@ -1933,6 +2246,184 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   return undefined;
 };
 
+  const activeCanvasNodeId = containerRef.current?.ownerDocument?.activeElement?.closest?.('[data-node-card-id]')?.dataset.nodeCardId || '';
+  const visibleCanvasNodeIds = useMemo(() => {
+    if (nodes.length <= LARGE_GRAPH_NODE_LIMIT) {
+      visibleNodeIdsCacheRef.current = null;
+      return null;
+    }
+    const container = containerRef.current;
+    if (!container && typeof window === 'undefined') {
+      visibleNodeIdsCacheRef.current = null;
+      return null;
+    }
+    const bounds = container?.getBoundingClientRect();
+    const scaleElement = container || (typeof document !== 'undefined' ? document.querySelector('.app-root') : null);
+    const displayScale = getCanvasDisplayScale(scaleElement);
+    const viewWidth = (bounds?.width || window.innerWidth) / displayScale;
+    const viewHeight = (bounds?.height || window.innerHeight) / displayScale;
+    if (!(viewWidth > 0 && viewHeight > 0 && zoom > 0)) {
+      visibleNodeIdsCacheRef.current = null;
+      return null;
+    }
+    const overscanPixels = Math.max(NODE_CULL_OVERSCAN_MIN, Math.min(NODE_CULL_OVERSCAN_MAX, Math.max(viewWidth, viewHeight) * 0.68));
+    const overscan = overscanPixels / zoom;
+    const left = -pan.x / zoom - overscan;
+    const top = -pan.y / zoom - overscan;
+    const right = (viewWidth - pan.x) / zoom + overscan;
+    const bottom = (viewHeight - pan.y) / zoom + overscan;
+    const pinnedIds = new Set([
+      ...selectedNodeIds,
+      ...(draggingNode?.nodeIds || []),
+      draggingNode?.id,
+      ...(contextMenu?.nodeIds || []),
+      contextMenu?.nodeId,
+      connectingWire?.nodeId,
+      connectingWire?.snapTarget?.nodeId,
+      connectingWire?.originalConnection?.sourceNodeId,
+      connectingWire?.originalConnection?.targetNodeId,
+      activeCanvasNodeId,
+      focusRequest?.requestId !== handledFocusRequestRef.current ? focusRequest?.nodeId : null
+    ].filter((id) => typeof id === 'string' && id));
+    for (const peer of remoteActions) {
+      const action = peer.action;
+      if (!action) continue;
+      if (Array.isArray(action.selectedNodeIds)) for (const id of action.selectedNodeIds) if (typeof id === 'string') pinnedIds.add(id);
+      if (action.kind === 'node-drag') {
+        for (const id of action.nodeIds || []) if (typeof id === 'string') pinnedIds.add(id);
+        for (const position of action.nodePositions || []) if (typeof position?.id === 'string') pinnedIds.add(position.id);
+      }
+      if (action.kind === 'node-edit' && typeof action.nodeId === 'string') pinnedIds.add(action.nodeId);
+      if (action.kind === 'wire-drag') {
+        if (typeof action.nodeId === 'string') pinnedIds.add(action.nodeId);
+        if (typeof action.snapTarget?.nodeId === 'string') pinnedIds.add(action.snapTarget.nodeId);
+      }
+    }
+    const sizes = nodeWorldSizeCacheRef.current.sizes;
+    const next = new Set();
+    for (const node of nodes) {
+      if (pinnedIds.has(node.id)) {
+        next.add(node.id);
+        continue;
+      }
+      const position = localNodePositionById?.get(node.id) || remoteNodePositionById.get(node.id) || node;
+      const size = sizes.get(node.id);
+      const width = size?.width || NODE_WIDTH;
+      const height = Math.max(size?.height || 0, estimateCulledNodeHeight(node, nodeDefinitionsById.get(node.id)));
+      if (position.x + width >= left && position.x <= right && position.y + height >= top && position.y <= bottom) next.add(node.id);
+    }
+    const previous = visibleNodeIdsCacheRef.current;
+    if (previous && previous.size === next.size && [...next].every((id) => previous.has(id))) return previous;
+    visibleNodeIdsCacheRef.current = next;
+    return next;
+  }, [nodes, nodeDefinitionsById, remoteNodePositionById, localNodePositionById, remoteActions, selectedNodeIds, pan, zoom, draggingNode?.id, draggingNode?.nodeIds, connectingWire?.nodeId, connectingWire?.snapTarget?.nodeId, connectingWire?.originalConnection, contextMenu?.nodeId, contextMenu?.nodeIds, activeCanvasNodeId, focusRequest?.requestId, focusRequest?.nodeId, wireLayoutRevision, nodeBoundsRevision, graphId, projectId]);
+
+  const previousTemplatePreviewsRef = useRef(new Map());
+  const templatePreviewValuesByNode = useMemo(() => {
+    const previous = previousTemplatePreviewsRef.current;
+    const next = new Map();
+    for (const node of nodes) {
+      if (visibleCanvasNodeIds && !visibleCanvasNodeIds.has(node.id)) continue;
+      const values = {};
+      for (const wire of nodeConnectionsById.get(node.id)?.incoming || EMPTY_NODE_CONNECTIONS.incoming) {
+        const value = previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId);
+        if (value !== undefined) values[wire.targetPinId] = value;
+      }
+      const keys = Object.keys(values);
+      const oldValues = previous.get(node.id);
+      const canReuse = oldValues && keys.length === Object.keys(oldValues).length
+        && keys.every((key) => Object.hasOwn(oldValues, key) && Object.is(oldValues[key], values[key]));
+      next.set(node.id, canReuse ? oldValues : keys.length ? values : EMPTY_TEMPLATE_PREVIEW_VALUES);
+    }
+    previousTemplatePreviewsRef.current = next;
+    return next;
+  }, [nodes, nodeDefinitionInputsToken, visibleCanvasNodeIds, nodeConnectionsById, inputConnectionByNodePin, canvasGraphVariables, getNodeDefinition, nodeById]);
+  const renderedCanvasNodes = useMemo(() => visibleCanvasNodeIds ? nodes.filter((node) => visibleCanvasNodeIds.has(node.id)) : nodes, [nodes, visibleCanvasNodeIds]);
+  const selectedNodeIdSet = useMemo(() => new Set(selectedNodeIds), [selectedNodeIds]);
+  const activePulseNodeIdSet = useMemo(() => new Set(activePulseNodeIds), [activePulseNodeIds]);
+
+  useLayoutEffect(() => {
+    measureVisibleNodeCards();
+  }, [visibleCanvasNodeIds, zoom, nodeDefinitionInputsToken, nodeDefinitionsById, graphId, projectId, measureVisibleNodeCards]);
+
+  useLayoutEffect(() => {
+    refreshWireLayout((revision) => revision + 1);
+  }, [visibleCanvasNodeIds]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => {
+      measureVisibleNodeCards();
+      refreshWireLayout((revision) => revision + 1);
+    });
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    container.querySelectorAll('[data-node-card-id]').forEach((card) => {
+      if (nodeIds.has(card.dataset.nodeCardId)) observer.observe(card);
+    });
+    return () => observer.disconnect();
+  }, [visibleCanvasNodeIds, nodeCardIdsToken, measureVisibleNodeCards]);
+
+  const remoteNodeVisualStateById = useMemo(() => {
+    const states = new Map();
+    const getState = (id) => {
+      let state = states.get(id);
+      if (!state) { state = {}; states.set(id, state); }
+      return state;
+    };
+    for (const peer of remoteActions) {
+      const action = peer.action || {};
+      for (const id of action.selectedNodeIds || []) {
+        const state = getState(id);
+        state.selection ||= peer;
+      }
+      if (action.kind === 'node-edit' && action.nodeId) getState(action.nodeId).owner ||= peer;
+      if (action.kind === 'node-drag') {
+        for (const id of action.nodeIds || []) {
+          const state = getState(id);
+          state.owner ||= peer;
+          state.dragging = true;
+        }
+      }
+      if (Array.isArray(action.nodePositions)) for (const position of action.nodePositions) {
+        if (!position || typeof position.id !== 'string') continue;
+        const state = getState(position.id);
+        state.owner ||= peer;
+        state.position = position;
+      }
+    }
+    for (const state of states.values()) if (!state.owner) state.owner = state.selection;
+    return states;
+  }, [remoteActions]);
+  const canvasNodeActionsRef = useRef({});
+  canvasNodeActionsRef.current = {
+    selectNodes, deleteNode, updateNodeData, startWire, startWireFromInput, startWireFromOutput,
+    onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio,
+    onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, callableGraphs
+  };
+  const canvasNodeHandlers = useMemo(() => ({
+    onSelect: (id, event) => {
+      if (!event?.metaKey && !event?.ctrlKey && !event?.shiftKey) canvasNodeActionsRef.current.selectNodes?.([id], id);
+    },
+    onDelete: (id) => canvasNodeActionsRef.current.deleteNode?.(id),
+    onNodeDataChange: (id, data, label) => canvasNodeActionsRef.current.updateNodeData?.(id, data, label),
+    onPinStartConnect: (...args) => canvasNodeActionsRef.current.startWire?.(...args),
+    onPinDoubleClick: (event, nodeId, pinId, direction) => {
+      if (direction === 'input') canvasNodeActionsRef.current.startWireFromInput?.(event, nodeId, pinId);
+      else canvasNodeActionsRef.current.startWireFromOutput?.(event, nodeId, pinId);
+    },
+    onOpenVariables: (...args) => canvasNodeActionsRef.current.onOpenVariables?.(...args),
+    onOpenEmbedStudio: (...args) => canvasNodeActionsRef.current.onOpenEmbedStudio?.(...args),
+    onOpenTextStudio: (...args) => canvasNodeActionsRef.current.onOpenTextStudio?.(...args),
+    onOpenPermissionStudio: (...args) => canvasNodeActionsRef.current.onOpenPermissionStudio?.(...args),
+    onOpenSlashCommandStudio: (...args) => canvasNodeActionsRef.current.onOpenSlashCommandStudio?.(...args),
+    onOpenModalStudio: (...args) => canvasNodeActionsRef.current.onOpenModalStudio?.(...args),
+    onOpenFunctionGraph: (graph) => {
+      const latestGraph = canvasNodeActionsRef.current.callableGraphs?.find((item) => item.id === graph?.id) || graph;
+      return canvasNodeActionsRef.current.onOpenFunctionGraph?.(latestGraph);
+    }
+  }), []);
+
   const renderWire = (connection, isSelectedNodeWire, isPrimarySelectedWire = false) => {
     const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
     const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
@@ -1945,8 +2436,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       try { outputPreview = outputValue === undefined ? 'Preview unavailable · requires runtime data or an unsupported node' : `Value · ${typeof outputValue === 'string' ? outputValue : JSON.stringify(outputValue)}`; } catch { outputPreview = 'Preview unavailable'; }
       if (outputPreview.length > 180) outputPreview = `${outputPreview.slice(0, 177)}…`;
     }
-    const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
-    const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
+    const sourcePin = nodeDefinitionsById.get(sourceNode?.id)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
+    const targetPin = nodeDefinitionsById.get(targetNode?.id)?.inputs?.find((pin) => pin.id === connection.targetPinId);
     const sourceType = sourcePin?.colorType || sourcePin?.type;
     const targetType = targetPin?.colorType || targetPin?.type;
     const pinColor = PinColors[sourceType || connection.type || targetType] || '#9299a6';
@@ -1989,6 +2480,46 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   const canvasHeight = containerRef.current?.clientHeight || 0;
   const canvasBounds = containerRef.current?.getBoundingClientRect();
   const canvasDisplayScale = getCanvasDisplayScale(containerRef.current);
+  const wireViewportWidth = canvasWidth || (typeof window !== 'undefined' ? window.innerWidth / canvasDisplayScale : 0);
+  const wireViewportHeight = canvasHeight || (typeof window !== 'undefined' ? window.innerHeight / canvasDisplayScale : 0);
+  const visibleWireIds = useMemo(() => {
+    if (connections.length <= LARGE_GRAPH_WIRE_LIMIT || !(wireViewportWidth > 0 && wireViewportHeight > 0 && zoom > 0)) {
+      visibleWireIdsCacheRef.current = null;
+      return null;
+    }
+    const overscanPixels = Math.max(600, Math.min(1400, Math.max(wireViewportWidth, wireViewportHeight) * 0.4));
+    const overscan = overscanPixels / zoom;
+    const bounds = {
+      left: -pan.x / zoom - overscan,
+      top: -pan.y / zoom - overscan,
+      right: (wireViewportWidth - pan.x) / zoom + overscan,
+      bottom: (wireViewportHeight - pan.y) / zoom + overscan
+    };
+    const padding = 16 / zoom;
+    const next = new Set();
+    for (const connection of connections) {
+      const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
+      const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
+      let left = Math.min(start.x, end.x);
+      let right = Math.max(start.x, end.x);
+      if (wireStyle !== 'straight') {
+        const curve = Math.max(Math.abs(end.x - start.x) * 0.5, 52);
+        left = Math.min(left, start.x + curve, end.x - curve);
+        right = Math.max(right, start.x + curve, end.x - curve);
+      }
+      const top = Math.min(start.y, end.y);
+      const bottom = Math.max(start.y, end.y);
+      if (right + padding >= bounds.left && left - padding <= bounds.right
+        && bottom + padding >= bounds.top && top - padding <= bounds.bottom) next.add(connection.id);
+    }
+    const previous = visibleWireIdsCacheRef.current;
+    if (previous && previous.size === next.size && [...next].every((id) => previous.has(id))) return previous;
+    visibleWireIdsCacheRef.current = next;
+    return next;
+  }, [connections, getSocketPosition, pan, zoom, wireStyle, wireViewportWidth, wireViewportHeight]);
+  const visibleBaseConnections = useMemo(() => visibleWireIds ? baseConnections.filter((wire) => visibleWireIds.has(wire.id)) : baseConnections, [baseConnections, visibleWireIds]);
+  const visibleSelectedConnections = useMemo(() => visibleWireIds ? selectedConnections.filter((wire) => visibleWireIds.has(wire.id)) : selectedConnections, [selectedConnections, visibleWireIds]);
+  const visiblePrimarySelectedConnections = useMemo(() => visibleWireIds ? primarySelectedConnections.filter((wire) => visibleWireIds.has(wire.id)) : primarySelectedConnections, [primarySelectedConnections, visibleWireIds]);
   const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
   const sidebar = containerRef.current?.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
   if (sidebar && canvasBounds) {
@@ -2055,9 +2586,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
     <div
       ref={containerRef}
       className={`node-canvas ${isPanning ? 'is-panning' : ''} ${draggingNode ? 'is-dragging-node' : ''} ${connectingWire ? 'is-connecting-wire' : ''} ${graphChatComposerOpen ? 'has-graph-chat-composer' : ''}`}
+      data-performance={performanceReduced ? 'reduced' : 'normal'}
       data-pin-descriptions={settings.pinDescriptionsAlways || shiftHeld ? 'true' : undefined}
       onPointerDown={startPan}
-      onPointerMove={movePointer}
+      onPointerMove={queuePointerMove}
       onClick={(event) => {
         if (event.detail !== 3 || event.target.closest?.('button, input, textarea, select, [data-node-card-id], [data-note-id], [data-wire-id]')) return;
         const bounds = containerRef.current?.getBoundingClientRect();
@@ -2072,6 +2604,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       }}
       onPointerUp={finishCanvasPointer}
       onPointerCancel={() => {
+        if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
+        pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
         touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false);
         const nodePositions = collaborationMotionSupported && draggingNode ? (draggingNode.nodeIds || [draggingNode.id]).map((id) => { const node = nodes.find((item) => item.id === id); return node ? { id, x: node.x, y: node.y } : null; }).filter(Boolean) : undefined;
         if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds, nodePositions }, true);
@@ -2133,57 +2667,41 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         })}
         {/* base wires layer: under all nodes (z-index 1) */}
         <svg className="wire-layer wire-layer-base" width="20000" height="20000" aria-label="Graph connections">
-          {baseConnections.map((connection) => renderWire(connection, false))}
+          {visibleBaseConnections.map((connection) => renderWire(connection, false))}
         </svg>
 
-        {nodes.map((node) => {
-          const isSelected = selectedNodeIds.includes(node.id);
-          const isConnectedToSelection = connectedSelectedNodeIds.has(node.id);
-          const definition = getNodeDefinition(node);
-          const templatePreviewValues = Object.fromEntries((inputWiresByNode.get(node.id) || []).map((wire) => [wire.targetPinId, previewOutput(nodeById.get(wire.sourceNodeId), wire.sourcePinId)]).filter(([, value]) => value !== undefined));
-          const remoteSelection = remoteActions.find((peer) => peer.action?.selectedNodeIds?.includes(node.id));
+        {renderedCanvasNodes.map((node) => {
+          const isSelected = selectedNodeIdSet.has(node.id);
+          const definition = nodeDefinitionsById.get(node.id);
+          const templatePreviewValues = templatePreviewValuesByNode.get(node.id) || EMPTY_TEMPLATE_PREVIEW_VALUES;
+          const remoteVisual = remoteNodeVisualStateById.get(node.id) || EMPTY_REMOTE_NODE_STATE;
+          const remoteSelection = remoteVisual.selection;
+          const remoteOwner = remoteVisual.owner;
           const remotePosition = remoteNodePositionById.get(node.id);
-          const remoteOwner = remoteActions.find((peer) => peer.action?.kind === 'node-edit' && peer.action.nodeId === node.id
-            || peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)
-            || peer.action?.nodePositions?.some((position) => position.id === node.id)) || remoteSelection;
-          const displayNode = remotePosition ? { ...node, x: remotePosition.x, y: remotePosition.y } : node;
+          const localPosition = localNodePositionById?.get(node.id);
+          const displayPosition = localPosition || remotePosition || node;
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isConnectedToSelection ? 'is-connected-to-selection' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteActions.some((peer) => peer.action?.kind === 'node-drag' && peer.action.nodeIds?.includes(node.id)) ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
               key={node.id}
-              style={{ zIndex: isSelected ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
+              style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
               onPointerDown={(event) => beginNodeDrag(event, node)}
             >
               <CanvasNode
-                node={displayNode}
+                node={node}
                 definition={definition}
                 authToken={authToken}
                 connectedInputIds={connectedInputIds.get(node.id) || EMPTY_PIN_SET}
-                graphVariables={graphVariables}
+                graphVariables={canvasGraphVariables}
                 templatePreviewValues={templatePreviewValues}
                 modalFieldOptions={modalFieldOptions}
                 appEmojis={appEmojis}
-                functionGraphs={functionGraphs}
                 callableGraphs={callableGraphs}
-                snappedPin={connectingWire?.snapTarget || null}
+                snappedPin={connectingWire?.snapTarget?.nodeId === node.id ? connectingWire.snapTarget : null}
                 selected={isSelected}
-                illuminated={activePulseNodeIds.includes(node.id)}
+                illuminated={activePulseNodeIdSet.has(node.id)}
                 isLocked={isLocked}
-                onSelect={(id, event) => { if (!event?.metaKey && !event?.ctrlKey && !event?.shiftKey) selectNodes([id], id); }}
-                onDelete={deleteNode}
-                onNodeDataChange={updateNodeData}
-                onPinStartConnect={startWire}
-                onPinDoubleClick={(event, nodeId, pinId, direction) => {
-                  if (direction === 'input') startWireFromInput(event, nodeId, pinId);
-                  else startWireFromOutput(event, nodeId, pinId);
-                }}
-                onOpenVariables={onOpenVariables}
-                onOpenEmbedStudio={onOpenEmbedStudio}
-                onOpenTextStudio={onOpenTextStudio}
-                onOpenPermissionStudio={onOpenPermissionStudio}
-                onOpenSlashCommandStudio={onOpenSlashCommandStudio}
-                onOpenModalStudio={onOpenModalStudio}
-                onOpenFunctionGraph={onOpenFunctionGraph}
+                {...canvasNodeHandlers}
               />
             </div>
           );
@@ -2191,8 +2709,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
 
         {/* selected wires layer: above other nodes (z-index: 13), below selected nodes (z-index: 14) */}
         <svg className="wire-layer wire-layer-selected" width="20000" height="20000" aria-label="Selected connections">
-          {selectedConnections.map((connection) => renderWire(connection, true))}
-          {primarySelectedConnections.map((connection) => renderWire(connection, true, true))}
+          {visibleSelectedConnections.map((connection) => renderWire(connection, true))}
+          {visiblePrimarySelectedConnections.map((connection) => renderWire(connection, true, true))}
           {wireCutAnimations.flatMap((animation) => animation.segments.map((segment, index) => <path key={`${animation.id}-${index}`} d={segment.d} className="wire-cut-segment" style={{ '--wire-color': animation.color, '--wire-cut-length': `${segment.length}px` }} />))}
           {connectingWire && <path
             d={connectingWire.direction === 'output'
@@ -2262,10 +2780,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const definition = definitionsByType.get(peer.action.nodeType);
           if (!definition) return null;
           const node = { id: `remote-preview-${peer.userId}`, type: peer.action.nodeType, label: peer.action.label || definition.label, data: {}, x: 0, y: 0 };
-          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={graphVariables} functionGraphs={functionGraphs} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
+          return <div key={`remote-library-preview-${peer.userId}`} className="node-position node-drag-preview is-remote" style={{ transform: `translate3d(${peer.action.cursor.x}px, ${peer.action.cursor.y}px, 0)`, '--collaborator-color': peer.color }} aria-hidden="true"><CanvasNode node={node} definition={definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} /></div>;
         })}
         {libraryDragPreview && <div className="node-position node-drag-preview" style={{ transform: `translate3d(${libraryDragPreview.x}px, ${libraryDragPreview.y}px, 0)` }} aria-hidden="true">
-          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={graphVariables} functionGraphs={functionGraphs} callableGraphs={callableGraphs} appEmojis={appEmojis} />
+          <CanvasNode node={libraryDragPreview.node} definition={libraryDragPreview.definition} connectedInputIds={EMPTY_PIN_SET} graphVariables={canvasGraphVariables} callableGraphs={callableGraphs} appEmojis={appEmojis} />
         </div>}
         <div className="canvas-chat-bubble-layer" aria-live="polite">
           {graphChatEnabled && graphChatBubbles.filter((bubble) => bubble.projectId === projectId && bubble.graphId === graphId && bubble.expiresAt > Date.now()).map((bubble) => <GraphChatBubble
@@ -2460,6 +2978,28 @@ function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(maxi
 function estimateNodeHeight(definition) {
   const rows = Math.max(definition?.inputs?.length || 0, definition?.outputs?.length || 0);
   return 48 + rows * 23 + 28;
+}
+
+function estimateNodeCardHeight(node, definition) {
+  const pinHeight = estimateNodeHeight(definition);
+  let configHeight = 120;
+  if (node?.type === 'value_number' || node?.type === 'value_boolean' || node?.type?.startsWith('math_')) configHeight = 64;
+  else if (node?.type === 'variable_create') configHeight = 320;
+  else if (node?.type === 'format_text') configHeight = 180;
+  else if (node?.type === 'build_embed') configHeight = 370;
+  else if (node?.type === 'build_modal') configHeight = 82;
+  else if (node?.type === 'data_permission_overwrites') configHeight = 78;
+  else if (node?.type === 'action_web_fetch') configHeight = 470;
+  else if (node?.type === 'action_web_retry') configHeight = 590;
+  else if (node?.type === 'action_http_download') configHeight = 320;
+  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message') configHeight = 440;
+  else if (node?.type === 'branch_switch') configHeight = 150;
+  else if (definition?.pluginAdapter) configHeight = 120 + (definition.inputs || []).filter((pin) => pin.type !== 'exec').length * 42;
+  return pinHeight + configHeight;
+}
+
+function estimateCulledNodeHeight(node, definition) {
+  return Math.max(720, estimateNodeCardHeight(node, definition) + 220);
 }
 
 function structuredCloneSafe(value) {
