@@ -77,3 +77,30 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
   assert.equal(payload.embeds[0].timestamp, '2026-10-21T10:00:00.000Z');
   assert.equal(payload.embeds[0].thumbnail, undefined);
 });
+
+test('activity delivery waits for Discord Retry-After before retrying', async (context) => {
+  const previousFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = previousFetch; });
+  const requestTimes = [];
+  globalThis.fetch = async () => {
+    requestTimes.push(Date.now());
+    if (requestTimes.length === 1) {
+      return {
+        status: 429,
+        ok: false,
+        headers: { get: (name) => name === 'retry-after' ? '1' : null },
+        json: async () => ({ retry_after: 1 })
+      };
+    }
+    return { status: 204, ok: true };
+  };
+  const dispatcher = new ActivityWebhookDispatcher({ isEnabled: () => true, getDeliveryUrl: () => 'https://discord.com/api/webhooks/id/token' });
+  dispatcher.enqueue({ summary: 'A graph changed', actor: { username: 'Owner' }, timestamp: new Date().toISOString() });
+  for (let attempt = 0; attempt < 100 && requestTimes.length < 1; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(requestTimes.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  assert.equal(requestTimes.length, 1);
+  for (let attempt = 0; attempt < 100 && requestTimes.length < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(requestTimes.length, 2);
+  assert.ok(requestTimes[1] - requestTimes[0] >= 950);
+});
