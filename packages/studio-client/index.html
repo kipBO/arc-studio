@@ -35,19 +35,6 @@
             console.error('ARC Studio could not load a client module after refreshing. Reload the page to try again.', event.payload);
           }
         });
-
-        if ('serviceWorker' in navigator) {
-          window.addEventListener('load', () => {
-            navigator.serviceWorker.getRegistrations().then(async (registrations) => {
-              if (!registrations.length) return;
-              await Promise.all(registrations.map((registration) => registration.unregister()));
-              const cleanupKey = 'arc:service-worker-cleanup';
-              if (!getSessionValue(cleanupKey) && setSessionValue(cleanupKey, '1')) {
-                window.location.reload();
-              }
-            }).catch(() => {});
-          });
-        }
       })();
     </script>
   </head>
