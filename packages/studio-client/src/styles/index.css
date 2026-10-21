@@ -384,6 +384,9 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .node-canvas.is-panning { cursor: grabbing; }
 .node-canvas.is-dragging-node { cursor: grabbing; }
 .node-canvas.is-connecting-wire, .node-canvas.is-connecting-wire * { cursor: grabbing !important; }
+.node-canvas.is-click-connecting, .node-canvas.is-click-connecting * { cursor: crosshair !important; }
+.wire-connect-hint { position: absolute; z-index: 30; top: 12px; left: 50%; display: flex; align-items: center; gap: 7px; padding: 6px 9px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text-secondary); background: color-mix(in srgb, var(--panel-raised) 94%, transparent); box-shadow: var(--shadow-soft); font-size: 9px; pointer-events: none; transform: translateX(-50%); }
+.wire-connect-hint kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); background: var(--panel); font: 8px "DM Mono", ui-monospace, monospace; }
 .node-canvas[data-canvas-quality="optimal"] .canvas-tag-group,
 .node-canvas[data-canvas-quality="fast"] .canvas-tag-group,
 .node-canvas[data-canvas-quality="fast"] .canvas-selection-box,
@@ -1560,7 +1563,12 @@ body.is-resizing-sidebar .slash-command-studio { transition: none !important; }
 .team-activity-row { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); background: var(--panel); }
 .team-activity-row:last-child { border-bottom: 0; }
 .team-activity-row > div { display: flex; flex-direction: column; gap: 4px; }
+.team-activity-summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .team-activity-row strong { color: var(--text-secondary); font-size: 9px; font-weight: 550; line-height: 1.4; }
+.team-activity-delivery { display: inline-flex; flex: 0 0 auto; align-items: center; color: var(--muted); cursor: help; }
+.team-activity-delivery-success { color: #34d399; }
+.team-activity-delivery-failed { color: #fb7185; }
+.team-activity-delivery-in_progress { color: #fbbf24; }
 .team-activity-row small { color: var(--muted); font-size: 8px; line-height: 1.35; }
 .team-activity-node-list { color: var(--faint) !important; }
 .role-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); }
