@@ -14,6 +14,7 @@ const tabs = [
   { id: 'interface', label: 'Interface' },
   { id: 'collaboration', label: 'Collaboration' },
   { id: 'discord', label: 'Discord RPC' },
+  { id: 'activity', label: 'Activity webhook' },
   { id: 'shortcuts', label: 'Keyboard shortcuts' },
   { id: 'logs', label: 'Logs' },
   { id: 'data', label: 'Local data' },
@@ -46,7 +47,7 @@ function openExternal(event) {
   invoke('open_external_url', { url: event.currentTarget.href }).catch(() => {});
 }
 
-export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
+export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSettings, onAutoLayout, onExportGraph, onResetLocalData, themeChoice = 'system', onThemeChange, desktopMode = false, localWorkspace = false, canResetLocalWorkspace = false, platform = '', appUpdate = null, serverUpdate = null, stableUpdateReady = null, releaseChannel = 'stable', onOpenStudioUpdate, networkOnline = true, authToken = '', activeProjectId = '', canManageLogRetention = false, canManageActivityWebhook = false, idleDisconnectMinutes = 15, canManageIdleDisconnect = false, onSetIdleDisconnectMinutes }) {
   const [activeTab, setActiveTab] = useState('canvas');
   const [recording, setRecording] = useState(null);
   const [shortcutCaptureError, setShortcutCaptureError] = useState('');
@@ -56,6 +57,11 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
   const [logRetention, setLogRetention] = useState('default');
   const [logRetentionMessage, setLogRetentionMessage] = useState('');
+  const [activityWebhookStatus, setActivityWebhookStatus] = useState({ configured: false, enabled: false, environmentConfigured: false, source: 'none' });
+  const [activityWebhookUrl, setActivityWebhookUrl] = useState('');
+  const [activityWebhookMessage, setActivityWebhookMessage] = useState('');
+  const [activityWebhookLoading, setActivityWebhookLoading] = useState(false);
+  const [activityWebhookSaving, setActivityWebhookSaving] = useState(false);
   const update = (key, value) => onUpdateSettings({ ...settings, [key]: value });
   const shortcuts = { ...DEFAULT_SHORTCUTS, ...(settings.shortcuts || {}) };
   const confirmLocalReset = async () => {
@@ -107,6 +113,43 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     return () => { active = false; };
   }, [isOpen, activeTab, authToken, activeProjectId]);
 
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'activity' || !authToken || !canManageActivityWebhook || (desktopMode && localWorkspace)) return undefined;
+    if (!networkOnline) { setActivityWebhookMessage('Connect to the workspace to load webhook settings.'); return undefined; }
+    let active = true;
+    setActivityWebhookLoading(true);
+    fetch(apiUrl('/api/activity-webhook/settings'), { headers: { 'x-arc-token': authToken } })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load activity webhook settings.');
+        if (active) { setActivityWebhookStatus(data); setActivityWebhookMessage(''); }
+      })
+      .catch((error) => { if (active) setActivityWebhookMessage(error.message || 'Could not load activity webhook settings.'); })
+      .finally(() => { if (active) setActivityWebhookLoading(false); });
+    return () => { active = false; };
+  }, [isOpen, activeTab, authToken, activeProjectId, canManageActivityWebhook, desktopMode, localWorkspace, networkOnline]);
+
+  const saveActivityWebhookSettings = async (changes) => {
+    setActivityWebhookSaving(true);
+    setActivityWebhookMessage('Saving…');
+    try {
+      const response = await fetch(apiUrl('/api/activity-webhook/settings'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify(changes)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not save activity webhook settings.');
+      setActivityWebhookStatus(data);
+      setActivityWebhookMessage('Saved.');
+      if (Object.hasOwn(changes, 'url') || changes.clearUrl) setActivityWebhookUrl('');
+    } catch (error) {
+      setActivityWebhookMessage(error.message || 'Could not save activity webhook settings.');
+    } finally {
+      setActivityWebhookSaving(false);
+    }
+  };
+
   const saveLogRetention = async (value) => {
     setLogRetention(value);
     setLogRetentionMessage('Saving…');
@@ -120,7 +163,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
 
   return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace">
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
-      {tabs.map((tab) => {
+      {tabs.filter((tab) => tab.id !== 'activity' || (canManageActivityWebhook && (!desktopMode || !localWorkspace))).map((tab) => {
         const disabled = (tab.id === 'shortcuts' || tab.id === 'discord' || tab.id === 'data') && !desktopMode;
         return <button key={tab.id} type="button" role="tab" aria-selected={!disabled && activeTab === tab.id} aria-disabled={disabled || undefined} disabled={disabled} className={`settings-tab ${activeTab === tab.id && !disabled ? 'is-active' : ''} ${disabled ? 'is-disabled' : ''}`} onClick={() => !disabled && setActiveTab(tab.id)}>{tab.label}{tab.id === 'about' && serverUpdate && <span className="update-indicator-dot" aria-label="Server update available" />}</button>;
       })}
@@ -129,7 +172,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     {activeTab === 'canvas' && <div className="settings-section settings-tab-content">
       <div className="settings-section-heading"><span>Canvas behavior</span></div>
       <SelectInput label="Canvas quality" value={['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto'} options={[{ value: 'auto', label: 'Auto' }, { value: 'fast', label: 'Fast' }, { value: 'optimal', label: 'Optimal' }, { value: 'quality', label: 'Quality' }]} onChange={(value) => update('canvasQuality', value)} />
-      <small className="settings-shortcut-hint">Auto adapts to frame performance. Fast reduces canvas effects, Optimal balances detail and speed, and Quality keeps full effects.</small>
+      <small className="settings-shortcut-hint">Auto adapts to performance. Fast reduces canvas effects, Optimal balances detail and speed, and Quality keeps full effects.</small>
       <Toggle label="Snap to grid" description="Align nodes while dragging" checked={settings.snapToGrid ?? true} onChange={(value) => update('snapToGrid', value)} />
       <Toggle label="Zoom with mouse wheel" description="Zoom the canvas without holding Ctrl or ⌘" checked={settings.zoomCanvasWithScroll ?? false} onChange={(value) => update('zoomCanvasWithScroll', value)} />
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
@@ -186,6 +229,37 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <p className="settings-description">Log files are stored with this project and pruned using the selected retention period.</p>
       {canManageLogRetention ? <SelectInput label="File retention" value={logRetention} options={[{ value: 'default', label: 'Global default' }, ...[1, 7, 14, 30, 90, 365].map((days) => ({ value: String(days), label: `${days} days` })), { value: 'forever', label: 'Keep forever' }]} onChange={saveLogRetention} /> : <p className="settings-description">Retention: {logRetention === 'default' ? 'Global default' : logRetention === 'forever' ? 'Kept forever' : `${logRetention} days`}</p>}
       <small className="settings-shortcut-hint">{canManageLogRetention ? (logRetentionMessage || 'The global default is set by LOG_RETENTION_DAYS.') : 'Only a workspace owner can change log retention.'}</small>
+    </div>}
+
+    {activeTab === 'activity' && canManageActivityWebhook && (!desktopMode || !localWorkspace) && <div className="settings-section settings-tab-content">
+      <div className="settings-section-heading"><span>Workspace activity notifications</span></div>
+      <p className="settings-description">Send concise account, project, graph, embed, and plugin activity to a Discord channel. The webhook URL is encrypted on the workspace server and never shown again.</p>
+      {activityWebhookLoading ? <p className="settings-description">Loading webhook settings…</p> : <>
+        <Toggle
+          label="Send activity to Discord"
+          description={activityWebhookStatus.source === 'environment' ? 'Using the server environment webhook.' : 'Only the workspace owner can change this setting.'}
+          checked={activityWebhookStatus.enabled}
+          disabled={!activityWebhookStatus.configured || activityWebhookSaving || !networkOnline}
+          onChange={(enabled) => saveActivityWebhookSettings({ enabled })}
+        />
+        <TextInput
+          label="Replace webhook URL"
+          type="url"
+          value={activityWebhookUrl}
+          maxLength={2048}
+          placeholder="https://discord.com/api/webhooks/…"
+          onChange={(event) => setActivityWebhookUrl(event.target.value)}
+          disabled={activityWebhookSaving || !networkOnline}
+          helper={activityWebhookStatus.configured ? 'The saved URL is hidden. Enter a new URL to replace it.' : 'Paste a Discord webhook URL.'}
+        />
+        <div className="settings-shortcut-actions">
+          <small>{activityWebhookMessage || (activityWebhookStatus.configured ? `Configured from ${activityWebhookStatus.source === 'environment' ? 'the server environment' : 'workspace settings'}.` : 'No webhook is configured.')}</small>
+          <div className="settings-shortcut-actions-buttons">
+            <Button size="sm" onClick={() => saveActivityWebhookSettings({ url: activityWebhookUrl })} disabled={!activityWebhookUrl.trim() || activityWebhookSaving || !networkOnline} loading={activityWebhookSaving}>Save URL</Button>
+            {activityWebhookStatus.source === 'workspace' && <Button size="sm" variant="secondary" onClick={() => saveActivityWebhookSettings({ clearUrl: true })} disabled={activityWebhookSaving || !networkOnline}>{activityWebhookStatus.environmentConfigured ? 'Use server URL' : 'Remove saved URL'}</Button>}
+          </div>
+        </div>
+      </>}
     </div>}
 
     {activeTab === 'discord' && desktopMode && <div className="settings-section settings-tab-content">
