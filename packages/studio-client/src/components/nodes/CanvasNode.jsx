@@ -388,6 +388,12 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
     </div>;
   }
+  if (node.type === 'action_set_custom_status') {
+    return <div className="node-config node-config-stack">
+      {!isConnected('status_text') && <FallbackField label="Status text"><input value={node.data?.status_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('status_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Working on a bot" aria-label="Custom status text" /></FallbackField>}
+      <span className="node-config-hint">Unicode emoji and pasted Discord custom emoji are supported in the text.</span>
+    </div>;
+  }
   if (node.type === 'function_input') {
     const type = node.data?.valueType || 'number';
     const optional = node.data?.optional !== false;
