@@ -3,6 +3,7 @@ import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database,
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
+import { onPageBlur } from './core/pageFocus.js';
 const lazyNamed = (loader, name) => {
   let modulePromise;
   const load = () => modulePromise ||= loader().then((module) => ({ default: module[name] }));
@@ -567,6 +568,7 @@ export function App() {
   const [canResetPrimaryAdminWithMasterKey, setCanResetPrimaryAdminWithMasterKey] = useState(false);
   const [workspaceError, setWorkspaceError] = useState('');
   const [authToken, setAuthToken] = useState(() => getInitialAuthToken(desktopMode));
+  const forceSignOutRef = useRef(null);
   const [localSessionRestoreReady, setLocalSessionRestoreReady] = useState(() => !desktopMode || workspaceMode !== 'local' || Boolean(getInitialAuthToken(desktopMode)));
   const [currentUser, setCurrentUser] = useState(null);
   const [collaborators, setCollaborators] = useState([]);
@@ -734,6 +736,7 @@ export function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const liveGraphBaseRef = useRef(new Map());
+  const reconnectGraphBaseRef = useRef(new Map());
   const liveGraphRevisionRef = useRef(new Map());
   const lastLiveGraphSentRef = useRef(new Map());
   const pendingLiveGraphRef = useRef(new Map());
@@ -804,7 +807,14 @@ export function App() {
     setProjectImportOldVersionApproved(false);
   }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
   useEffect(() => {
-    const updateNetworkState = () => setNetworkOnline(navigator.onLine !== false);
+    const updateNetworkState = () => {
+      const online = navigator.onLine !== false;
+      setNetworkOnline(online);
+      if (!online && !localDesktopWorkspace) {
+        const socket = wsRef.current;
+        if (socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(socket.readyState)) socket.close(4000, 'Network unavailable');
+      }
+    };
     window.addEventListener('online', updateNetworkState);
     window.addEventListener('offline', updateNetworkState);
     updateNetworkState();
@@ -812,7 +822,7 @@ export function App() {
       window.removeEventListener('online', updateNetworkState);
       window.removeEventListener('offline', updateNetworkState);
     };
-  }, []);
+  }, [localDesktopWorkspace]);
 
   useEffect(() => {
     if (settings.autoUpdateChecks === false) { setServerUpdate(null); return undefined; }
@@ -1033,6 +1043,7 @@ export function App() {
   const [logs, setLogs] = useState([]);
   const wsRef = useRef(null);
   const sendCollaborationAction = useCallback((action, immediate = false) => {
+    if (tabsRef.current.find((tab) => tab.id === activeTabId)?.localRecoveryOnly) return;
     const activeSocket = wsRef.current;
     if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN) return;
     const entry = { action, projectId: activeProjectId, graphId: activeTabId };
@@ -1112,6 +1123,34 @@ export function App() {
   const [historyRevision, setHistoryRevision] = useState(0);
   const activeGraph = tabs.find((tab) => tab.id === activeTabId);
   const canWriteGraphs = Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'));
+  const activeGraphSyncReady = tabs.length
+    ? Boolean(activeTabId && activeGraph && (activeGraph.localRecoveryOnly || liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)))
+    : !activeTabId;
+  const activeGraphIsLocalRecovery = Boolean(activeGraph?.localRecoveryOnly);
+  const remoteWorkspaceStateReady = localDesktopWorkspace || Boolean(
+    networkOnline
+    && collaborationSocketStatus === 'connected'
+    && !collaborationConnectionFlaky
+    && graphsHydratedRef.current
+    && (!activeProjectId || projectCollaboration.projectId === activeProjectId && projectCollaboration.tabsInitialized)
+    && activeGraphSyncReady
+  );
+  const remoteWorkspaceBlocked = Boolean(authToken && currentUser && !localDesktopWorkspace && !remoteWorkspaceStateReady);
+  useEffect(() => {
+    if (!remoteWorkspaceBlocked) return undefined;
+    const root = document.querySelector('.app-client-surface');
+    const topbar = root?.querySelector('.topbar');
+    const accountMenu = topbar?.querySelector('.profile-menu');
+    const blockedElements = [
+      ...(root ? [...root.children].filter((element) => element !== topbar) : []),
+      ...(topbar ? [...topbar.children].filter((element) => element !== accountMenu && !element.contains(accountMenu)) : []),
+      ...(topbar?.querySelector('.topbar-actions') ? [...topbar.querySelector('.topbar-actions').children].filter((element) => element !== accountMenu && !element.contains(accountMenu)) : []),
+      ...[...document.body.children].filter((element) => !element.contains(document.querySelector('#root')))
+    ];
+    const previousInertStates = [...new Set(blockedElements)].map((element) => [element, element.inert]);
+    for (const [element] of previousInertStates) element.inert = true;
+    return () => { for (const [element, wasInert] of previousInertStates) if (element.isConnected) element.inert = wasInert; };
+  }, [remoteWorkspaceBlocked]);
   const graphVariables = useMemo(() => {
     const savedVariables = Array.isArray(activeGraph?.variables) ? activeGraph.variables : [];
     const graphNodes = activeGraph?.nodes || [];
@@ -1307,7 +1346,10 @@ export function App() {
     const themeColor = document.querySelector('meta[name="theme-color"]');
     if (themeColor) themeColor.content = theme === 'dark' ? '#191c21' : '#f5f6f7';
     if (hasThemeChoice) safeStorageSet('arc_theme', theme);
-  }, [theme, hasThemeChoice, currentUpdateChannel]);
+    if (!desktopMode) {
+      document.cookie = `arc_theme=${theme}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    }
+  }, [theme, hasThemeChoice, currentUpdateChannel, desktopMode]);
 
   useEffect(() => {
     const isCanvasGesture = (target) => target instanceof Element && Boolean(target.closest('.node-canvas'));
@@ -1574,11 +1616,18 @@ export function App() {
         if (authToken) {
           try {
             const res = await fetch(apiUrl('/api/auth/me'), { headers: { 'x-arc-token': authToken }, signal: controller.signal });
-            if (!res.ok) throw new Error('Session invalid');
+            if (!res.ok) {
+              if (res.status === 401) {
+                safeStorageRemove('arc_token');
+                setAuthToken('');
+                setCurrentUser(null);
+              }
+              throw new Error(res.status === 401 ? 'Session invalid' : `Workspace returned HTTP ${res.status}.`);
+            }
             const data = await res.json();
             if (!cancelled) setCurrentUser(data.user);
-          } catch {
-            if (!cancelled) {
+          } catch (error) {
+            if (!cancelled && error.message === 'Session invalid') {
               setAuthToken('');
               safeStorageRemove('arc_token');
               if (desktopMode && workspaceMode === 'local') {
@@ -1716,6 +1765,7 @@ export function App() {
     if (!authToken) {
       setCollaborationSocketStatus('disconnected');
       setCollaborators([]);
+      reconnectGraphBaseRef.current.clear();
       return undefined;
     }
     const wsUrl = studioWebSocketUrl();
@@ -1776,6 +1826,7 @@ export function App() {
               pendingPing = null;
               missedPongs += 1;
               recordConnectionSample(null, true);
+              if (missedPongs >= 2) { socket.close(4000, 'Collaboration heartbeat missed'); return; }
             }
             if (!pendingPing && document.visibilityState === 'visible') {
               const id = ++pingSequence;
@@ -1826,19 +1877,11 @@ export function App() {
           }
           if (msg.type === 'SESSION_REPLACED') {
             arcEvents.emit('toast:notify', { id: 'arc-session-replacement', title: 'Signed out', message: 'This account was signed in elsewhere.', type: 'warning', duration: 3200 });
-            safeStorageRemove('arc_token');
-            if (desktopMode && workspaceMode === 'local') {
-              removeLocalDesktopSessionToken();
-              localSessionRef.current = null;
-            }
-            setAuthToken('');
-            setCurrentUser(null);
-            setTabs([]);
-            setActiveTabId(null);
-            setActiveNodes([]);
-            setActiveConnections([]);
-            setNeedsProjectOnboarding(false);
-            graphsHydratedRef.current = false;
+            forceSignOutRef.current?.();
+            return;
+          }
+          if (msg.type === 'SESSION_EXPIRED') {
+            forceSignOutRef.current?.();
             return;
           }
           if (msg.type === 'USER_PERMISSIONS_UPDATED') {
@@ -1853,36 +1896,12 @@ export function App() {
           }
           if (msg.type === 'SESSION_REVOKED') {
             arcEvents.emit('toast:notify', { id: 'arc-session-revoked', title: 'Signed out', message: 'A workspace administrator ended this session.', type: 'warning', duration: 5000 });
-            safeStorageRemove('arc_token');
-            if (desktopMode && workspaceMode === 'local') {
-              removeLocalDesktopSessionToken();
-              localSessionRef.current = null;
-            }
-            setAuthToken('');
-            setCurrentUser(null);
-            setTabs([]);
-            setActiveTabId(null);
-            setActiveNodes([]);
-            setActiveConnections([]);
-            setNeedsProjectOnboarding(false);
-            graphsHydratedRef.current = false;
+            forceSignOutRef.current?.();
             return;
           }
           if (msg.type === 'SESSION_IDLE_EXPIRED') {
             arcEvents.emit('toast:notify', { id: 'arc-session-idle', title: 'Signed out', message: 'You were signed out after being idle.', type: 'info', duration: 5000 });
-            safeStorageRemove('arc_token');
-            if (desktopMode && workspaceMode === 'local') {
-              removeLocalDesktopSessionToken();
-              localSessionRef.current = null;
-            }
-            setAuthToken('');
-            setCurrentUser(null);
-            setTabs([]);
-            setActiveTabId(null);
-            setActiveNodes([]);
-            setActiveConnections([]);
-            setNeedsProjectOnboarding(false);
-            graphsHydratedRef.current = false;
+            forceSignOutRef.current?.();
             return;
           }
           if (msg.type === 'INIT_STATE') {
@@ -1923,7 +1942,8 @@ export function App() {
             }
             if (Array.isArray(msg.payload.graphs)) {
               const graphs = msg.payload.graphs;
-              liveGraphBaseRef.current = new Map(graphs.map((graph) => [graph.id, snapshotGraph(graph)]));
+              const bases = new Map(graphs.map((graph) => [graph.id, reconnectGraphBaseRef.current.get(graph.id) || snapshotGraph(graph)]));
+              liveGraphBaseRef.current = bases;
               liveGraphRevisionRef.current.clear();
               setSavedGraphs(graphs);
               if (!graphsHydratedRef.current) {
@@ -1977,6 +1997,7 @@ export function App() {
             setNeedsProjectOnboarding(nextProjects.length === 0 || nextProjects.some((project) => project.id === nextProjectId && project.pendingStarterChoice));
             setProjectVariables(Array.isArray(payload.projectVariables) ? payload.projectVariables : []);
             const projectGraphs = Array.isArray(payload.graphs) ? payload.graphs : [];
+            reconnectGraphBaseRef.current.clear();
             liveGraphBaseRef.current = new Map(projectGraphs.map((graph) => [graph.id, snapshotGraph(graph)]));
             liveGraphRevisionRef.current.clear();
             lastLiveGraphSentRef.current.clear();
@@ -2059,10 +2080,11 @@ export function App() {
             const incoming = payload.graph;
             if (payload.graphId !== incoming.id) return;
             const previousRevision = liveGraphRevisionRef.current.get(incoming.id) || 0;
+            const reconnectBase = reconnectGraphBaseRef.current.get(incoming.id);
             const pending = pendingLiveGraphRef.current.get(incoming.id);
             const isOwnUpdate = payload.clientId === collaborationClientIdRef.current && pending?.syncId === payload.syncId;
             const incomingRevision = Number(payload.revision);
-            if (incomingRevision <= previousRevision && liveGraphBaseRef.current.has(incoming.id) && !isOwnUpdate && !payload.resync) return;
+            if (incomingRevision <= previousRevision && liveGraphBaseRef.current.has(incoming.id) && !isOwnUpdate && !payload.resync && !reconnectBase) return;
             liveGraphRevisionRef.current.set(incoming.id, Number.isInteger(incomingRevision) && incomingRevision >= 0 ? incomingRevision : previousRevision + 1);
             if (Array.isArray(incoming.nodes) || Array.isArray(incoming.notes)) {
               const nodePositions = new Map((incoming.nodes || []).map((node) => [node.id, node]));
@@ -2088,10 +2110,22 @@ export function App() {
                 return action === peer.action ? peer : { ...peer, action };
               }));
             }
-            const base = liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
+            const base = reconnectBase || liveGraphBaseRef.current.get(incoming.id) || savedGraphsRef.current.find((item) => item.id === incoming.id) || incoming;
             const local = tabsRef.current.find((item) => item.id === incoming.id);
             const mergeBase = isOwnUpdate ? pending.graph : base;
             const merged = mergeGraphState(mergeBase, local || mergeBase, incoming);
+            if (reconnectBase && local?.isDirty && !sameGraphContent(local, reconnectBase)
+              && !sameGraphContent(incoming, reconnectBase) && !sameGraphContent(local, incoming)) {
+              const recoveryGraph = { ...snapshotGraph(local), id: createEditorId('recovery'), name: `${local.name || 'Untitled graph'} recovery` };
+              let storedRecoveryDrafts = [];
+              try {
+                const stored = JSON.parse(safeStorageGet(recoveryStorageKeyRef.current, '[]'));
+                if (Array.isArray(stored)) storedRecoveryDrafts = stored;
+              } catch {}
+              recoveryDraftsRef.current = [...storedRecoveryDrafts.filter((entry) => entry?.graph?.id !== recoveryGraph.id), { graph: recoveryGraph, savedAt: Date.now(), localOnly: true }].slice(-MAX_OPEN_GRAPH_TABS);
+              try { safeStorageSet(recoveryStorageKeyRef.current, JSON.stringify(recoveryDraftsRef.current)); } catch {}
+              arcEvents.emit('toast:notify', { title: 'Disconnected draft preserved', message: 'A local recovery graph was kept while the latest shared graph loaded.', type: 'warning' });
+            }
             if (isOwnUpdate || payload.resync) pendingLiveGraphRef.current.delete(incoming.id);
             setSlashCommandStudio((current) => {
               if (!current || current.graphId !== incoming.id) return current;
@@ -2108,6 +2142,7 @@ export function App() {
               return { ...current, options: mergedOptions, sharedDraft: mergedOptions };
             });
             liveGraphBaseRef.current.set(incoming.id, snapshotGraph(incoming));
+            reconnectGraphBaseRef.current.delete(incoming.id);
             lastLiveGraphSentRef.current.set(incoming.id, JSON.stringify(snapshotGraph(incoming)));
             setTabs((current) => current.map((tab) => {
               if (tab.id !== incoming.id) return tab;
@@ -2144,6 +2179,7 @@ export function App() {
             deletedGraphsRef.current.add(graphKey);
             remoteProjectTabGraphsRef.current.delete(graphKey);
             liveGraphBaseRef.current.delete(graphId);
+            reconnectGraphBaseRef.current.delete(graphId);
             liveGraphRevisionRef.current.delete(graphId);
             lastLiveGraphSentRef.current.delete(graphId);
             pendingLiveGraphRef.current.delete(graphId);
@@ -2405,7 +2441,26 @@ export function App() {
           }
         } catch { /* malformed/unrelated socket messages. */ }
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        const closeReason = String(event?.reason || '').toLowerCase();
+        const authenticationClose = event?.code === 1008 && (
+          closeReason.includes('authentication required')
+          || closeReason.includes('session expired')
+          || closeReason.includes('permissions changed')
+          || closeReason.includes('session revoked')
+          || closeReason.includes('change your password')
+        );
+        if (authenticationClose) {
+          forceSignOutRef.current?.();
+          active = false;
+        }
+        if (active) {
+          const nextReconnectBases = new Map(liveGraphBaseRef.current);
+          for (const [graphId, base] of reconnectGraphBaseRef.current) {
+            if (!liveGraphReadyRef.current.has(`${activeProjectIdRef.current}:${graphId}`)) nextReconnectBases.set(graphId, base);
+          }
+          reconnectGraphBaseRef.current = nextReconnectBases;
+        }
         window.clearInterval(heartbeatTimer);
         window.clearTimeout(collaborationActionTimerRef.current);
         collaborationActionTimerRef.current = null;
@@ -2446,7 +2501,7 @@ export function App() {
   useEffect(() => {
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const nextPresence = { projectId: activeProjectId || '', graphId: activeProjectId ? activeTabId || '' : '' };
+    const nextPresence = { projectId: activeProjectId || '', graphId: activeProjectId && !activeGraphIsLocalRecovery ? activeTabId || '' : '' };
     const previousPresence = collaborationPresenceRef.current;
     const pending = [...pendingCollaborationActionRef.current.values()];
     window.clearTimeout(collaborationActionTimerRef.current);
@@ -2468,13 +2523,13 @@ export function App() {
         socket.send(JSON.stringify({ type: 'COLLAB_ACTION', projectId: entry.projectId, graphId: entry.graphId, action: entry.action }));
       }
     }
-  }, [activeProjectId, activeTabId, authToken, socketReadyRevision]);
+  }, [activeProjectId, activeGraphIsLocalRecovery, activeTabId, authToken, socketReadyRevision]);
 
   useEffect(() => {
     if (!authToken || !activeProjectId || !graphsHydratedRef.current) return;
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    const graphIds = tabs.map((tab) => tab.id).filter((id) => typeof id === 'string' && !unsharedProjectTabIdsRef.current.has(`${activeProjectId}:${id}`)).slice(0, MAX_OPEN_GRAPH_TABS);
+    const graphIds = tabs.filter((tab) => !tab.localRecoveryOnly).map((tab) => tab.id).filter((id) => typeof id === 'string' && !unsharedProjectTabIdsRef.current.has(`${activeProjectId}:${id}`)).slice(0, MAX_OPEN_GRAPH_TABS);
     const previous = projectTabSyncRef.current;
     if (previous.projectId !== activeProjectId || previous.socketRevision !== socketReadyRevision) {
       projectTabSyncRef.current = { projectId: activeProjectId, socketRevision: socketReadyRevision, graphIds };
@@ -2790,6 +2845,7 @@ export function App() {
     try {
       const graphToSave = { ...graph, name };
       delete graphToSave.isDirty;
+      delete graphToSave.localRecoveryOnly;
       const body = JSON.stringify(graphToSave);
       const hasAttachments = (graphToSave.nodes || []).some((node) => (node.data?.attachments || []).some((file) => typeof file.data === 'string' && file.data.startsWith('data:')));
       if (hasAttachments) setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent: 0 });
@@ -2823,9 +2879,11 @@ export function App() {
   }, [activeProjectId, authToken, graphLookup, notifyGraphCheckIssues, triggerLoadingBar]);
 
   const saveGraphWithProgress = useCallback(async (graph) => {
+    if (graph?.localRecoveryOnly) throw new Error('Save this local recovery graph to the workspace before using it here.');
     setSavingGraphIds((current) => current.includes(graph.id) ? current : [...current, graph.id]);
     const graphToSave = { ...graph };
     delete graphToSave.isDirty;
+    delete graphToSave.localRecoveryOnly;
     const hasAttachments = (graphToSave.nodes || []).some((node) => (node.data?.attachments || []).some((file) => typeof file.data === 'string' && file.data.startsWith('data:')));
     if (hasAttachments) setGraphUploadProgress({ graphId: graph.id, graphName: graph.name || 'Graph', percent: 0 });
     try {
@@ -2848,11 +2906,11 @@ export function App() {
   }, [activeProjectId, authToken, graphLookup, notifyGraphCheckIssues]);
 
   useEffect(() => {
-    if (!authToken || !networkOnline || settings.autoSave === false) return undefined;
+    if (!authToken || !networkOnline || remoteWorkspaceBlocked || settings.autoSave === false) return undefined;
     const intervalSeconds = Math.max(5, Math.min(300, Number(settings.autoSaveIntervalSeconds) || 30));
     const timer = window.setInterval(async () => {
       for (const graph of tabsRef.current) {
-        if (!graph?.isDirty || remoteGraphConflictsRef.current.has(graph.id) || autoSaveInFlightRef.current.has(graph.id)) continue;
+        if (!graph?.isDirty || graph.localRecoveryOnly || remoteGraphConflictsRef.current.has(graph.id) || autoSaveInFlightRef.current.has(graph.id)) continue;
         autoSaveInFlightRef.current.add(graph.id);
         const savedSnapshot = snapshotGraph(graph);
         try {
@@ -2869,10 +2927,12 @@ export function App() {
       }
     }, intervalSeconds * 1000);
     return () => window.clearInterval(timer);
-  }, [authToken, networkOnline, saveGraphWithProgress, settings.autoSave, settings.autoSaveIntervalSeconds]);
+  }, [authToken, networkOnline, remoteWorkspaceBlocked, saveGraphWithProgress, settings.autoSave, settings.autoSaveIntervalSeconds]);
 
   const recoveryWorkspace = workspaceMode === 'remote' ? (() => { try { const url = new URL(remoteWorkspaceUrl); return `${url.origin}${url.pathname}`; } catch { return 'remote'; } })() : (desktopMode ? 'desktop-local' : window.location.origin);
   const recoveryStorageKey = `arc_graph_recovery:${workspaceMode}:${recoveryWorkspace}:${currentUser?.id || 'guest'}:${activeProjectId || 'default'}`;
+  const recoveryStorageKeyRef = useRef(recoveryStorageKey);
+  recoveryStorageKeyRef.current = recoveryStorageKey;
   useEffect(() => {
     if (!authToken || !activeProjectId || !graphsHydratedRef.current || recoveryLoadedKey === recoveryStorageKey) return;
     recoveryDraftsRef.current = [];
@@ -2884,7 +2944,7 @@ export function App() {
       .slice(0, MAX_OPEN_GRAPH_TABS);
     recoveryDraftsRef.current = recoverable;
     if (recoverable.length) {
-      const recovered = recoverable.map((entry) => ({ ...entry.graph, isDirty: true }));
+      const recovered = recoverable.map((entry) => ({ ...entry.graph, isDirty: true, ...(entry.localOnly ? { localRecoveryOnly: true } : {}) }));
       setTabs((current) => {
         const byId = new Map(recovered.map((graph) => [graph.id, graph]));
         for (const graph of current) if (!byId.has(graph.id)) byId.set(graph.id, graph);
@@ -2906,7 +2966,7 @@ export function App() {
     for (const graph of tabs) {
       if (!graph?.id) continue;
       const saved = savedGraphs.find((item) => item.id === graph.id);
-      if (graph.isDirty || !saved) entries.set(graph.id, { graph: snapshotGraph(graph), savedAt: Date.now() });
+      if (graph.isDirty || !saved) entries.set(graph.id, { graph: snapshotGraph(graph), savedAt: Date.now(), ...(graph.localRecoveryOnly ? { localOnly: true } : {}) });
       else if (sameGraphContent(graph, saved)) entries.delete(graph.id);
     }
     const next = [...entries.values()].filter((entry) => {
@@ -4179,7 +4239,26 @@ export function App() {
     setTabs([]);
     setActiveTabId(null);
     setNeedsProjectOnboarding(false);
+    reconnectGraphBaseRef.current.clear();
   };
+
+  const forceSignOut = useCallback(() => {
+    safeStorageRemove('arc_token');
+    if (desktopMode && workspaceMode === 'local') {
+      removeLocalDesktopSessionToken();
+      localSessionRef.current = null;
+    }
+    setAuthToken('');
+    setCurrentUser(null);
+    setTabs([]);
+    setActiveTabId(null);
+    setActiveNodes([]);
+    setActiveConnections([]);
+    setNeedsProjectOnboarding(false);
+    graphsHydratedRef.current = false;
+    reconnectGraphBaseRef.current.clear();
+  }, [desktopMode, workspaceMode]);
+  forceSignOutRef.current = forceSignOut;
 
   const handleAuthComplete = async (token, user, persistSession = true) => {
     if (desktopMode && !persistSession) safeStorageRemove('arc_token');
@@ -4792,14 +4871,14 @@ export function App() {
     const dismiss = () => setProjectMenu(null);
     const keydown = (event) => { if (event.key === 'Escape') dismiss(); };
     window.addEventListener('pointerdown', dismiss);
-    window.addEventListener('blur', dismiss);
     window.addEventListener('resize', dismiss);
     window.addEventListener('keydown', keydown);
+    const removePageBlurListener = onPageBlur(dismiss);
     return () => {
       window.removeEventListener('pointerdown', dismiss);
-      window.removeEventListener('blur', dismiss);
       window.removeEventListener('resize', dismiss);
       window.removeEventListener('keydown', keydown);
+      removePageBlurListener();
     };
   }, [projectMenu]);
 
@@ -4837,6 +4916,7 @@ export function App() {
       if (mode === 'remote') localStorage.setItem('arc_remote_workspace_url', url);
     } catch {}
     deletedGraphsRef.current.clear();
+    reconnectGraphBaseRef.current.clear();
     collaborationPresenceRef.current = { projectId: '', graphId: '' };
     pendingCollaborationActionRef.current.clear();
     latestRemoteCollaborationRevisionRef.current.clear();
@@ -5042,14 +5122,14 @@ export function App() {
   };
 
   useEffect(() => {
-    if (!authToken || settings.autoSnapshots === false) return undefined;
+    if (!authToken || remoteWorkspaceBlocked || settings.autoSnapshots === false) return undefined;
     const intervalMinutes = Math.max(10, Math.min(1440, Number(settings.snapshotIntervalMinutes) || 30));
     const retentionHours = settings.snapshotRetentionHours === 0 || settings.snapshotRetentionHours === '0'
       ? 0
       : Math.max(12, Math.min(8760, Number(settings.snapshotRetentionHours) || 12));
     const timer = window.setInterval(async () => {
       if (autoSnapshotInFlightRef.current) return;
-      const graphs = tabsRef.current.filter((graph) => graph?.id && Array.isArray(graph.nodes) && Array.isArray(graph.connections));
+      const graphs = tabsRef.current.filter((graph) => graph?.id && !graph.localRecoveryOnly && Array.isArray(graph.nodes) && Array.isArray(graph.connections));
       if (!graphs.length) return;
       autoSnapshotInFlightRef.current = true;
       try {
@@ -5070,9 +5150,10 @@ export function App() {
       }
     }, intervalMinutes * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [authToken, settings.autoSnapshots, settings.snapshotIntervalMinutes, settings.snapshotRetentionHours]);
+  }, [authToken, remoteWorkspaceBlocked, settings.autoSnapshots, settings.snapshotIntervalMinutes, settings.snapshotRetentionHours]);
 
   useEffect(() => {
+    if (remoteWorkspaceBlocked) return undefined;
     const onKeyDown = (event) => {
       const target = event.target;
       const command = event.metaKey || event.ctrlKey;
@@ -5218,7 +5299,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
+  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -5352,7 +5433,8 @@ export function App() {
   }
 
   return (
-    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
+    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}${remoteWorkspaceBlocked ? ' workspace-paused' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
+      <div className="app-client-surface">
       <TopBar
         tabs={tabs}
         projectCollaborators={projectCollaboration.projectId === activeProjectId ? projectCollaboration.users : []}
@@ -5376,7 +5458,6 @@ export function App() {
         desktopMode={desktopMode}
         shortcutPlatform={shortcutPlatform}
         workspaceLabel={workspaceLabel}
-        activeProjectId={activeProjectId}
         uploadProgress={graphUploadProgress}
         onUseTemplate={(template) => handleAddTab(template)}
         onCloseTab={handleCloseTab}
@@ -5595,7 +5676,7 @@ export function App() {
             onOpenFunctionGraph={handleOpenGraph}
             remoteActions={remoteCollaborationActions}
             onCollaborationAction={sendCollaborationAction}
-            graphChatEnabled={!localDesktopWorkspace && Boolean(activeGraph)}
+            graphChatEnabled={!localDesktopWorkspace && Boolean(activeGraph) && !activeGraphIsLocalRecovery}
             graphChatBubbles={graphChatBubbles}
             onSendGraphChat={sendGraphChatMessage}
             onMoveGraphChatBubble={moveGraphChatBubble}
@@ -5703,6 +5784,7 @@ export function App() {
         cachedAppEmojis={appEmojis}
         onEmojisChange={handleAppEmojisChange}
         activeTabId={activeTabId}
+        activeProjectId={activeProjectId}
         graphs={[...graphLookup.values()]}
         emojiCacheScope={`${workspaceMode}:${activeProjectId}:${workspaceRevision}`}
         graphLookup={graphLookup}
@@ -5970,6 +6052,7 @@ export function App() {
       </Modal>
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
+      </div>
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
@@ -5978,7 +6061,9 @@ export function App() {
 }
 
 function snapshotGraph(graph) {
-  const { isDirty, ...savedData } = graph;
+  const savedData = { ...graph };
+  delete savedData.isDirty;
+  delete savedData.localRecoveryOnly;
   return JSON.parse(JSON.stringify(savedData));
 }
 
