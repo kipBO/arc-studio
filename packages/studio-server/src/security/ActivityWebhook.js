@@ -181,15 +181,19 @@ export class ActivityWebhookDispatcher {
   #schedule(delay) {
     if (!this.queue.length || this.sending) return;
     clearTimeout(this.timer);
-    const wait = Math.max(0, Math.min(MAX_TIMER_DELAY_MS, Number(delay) || 0), this.nextSendAt - Date.now());
+    const wait = Math.max(0, Number(delay) || 0, this.nextSendAt - Date.now());
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.#sendNext();
-    }, wait);
+    }, Math.min(MAX_TIMER_DELAY_MS, wait));
   }
 
   async #sendNext() {
     if (this.sending) return;
+    if (this.nextSendAt > Date.now()) {
+      this.#schedule(this.nextSendAt - Date.now());
+      return;
+    }
     if (!this.store.isEnabled()) { this.queue.length = 0; return; }
     const pending = this.queue[0];
     if (!pending) return;
@@ -215,6 +219,7 @@ export class ActivityWebhookDispatcher {
           1
         );
         nextDelay = Math.ceil(retryAfter * 1000);
+        this.nextSendAt = Math.max(this.nextSendAt, Date.now() + nextDelay);
         this.#warn('Discord rate limited an activity webhook. Delivery is paused until its retry window expires.');
       } else if (response.ok) {
         this.queue.shift();
