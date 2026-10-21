@@ -116,5 +116,5 @@ To work on the desktop app, run `npm run dev:desktop`. See [how the desktop app 
 ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Third party packages keep their own licenses.
 
 
-
+[Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
 Last Edited: 21 October 2026
