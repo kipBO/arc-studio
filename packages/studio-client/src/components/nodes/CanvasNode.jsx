@@ -110,12 +110,13 @@ function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', 
   }} />;
 }
 
-export function CanvasNode({
-  node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, functionGraphs = [], callableGraphs = functionGraphs, selected = false, illuminated = false, isLocked = false,
+function CanvasNodeView({
+  node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onPinDoubleClick, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
   const execFirst = (pins = []) => [...pins].sort((left, right) => Number(right.type === 'exec') - Number(left.type === 'exec'));
+  const pinClickRef = React.useRef(null);
   const inputs = execFirst(nodeDef.inputs);
   const outputs = execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
@@ -156,13 +157,19 @@ export function CanvasNode({
         data-tooltip={`${pin.label} · ${displayType}`}
         data-pin-description={`${pin.label} · ${description} · ${displayType}`}
         onPointerDown={(event) => {
+          const now = performance.now();
+          const previousClick = pinClickRef.current;
+          const isDoublePress = event.button === 0 && previousClick?.nodeId === node.id && previousClick?.pinId === pin.id
+            && previousClick?.direction === direction && now - previousClick.at <= 600;
+          pinClickRef.current = isDoublePress ? null : { nodeId: node.id, pinId: pin.id, direction, at: now };
+          if (isDoublePress) {
+            event.preventDefault();
+            event.stopPropagation();
+            onPinDoubleClick?.(event, node.id, pin.id, direction, pin.type, index);
+            return;
+          }
           if (direction !== 'output') { event.stopPropagation(); return; }
           onPinStartConnect?.(event, node.id, pin.id, direction, pin.type, index);
-        }}
-        onDoubleClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onPinDoubleClick?.(event, node.id, pin.id, direction, pin.type, index);
         }}
       >
         {direction === 'input' && <span className="pin-socket" style={{ '--pin-color': pinColor }} />}
@@ -177,7 +184,7 @@ export function CanvasNode({
       className={`canvas-node ${selected ? 'is-selected' : ''} ${illuminated ? 'is-illuminated' : ''} ${isLocked ? 'is-locked' : ''}`}
       data-node-card-id={node.id}
       tabIndex={-1}
-      style={{ '--node-accent': nodeDef.color, '--node-rows': rows, transform: `translate3d(${node.x}px, ${node.y}px, 0)` }}
+      style={{ '--node-accent': nodeDef.color, '--node-rows': rows }}
       ref={configureTextFields}
       onClick={(event) => { event.stopPropagation(); onSelect?.(node.id, event); }}
       onDoubleClick={(event) => {
@@ -202,6 +209,74 @@ export function CanvasNode({
       {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues)}
     </article>
   );
+}
+
+function areCanvasNodePropsEqual(previous, next) {
+  const previousNode = previous.node;
+  const nextNode = next.node;
+  if (!equalCanvasNodeData(previousNode, nextNode)) return false;
+  const previousKeys = Object.keys(previous);
+  const nextKeys = Object.keys(next);
+  if (previousKeys.length !== nextKeys.length) return false;
+  return previousKeys.every((key) => {
+    if (key === 'node') return true;
+    if (key === 'graphVariables') return equalDefinitionValue(previous[key], next[key]);
+    if (key === 'callableGraphs') return equalCallableGraphOptions(previous[key], next[key], nextNode || previousNode);
+    return Object.is(previous[key], next[key]);
+  });
+}
+
+export const CanvasNode = React.memo(CanvasNodeView, areCanvasNodePropsEqual);
+
+function equalCanvasNodeData(left, right) {
+  if (left === right) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left).filter((key) => key !== 'x' && key !== 'y');
+  const rightKeys = Object.keys(right).filter((key) => key !== 'x' && key !== 'y');
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && equalDefinitionValue(left[key], right[key]));
+}
+
+function equalCallableGraphOptions(left = [], right = [], node) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  if (node?.type !== 'function_call' && node?.type !== 'execute_graph') return true;
+  const targetId = node.data?.graphId;
+  for (let index = 0; index < left.length; index += 1) {
+    const before = left[index];
+    const after = right[index];
+    if (before?.id !== after?.id || before?.name !== after?.name) return false;
+    if (node.type === 'function_call' && before.id === targetId) {
+      if (before.graphType !== after.graphType || functionSignature(before) !== functionSignature(after)) return false;
+    }
+    if (node.type === 'execute_graph') {
+      const beforeIsEventGraph = before.graphType !== 'function' && (before.nodes || []).some((item) => String(item.type || '').startsWith('event_'));
+      const afterIsEventGraph = after.graphType !== 'function' && (after.nodes || []).some((item) => String(item.type || '').startsWith('event_'));
+      if (before.graphType !== after.graphType || beforeIsEventGraph !== afterIsEventGraph) return false;
+    }
+  }
+  return true;
+}
+
+function functionSignature(graph) {
+  const nodes = graph?.nodes || [];
+  return JSON.stringify({
+    inputs: nodes.filter((item) => item.type === 'function_input').map((item) => [item.id, item.data?.paramId, item.data?.name, item.data?.optional, item.data?.valueType, item.data?.defaultValue]),
+    returnType: nodes.find((item) => item.type === 'function_return')?.data?.valueType || null
+  });
+}
+
+function equalDefinitionValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => equalDefinitionValue(value, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key) => Object.hasOwn(right, key) && equalDefinitionValue(left[key], right[key]));
 }
 
 function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues) {
