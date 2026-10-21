@@ -1121,7 +1121,10 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
           nameChanged
         });
       }
-      botManager.broadcastWS({ type: 'GRAPH_UPDATED', payload: { graph: saved, updatedBy: req.user?.username || 'Workspace member' } });
+      const saveClientId = typeof req.headers['x-arc-save-client-id'] === 'string' && req.headers['x-arc-save-client-id'].length > 0 && req.headers['x-arc-save-client-id'].length <= 120
+        ? req.headers['x-arc-save-client-id']
+        : undefined;
+      botManager.broadcastWS({ type: 'GRAPH_UPDATED', payload: { graph: saved, updatedBy: req.user?.username || 'Workspace member', saveClientId } });
       res.json({ success: true, graph: saved });
     } catch (error) {
       res.status(400).json({ error: error.message });
