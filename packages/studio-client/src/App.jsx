@@ -1142,24 +1142,6 @@ export function App() {
   useEffect(() => {
     if (remoteWorkspaceStateReady) setHasEstablishedCollaboration(true);
   }, [remoteWorkspaceStateReady]);
-  const workspaceConnectionNotice = !localDesktopWorkspace && authToken && currentUser
-    ? collaborationSocketStatus === 'connecting'
-      ? { title: 'Connecting to workspace', message: 'You can continue using the editor while ARC Studio connects.' }
-      : collaborationSocketStatus === 'reconnecting'
-        ? {
-          title: networkOnline ? 'Workspace sync unavailable' : 'Internet connection unavailable',
-          message: remoteWorkspaceBlocked
-            ? networkOnline
-              ? 'Editing is paused until shared workspace state is safe. This may be a network or workspace server issue. ARC Studio is retrying automatically.'
-              : 'Editing is paused until the connection returns. ARC Studio will retry automatically.'
-            : networkOnline
-              ? 'This may be a network or workspace server issue. ARC Studio is retrying automatically.'
-              : 'ARC Studio will retry automatically when your device is back online.'
-        }
-        : collaborationConnectionFlaky
-          ? { title: 'Workspace connection is unstable', message: 'Live updates may be delayed. Editing remains available.' }
-          : null
-    : null;
   const graphVariables = useMemo(() => {
     const savedVariables = Array.isArray(activeGraph?.variables) ? activeGraph.variables : [];
     const graphNodes = activeGraph?.nodes || [];
@@ -6098,10 +6080,6 @@ export function App() {
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
       <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       </div>
-      {workspaceConnectionNotice && <div className={`workspace-connection-banner ${collaborationSocketStatus === 'reconnecting' && remoteWorkspaceBlocked ? 'is-paused' : ''} ${collaborationConnectionFlaky ? 'is-flaky' : ''}`} role="status" aria-live="polite">
-        <strong>{workspaceConnectionNotice.title}</strong>
-        <span>{workspaceConnectionNotice.message}</span>
-      </div>}
       <ToastContainer />
       <TooltipLayer />
       <SelectionContextMenu />
