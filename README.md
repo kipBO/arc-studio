@@ -112,3 +112,7 @@ To work on the desktop app, run `npm run dev:desktop`. See [how the desktop app 
 ## License
 
 ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Third party packages keep their own licenses.
+
+
+
+Last Edited: 21 October 2026
