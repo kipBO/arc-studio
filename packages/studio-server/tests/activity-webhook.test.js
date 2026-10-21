@@ -56,12 +56,13 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
     isEnabled: () => true,
     getDeliveryUrl: () => secretUrl
   };
-  const dispatcher = new ActivityWebhookDispatcher(store);
+  const deliveryStatuses = [];
+  const dispatcher = new ActivityWebhookDispatcher(store, (_id, status) => deliveryStatuses.push(status));
   dispatcher.enqueue({
     timestamp: '2026-10-21T10:00:00.000Z',
-    actor: { username: 'Arc Owner' },
+    actor: { username: 'ARC Studio' },
     action: 'graph.updated',
-    summary: 'Updated graph “Welcome”',
+    summary: 'Updated graph “Welcome” saved, ready',
     details: { projectName: 'Community Bot', graphName: 'Welcome' }
   });
   for (let attempt = 0; attempt < 30 && !request; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
@@ -71,11 +72,24 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
   const payload = JSON.parse(request.options.body);
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
   assert.equal(payload.embeds.length, 1);
-  assert.equal(payload.embeds[0].fields[0].value, 'Arc Owner');
+  assert.equal(payload.embeds[0].fields[0].value, 'ARC Studio');
   assert.equal(payload.embeds[0].fields[1].value, 'Welcome · Community Bot');
   assert.equal(payload.embeds[0].footer.text, 'ARC Studio');
   assert.equal(payload.embeds[0].timestamp, '2026-10-21T10:00:00.000Z');
   assert.equal(payload.embeds[0].thumbnail, undefined);
+  for (let attempt = 0; attempt < 30 && deliveryStatuses.at(-1) !== 'success'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(deliveryStatuses, ['in_progress', 'success']);
+});
+
+test('terminal webhook delivery errors update status without logging a failure notification', async (context) => {
+  const previousFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = previousFetch; });
+  globalThis.fetch = async () => ({ status: 400, ok: false });
+  const statuses = [];
+  const dispatcher = new ActivityWebhookDispatcher({ isEnabled: () => true, getDeliveryUrl: () => 'https://discord.com/api/webhooks/id/token' }, (_id, status) => statuses.push(status));
+  dispatcher.enqueue({ id: 'activity-test', summary: 'Changed a graph', actor: { username: 'Owner' }, timestamp: new Date().toISOString() });
+  for (let attempt = 0; attempt < 30 && statuses.at(-1) !== 'failed'; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(statuses, ['in_progress', 'failed']);
 });
 
 test('activity delivery waits for Discord Retry-After before retrying', async (context) => {
