@@ -2,7 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import {
   Activity, AlertTriangle, Archive, Check, ChevronDown, ChevronLeft, ChevronUp, CircleCheck, CircleX, ClipboardCopy, Cpu, FileText,
-  GitCompare, Play, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
+  GitCompare, PictureInPicture2, Play, Save, Search, ShieldCheck, Smile, Square, StepForward, Terminal, Trash2, Upload, X
 } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
@@ -34,7 +34,7 @@ function duplicateSlashCommandMessage(name) {
 }
 
 export function ControlDock({
-  logs = [], botStatus = 'DISCONNECTED', botMetrics = {}, botProfile, activeTabId, authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
+  logs = [], botStatus = 'DISCONNECTED', botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
   graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -69,6 +69,95 @@ export function ControlDock({
   const [fileContent, setFileContent] = useState(null);
   const [consoleContextMenu, setConsoleContextMenu] = useState(null);
   const [consoleContextLog, setConsoleContextLog] = useState(null);
+  const [consolePopupRoot, setConsolePopupRoot] = useState(null);
+  const consolePopupWindowRef = useRef(null);
+  const lastProjectIdRef = useRef(activeProjectId);
+
+  const closeConsolePopup = () => {
+    const popup = consolePopupWindowRef.current;
+    consolePopupWindowRef.current = null;
+    setConsolePopupRoot(null);
+    setActiveTab('console');
+    setIsOpen(true);
+    if (popup && !popup.closed) popup.close();
+  };
+
+  const openConsolePopup = () => {
+    const existing = consolePopupWindowRef.current;
+    if (existing && !existing.closed) { existing.focus(); return; }
+    const popup = window.open('', 'arc-studio-console', 'popup=yes,width=1100,height=720,resizable=yes,scrollbars=no');
+    if (!popup) return;
+    const popupDocument = popup.document;
+    popupDocument.open();
+    popupDocument.write('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ARC Studio Console</title></head><body></body></html>');
+    popupDocument.close();
+    document.querySelectorAll('link[rel="stylesheet"], style').forEach((styleNode) => {
+      popupDocument.head.appendChild(styleNode.cloneNode(true));
+    });
+    popupDocument.documentElement.dataset.theme = document.documentElement.dataset.theme || 'dark';
+    const appRoot = document.querySelector('.app-root');
+    const root = popupDocument.createElement('div');
+    root.className = 'app-root console-popout-root';
+    root.style.width = '100%';
+    root.style.height = '100%';
+    root.style.transform = 'none';
+    for (const attribute of ['data-theme', 'data-release-channel', 'data-ui-scale', 'data-compact-context', 'data-reduce-motion']) {
+      if (appRoot?.hasAttribute(attribute)) root.setAttribute(attribute, appRoot.getAttribute(attribute));
+    }
+    root.style.setProperty('--arc-ui-scale', getComputedStyle(appRoot || document.documentElement).getPropertyValue('--arc-ui-scale').trim() || '1');
+    popupDocument.body.appendChild(root);
+    consolePopupWindowRef.current = popup;
+    setConsolePopupRoot(root);
+    setActiveTab('console');
+    setIsOpen(false);
+    popup.addEventListener('pagehide', () => {
+      if (consolePopupWindowRef.current !== popup) return;
+      consolePopupWindowRef.current = null;
+      setConsolePopupRoot(null);
+      setActiveTab('console');
+      setIsOpen(true);
+    }, { once: true });
+  };
+
+  useEffect(() => {
+    if (lastProjectIdRef.current === activeProjectId) return;
+    lastProjectIdRef.current = activeProjectId;
+    closeConsolePopup();
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!consolePopupRoot) return undefined;
+    const popup = consolePopupWindowRef.current;
+    if (!popup) return undefined;
+    const syncTheme = () => {
+      const appRoot = document.querySelector('.app-root');
+      for (const attribute of ['data-theme', 'data-release-channel', 'data-ui-scale', 'data-compact-context', 'data-reduce-motion']) {
+        if (appRoot?.hasAttribute(attribute)) consolePopupRoot.setAttribute(attribute, appRoot.getAttribute(attribute));
+        else consolePopupRoot.removeAttribute(attribute);
+      }
+      popup.document.documentElement.dataset.theme = document.documentElement.dataset.theme || 'dark';
+      consolePopupRoot.style.setProperty('--arc-ui-scale', getComputedStyle(appRoot || document.documentElement).getPropertyValue('--arc-ui-scale').trim() || '1');
+    };
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    const appRoot = document.querySelector('.app-root');
+    if (appRoot) observer.observe(appRoot, { attributes: true, attributeFilter: ['data-theme', 'data-release-channel', 'data-ui-scale', 'data-compact-context', 'data-reduce-motion', 'style'] });
+    const monitor = window.setInterval(() => {
+      if (popup.closed) {
+        consolePopupWindowRef.current = null;
+        setConsolePopupRoot(null);
+        setActiveTab('console');
+        setIsOpen(true);
+      }
+    }, 400);
+    return () => { observer.disconnect(); window.clearInterval(monitor); };
+  }, [consolePopupRoot]);
+
+  useEffect(() => () => {
+    const popup = consolePopupWindowRef.current;
+    consolePopupWindowRef.current = null;
+    if (popup && !popup.closed) popup.close();
+  }, []);
 
   const [selectedEvent, setSelectedEvent] = useState('MESSAGE_CREATE');
   const [mockContent, setMockContent] = useState('!ping');
@@ -296,16 +385,16 @@ export function ControlDock({
   }, [isResizing, dockHeight]);
 
   useEffect(() => {
-    if (isOpen && activeTab === 'console' && logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
-  }, [logs, isOpen, activeTab]);
+    if ((isOpen || consolePopupRoot) && activeTab === 'console' && logContainerRef.current) logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+  }, [logs, isOpen, activeTab, consolePopupRoot]);
 
   useEffect(() => {
     if (gatewayStartedRequest === lastGatewayStartedRequestRef.current) return;
     lastGatewayStartedRequestRef.current = gatewayStartedRequest;
-    if (isOpen) return;
+    if (isOpen || consolePopupRoot) return;
     setActiveTab('console');
     setIsOpen(true);
-  }, [gatewayStartedRequest, isOpen]);
+  }, [gatewayStartedRequest, isOpen, consolePopupRoot]);
 
   useEffect(() => {
     if (rateLimitUntil <= Date.now()) return undefined;
@@ -399,9 +488,10 @@ export function ControlDock({
   useEffect(() => {
     if (consoleOpenRequest === lastConsoleShortcutRequestRef.current) return;
     lastConsoleShortcutRequestRef.current = consoleOpenRequest;
+    if (consolePopupRoot) { closeConsolePopup(); return; }
     if (isOpen && activeTab === 'console') setIsOpen(false);
     else openTab('console');
-  }, [consoleOpenRequest, isOpen, activeTab]);
+  }, [consoleOpenRequest, isOpen, activeTab, consolePopupRoot]);
 
   const fetchLogFiles = async () => {
     if (!authToken) return;
@@ -743,12 +833,31 @@ export function ControlDock({
     });
   };
 
+  const consolePanel = <div className="console-panel">
+    <div className="console-toolbar">
+      <div className="console-filters">{['ALL', 'INFO', 'GATEWAY', 'EXECUTION', 'MOCK', 'WARN', 'ERROR'].map((level) => <button key={level} className={filterLevel === level ? 'is-active' : ''} onClick={() => setFilterLevel(level)}>{level}</button>)}</div>
+      <div className="console-actions">
+        <label className="console-search"><Search size={14} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Filter output" aria-label="Filter console" /></label>
+        <button className="dock-icon-button" onClick={fetchLogFiles} title="Browse saved logs" aria-label="Browse saved logs"><Archive size={15} /></button>
+        <button className="dock-icon-button" onClick={consolePopupRoot ? closeConsolePopup : openConsolePopup} title={consolePopupRoot ? 'Return console to the editor' : 'Pop out console'} aria-label={consolePopupRoot ? 'Return console to the editor' : 'Pop out console'}><PictureInPicture2 size={15} /></button>
+        <button className="dock-icon-button danger-hover" onClick={onClearLogs} title="Clear output" aria-label="Clear output"><Trash2 size={15} /></button>
+      </div>
+    </div>
+    {logFiles.length > 0 && fileContent === null && <div className="archive-strip"><span>Saved logs</span>{logFiles.map((file) => <button key={file.filename} onClick={() => readLogFile(file.filename)}>{file.filename}<small>{file.sizeKb} KB</small></button>)}<button className="archive-close" onClick={() => setLogFiles([])} aria-label="Close saved logs"><X size={14} /></button></div>}
+    {fileContent !== null ? <div className="archive-view"><div className="archive-view-header"><span><FileText size={14} /> {selectedFile}</span><button onClick={() => setFileContent(null)}>Close <X size={13} /></button></div><pre>{fileContent}</pre></div> : <div className="log-lines" ref={logContainerRef}>
+      {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => <div className={`log-line${log.meta?.graphId && log.meta?.nodeId ? ' is-traceable' : ''}`} key={log.id} onDoubleClick={() => log.meta?.graphId && log.meta?.nodeId && onTraceLog?.(log.meta.graphId, log.meta.nodeId)} onContextMenu={(event) => openConsoleContextMenu(event, log)} title={log.meta?.graphId && log.meta?.nodeId ? 'Double-click to open the graph and highlight this node' : undefined}>
+        <time>{formatTime(log.timestamp)}</time><span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}>{log.level}</span><span className="log-message">{log.message}</span>
+      </div>)}
+    </div>}
+  </div>;
+
   return (
+    <>
     <section className={`control-dock ${isOpen ? 'is-open' : ''} ${isResizing ? 'is-resizing' : ''}`} style={{ '--dock-height': `${dockHeight}px`, height: isOpen ? `${dockHeight}px` : '45px' }} aria-label="Control dock">
       {isOpen && <div className={`dock-resize-handle ${isLocked ? 'is-disabled' : ''}`} onPointerDown={beginResize} onDoubleClick={toggleDockSize} title={isLocked ? 'Canvas is locked' : 'Drag to resize · double-click to toggle size'}><span /></div>}
       <header className="dock-header">
         <nav className="dock-tabs" aria-label="Control panels">
-          <DockTab active={isOpen && activeTab === 'console'} onClick={() => openTab('console')} icon={Terminal} label="Console" count={logs.length} />
+          <DockTab active={isOpen && activeTab === 'console'} onClick={() => consolePopupRoot ? closeConsolePopup() : openTab('console')} icon={Terminal} label="Console" count={logs.length} />
           <DockTab active={isOpen && activeTab === 'simulator'} onClick={() => openTab('simulator')} icon={Cpu} label="Simulate" />
           <DockTab active={isOpen && activeTab === 'hub'} onClick={() => openTab('hub')} icon={Smile} label="App" />
         </nav>
@@ -758,22 +867,7 @@ export function ControlDock({
       </header>
 
       <div className="dock-content" style={{ height: 'calc(var(--dock-height) - 45px)' }}>
-        {activeTab === 'console' && <div className="console-panel">
-          <div className="console-toolbar">
-            <div className="console-filters">{['ALL', 'INFO', 'GATEWAY', 'EXECUTION', 'MOCK', 'WARN', 'ERROR'].map((level) => <button key={level} className={filterLevel === level ? 'is-active' : ''} onClick={() => setFilterLevel(level)}>{level}</button>)}</div>
-            <div className="console-actions">
-              <label className="console-search"><Search size={14} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Filter output" aria-label="Filter console" /></label>
-              <button className="dock-icon-button" onClick={fetchLogFiles} title="Browse saved logs" aria-label="Browse saved logs"><Archive size={15} /></button>
-              <button className="dock-icon-button danger-hover" onClick={onClearLogs} title="Clear output" aria-label="Clear output"><Trash2 size={15} /></button>
-            </div>
-          </div>
-          {logFiles.length > 0 && fileContent === null && <div className="archive-strip"><span>Saved logs</span>{logFiles.map((file) => <button key={file.filename} onClick={() => readLogFile(file.filename)}>{file.filename}<small>{file.sizeKb} KB</small></button>)}<button className="archive-close" onClick={() => setLogFiles([])} aria-label="Close saved logs"><X size={14} /></button></div>}
-          {fileContent !== null ? <div className="archive-view"><div className="archive-view-header"><span><FileText size={14} /> {selectedFile}</span><button onClick={() => setFileContent(null)}>Close <X size={13} /></button></div><pre>{fileContent}</pre></div> : <div className="log-lines" ref={logContainerRef}>
-            {filteredLogs.length === 0 ? <div className="dock-empty"><Activity size={17} /><span>No output</span></div> : filteredLogs.map((log) => <div className={`log-line${log.meta?.graphId && log.meta?.nodeId ? ' is-traceable' : ''}`} key={log.id} onDoubleClick={() => log.meta?.graphId && log.meta?.nodeId && onTraceLog?.(log.meta.graphId, log.meta.nodeId)} onContextMenu={(event) => openConsoleContextMenu(event, log)} title={log.meta?.graphId && log.meta?.nodeId ? 'Double-click to open the graph and highlight this node' : undefined}>
-              <time>{formatTime(log.timestamp)}</time><span className={`log-level log-${String(log.level || 'INFO').toLowerCase()}`}>{log.level}</span><span className="log-message">{log.message}</span>
-            </div>)}
-          </div>}
-        </div>}
+        {activeTab === 'console' && !consolePopupRoot && consolePanel}
 
         {activeTab === 'simulator' && <div className="simulator-panel">
           <div className="dock-panel-sidebar">
@@ -946,6 +1040,8 @@ export function ControlDock({
         </>}
       </Modal>, modalRoot)}
     </section>
+    {consolePopupRoot && createPortal(consolePanel, consolePopupRoot)}
+    </>
   );
 }
 
