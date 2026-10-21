@@ -359,8 +359,25 @@ export class RESTClient {
     return this.request('GET', '/users/@me/guilds', { query });
   }
 
-  getGuild(guildId) {
-    return this.request('GET', `/guilds/${guildId}`);
+  getUser(userId) {
+    const id = String(userId || '').trim();
+    if (!id) throw new TypeError('A user ID is required.');
+    return this.request('GET', `/users/${encodeURIComponent(id)}`);
+  }
+
+  getGuild(guildId, options = {}) {
+    const id = String(guildId || '').trim();
+    if (!id) throw new TypeError('A server ID is required.');
+    return this.request('GET', `/guilds/${encodeURIComponent(id)}`, {
+      query: options.withCounts ? { with_counts: true } : undefined
+    });
+  }
+
+  getGuildMember(guildId, userId) {
+    const serverId = String(guildId || '').trim();
+    const memberId = String(userId || '').trim();
+    if (!serverId || !memberId) throw new TypeError('Server and user IDs are required.');
+    return this.request('GET', `/guilds/${encodeURIComponent(serverId)}/members/${encodeURIComponent(memberId)}`);
   }
 
   getGuildChannels(guildId) {
