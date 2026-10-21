@@ -1306,7 +1306,7 @@ fn start_studio_server<R: tauri::Runtime>(
     let server_error_log = server_log.try_clone()?;
     let bot_token_key = bot_token_encryption_key()
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
-    let mut child = Command::new(node_path)
+    let mut server_command = Command::new(node_path)
         .arg(entry_path)
         .current_dir(&app_root)
         .env("ARC_DESKTOP_MODE", "1")
@@ -1323,8 +1323,13 @@ fn start_studio_server<R: tauri::Runtime>(
         .env("PORT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(server_log))
-        .stderr(Stdio::from(server_error_log))
-        .spawn()?;
+        .stderr(Stdio::from(server_error_log));
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        server_command.creation_flags(0x08000000);
+    }
+    let mut child = server_command.spawn()?;
 
     let port = match wait_for_server_port(&mut child, &port_file) {
         Ok(port) => port,
