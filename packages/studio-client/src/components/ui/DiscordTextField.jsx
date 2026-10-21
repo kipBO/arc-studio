@@ -135,9 +135,11 @@ export const DiscordTextField = forwardRef(function DiscordTextField({ as = 'inp
     };
     document.addEventListener('pointerdown', dismiss, true);
     document.addEventListener('keydown', dismiss, true);
+    const removePageBlurListener = onPageBlur(() => setTextMenu(null));
     return () => {
       document.removeEventListener('pointerdown', dismiss, true);
       document.removeEventListener('keydown', dismiss, true);
+      removePageBlurListener();
     };
   }, [textMenu]);
 
