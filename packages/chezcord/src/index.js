@@ -1,5 +1,5 @@
 export { Client } from './client/Client.js';
-export { RESTClient, DiscordAPIError } from './rest/RESTClient.js';
+export { RESTClient, DiscordAPIError, InteractionAlreadyAcknowledgedError } from './rest/RESTClient.js';
 export { RateLimiter } from './rest/RateLimiter.js';
 export { InteractionSecurity } from './rest/InteractionSecurity.js';
 export { GatewayShard, ShardStatus } from './gateway/GatewayShard.js';
