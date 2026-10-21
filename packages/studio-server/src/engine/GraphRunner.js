@@ -1538,6 +1538,48 @@ export class GraphRunner {
           for (const [pinId, value] of Object.entries(outputs)) dataCache.set(`${targetNode.id}:${pinId}`, value);
           log(`[Plugin Adapter] ${definition.label} completed in its isolated WebAssembly worker.`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_fetch_user') {
+          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
+          if (!userId) throw new TypeError('Get User Info needs a User ID.');
+          if (typeof context.rest?.getUser !== 'function') throw new Error('Get User Info requires a connected Discord REST client.');
+          const user = await context.rest.getUser(userId);
+          if (!user || typeof user !== 'object' || Array.isArray(user)) throw new Error('Discord did not return a valid user object.');
+          for (const [pinId, value] of Object.entries({
+            user, user_id_out: user.id || userId, username: user.username || '', global_name: user.global_name || '',
+            discriminator: user.discriminator || '', avatar: user.avatar || '', bot: Boolean(user.bot), public_flags: Number(user.public_flags) || 0
+          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
+          log(`[Get User Info] Fetched user ${user.id || userId}.`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_fetch_guild') {
+          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
+          if (!guildId) throw new TypeError('Get Server Info needs a Server ID.');
+          if (typeof context.rest?.getGuild !== 'function') throw new Error('Get Server Info requires a connected Discord REST client.');
+          const guild = await context.rest.getGuild(guildId, { withCounts: true });
+          if (!guild || typeof guild !== 'object' || Array.isArray(guild)) throw new Error('Discord did not return a valid server object.');
+          for (const [pinId, value] of Object.entries({
+            guild, guild_id_out: guild.id || guildId, name: guild.name || '', owner_id: guild.owner_id || '',
+            description: guild.description || '', icon: guild.icon || '',
+            member_count: Number(guild.approximate_member_count ?? guild.member_count) || 0,
+            features: Array.isArray(guild.features) ? guild.features : [], preferred_locale: guild.preferred_locale || '',
+            verification_level: Number(guild.verification_level) || 0
+          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
+          log(`[Get Server Info] Fetched server ${guild.id || guildId}.`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_fetch_member') {
+          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
+          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
+          if (!guildId || !userId) throw new TypeError('Get Server Member needs a Server ID and User ID.');
+          if (typeof context.rest?.getGuildMember !== 'function') throw new Error('Get Server Member requires a connected Discord REST client.');
+          const member = await context.rest.getGuildMember(guildId, userId);
+          if (!member || typeof member !== 'object' || Array.isArray(member)) throw new Error('Discord did not return a valid member object.');
+          const user = member.user && typeof member.user === 'object' ? member.user : {};
+          for (const [pinId, value] of Object.entries({
+            member, user, user_id_out: user.id || userId, username: user.username || '', nickname: member.nick || '',
+            roles: Array.isArray(member.roles) ? member.roles : [], joined_at: member.joined_at || '',
+            premium_since: member.premium_since || '', deaf: Boolean(member.deaf), mute: Boolean(member.mute), pending: Boolean(member.pending)
+          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
+          log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_send_message') {
           const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || ''));
           const content = String(resolveDataInput(targetNode, 'content', targetNode.data?.content || '')).slice(0, 2000);
@@ -1792,6 +1834,24 @@ export class GraphRunner {
             };
             if (typeof context.rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
             await context.rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
+          }
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'action_set_custom_status') {
+          const rawStatusText = String(resolveDataInput(targetNode, 'status_text', targetNode.data?.status_text ?? 'ARC Studio')).trim();
+          const customEmojiMatch = rawStatusText.match(/<(?<animated>a?):(?<name>[A-Za-z0-9_]{2,32}):(?<id>\d{17,20})>/);
+          const statusText = customEmojiMatch
+            ? rawStatusText.replace(customEmojiMatch[0], '').replace(/\s{2,}/g, ' ').trim().slice(0, 128)
+            : rawStatusText.slice(0, 128);
+          const emoji = customEmojiMatch ? {
+            name: customEmojiMatch.groups.name,
+            id: customEmojiMatch.groups.id,
+            ...(customEmojiMatch.groups.animated ? { animated: true } : {})
+          } : null;
+          log(`[Action Custom Status] Updating custom status: ${statusText || (emoji ? 'emoji only' : 'cleared')}`);
+          if (context.client && typeof context.client.setPresence === 'function') {
+            context.client.setPresence({
+              activities: statusText || emoji ? [{ name: 'Custom Status', type: 4, ...(statusText ? { state: statusText } : {}), ...(emoji ? { emoji } : {}) }] : []
+            });
           }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_set_presence') {
