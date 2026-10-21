@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Puzzle, Search, X } from 'lucide-react';
 import { BuiltInNodeDefinitions, NodeCategories, getVisibleNewNodeDefinitions, isNodeDefinitionNew, markNewNodeDefinitionsSeen } from '../nodes/nodeDefinitions.js';
 import { NodeTypeIcon } from '../nodes/NodeTypeIcon.jsx';
+import { NODE_SEARCH_ALIASES, scoreSearchMatch } from './nodeSearch.js';
 //
 export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRevision = 0, definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous' }) {
   const [query, setQuery] = useState('');
@@ -13,10 +14,12 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
   const newNodes = useMemo(() => getVisibleNewNodeDefinitions(definitions.filter((node) => !node.hidden), newNodesUserKey), [definitions, newNodesUserKey, newNodesRevision, pluginDefinitionsRevision]);
   const showNewSection = !query.trim() && selectedCategory === 'All' && newNodes.length > 0;
   const newNodeTypes = useMemo(() => new Set(showNewSection ? newNodes.map((node) => node.type) : []), [showNewSection, newNodes]);
-  const filteredNodes = useMemo(() => definitions.filter((node) => !node.hidden).filter((node) => {
-    const text = `${node.label} ${node.description} ${node.category}`.toLowerCase();
-    return text.includes(query.toLowerCase()) && (selectedCategory === 'All' || node.category === selectedCategory) && !newNodeTypes.has(node.type);
-  }), [query, selectedCategory, pluginDefinitionsRevision, definitions, newNodeTypes]);
+  const filteredNodes = useMemo(() => definitions.filter((node) => !node.hidden).map((node, order) => ({
+    node,
+    order,
+    score: scoreSearchMatch(query, [node.label, node.description, node.category, node.type.replaceAll('_', ' '), ...(NODE_SEARCH_ALIASES[node.type] || []), ...(node.aliases || [])])
+  })).filter(({ node, score }) => score > 0 && (selectedCategory === 'All' || node.category === selectedCategory) && !newNodeTypes.has(node.type))
+    .sort((left, right) => right.score - left.score || left.order - right.order).map(({ node }) => node), [query, selectedCategory, pluginDefinitionsRevision, definitions, newNodeTypes]);
   const navigableNodes = showNewSection ? [...newNodes, ...filteredNodes] : filteredNodes;
 
   useEffect(() => {
