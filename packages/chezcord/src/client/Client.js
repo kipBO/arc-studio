@@ -28,6 +28,7 @@ export class Client extends EventEmitter {
     this.gatewayBindings = [];
     this.user = null;
     this.readyAt = null;
+    this.presence = { since: null, activities: [], status: 'online', afk: false };
   }
 
   /**
@@ -132,7 +133,15 @@ export class Client extends EventEmitter {
    */
   setPresence(presence) {
     if (this.ws) {
-      this.ws.updatePresence(presence);
+      const update = presence && typeof presence === 'object' ? presence : {};
+      this.presence = {
+        ...this.presence,
+        ...update,
+        activities: Array.isArray(update.activities)
+          ? update.activities.map((activity) => ({ ...activity, ...(activity?.emoji ? { emoji: { ...activity.emoji } } : {}) }))
+          : this.presence.activities
+      };
+      this.ws.updatePresence(this.presence);
     }
   }
 
