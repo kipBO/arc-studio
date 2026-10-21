@@ -98,6 +98,7 @@ test('activity delivery waits for Discord Retry-After before retrying', async (c
   dispatcher.enqueue({ summary: 'A graph changed', actor: { username: 'Owner' }, timestamp: new Date().toISOString() });
   for (let attempt = 0; attempt < 100 && requestTimes.length < 1; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(requestTimes.length, 1);
+  dispatcher.settingsChanged();
   await new Promise((resolve) => setTimeout(resolve, 700));
   assert.equal(requestTimes.length, 1);
   for (let attempt = 0; attempt < 100 && requestTimes.length < 2; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
