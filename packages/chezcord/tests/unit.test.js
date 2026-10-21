@@ -341,3 +341,18 @@ describe('InteractionSecurity (Ed25519 Webhook Verification)', () => {
     assert.equal(tamperedSig, false);
   });
 });
+
+describe('Client presence updates', () => {
+  test('partial updates preserve the existing online status and activity fields', () => {
+    const client = new Client();
+    let sentPresence;
+    client.ws = { updatePresence: (presence) => { sentPresence = presence; } };
+
+    client.setPresence({ status: 'dnd', activities: [{ name: 'Working', type: 0 }] });
+    client.setPresence({ activities: [{ name: 'Custom Status', type: 4, state: 'Hello', emoji: { name: 'sparkles', id: '123456789012345678' } }] });
+
+    assert.equal(sentPresence.status, 'dnd');
+    assert.deepEqual(sentPresence.activities, [{ name: 'Custom Status', type: 4, state: 'Hello', emoji: { name: 'sparkles', id: '123456789012345678' } }]);
+    assert.equal(client.presence.status, 'dnd');
+  });
+});
