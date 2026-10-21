@@ -6,6 +6,7 @@ import { dataDir } from '../storage.js';
 const filePath = path.join(dataDir, 'collaboration-last-seen.json');
 const MAX_PROJECTS = 500;
 const MAX_GRAPHS = 5000;
+const MAX_USERS_PER_ENTRY = 20;
 const MIN_RECORD_INTERVAL_MS = 60_000;
 //
 export class CollaborationLastSeen {
@@ -17,8 +18,8 @@ export class CollaborationLastSeen {
     try {
       const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
       if (data && typeof data === 'object') {
-        this.projects = data.projects && typeof data.projects === 'object' ? data.projects : {};
-        this.graphs = data.graphs && typeof data.graphs === 'object' ? data.graphs : {};
+        this.projects = this.#normalizeStore(data.projects);
+        this.graphs = this.#normalizeStore(data.graphs);
       }
     } catch {}
   }
@@ -37,21 +38,41 @@ export class CollaborationLastSeen {
   }
 
   #recordEntry(store, key, next, now) {
-    const current = store[key];
-    if (current?.userId === next.userId && now - Number(current.updatedAt || 0) < MIN_RECORD_INTERVAL_MS) return false;
-    store[key] = next;
+    const history = this.#entries(store[key]);
+    const existingIndex = history.findIndex((entry) => entry.userId === next.userId);
+    const current = existingIndex >= 0 ? history[existingIndex] : null;
+    if (current && now - Number(current.updatedAt || 0) < MIN_RECORD_INTERVAL_MS) return false;
+    if (existingIndex >= 0) history.splice(existingIndex, 1);
+    history.push(next);
+    history.sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
+    store[key] = history.slice(0, MAX_USERS_PER_ENTRY);
     return true;
   }
 
-  projectSnapshot() { return { ...this.projects }; }
+  #entries(value) {
+    const values = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
+    return values.filter((entry) => entry && typeof entry.userId === 'string' && typeof entry.username === 'string');
+  }
 
-  graphSnapshot(projectId) {
+  #normalizeStore(store) {
+    if (!store || typeof store !== 'object' || Array.isArray(store)) return {};
+    return Object.fromEntries(Object.entries(store).map(([key, value]) => [key, this.#entries(value)]).filter(([, history]) => history.length));
+  }
+
+  projectSnapshot(excludeUserId = '') {
+    return Object.fromEntries(Object.entries(this.projects).flatMap(([projectId, value]) => {
+      const latest = this.#entries(value).find((entry) => !excludeUserId || entry.userId !== String(excludeUserId));
+      return latest ? [[projectId, latest]] : [];
+    }));
+  }
+
+  graphSnapshot(projectId, excludeUserId = '') {
     const prefix = `${projectId}:`;
-    return Object.entries(this.graphs)
-      .filter(([key]) => key.startsWith(prefix))
-      .map(([, value]) => value)
-      .filter((entry) => entry && typeof entry.graphId === 'string')
-      .sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
+    return Object.entries(this.graphs).flatMap(([key, value]) => {
+      if (!key.startsWith(prefix)) return [];
+      const latest = this.#entries(value).find((entry) => (!excludeUserId || entry.userId !== String(excludeUserId)) && typeof entry.graphId === 'string');
+      return latest ? [latest] : [];
+    }).sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
   }
 
   #persist() {
