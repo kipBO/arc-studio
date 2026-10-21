@@ -711,6 +711,61 @@ export const BuiltInNodeDefinitions = [
     ]
   },
   {
+    type: 'action_set_custom_status',
+    category: NodeCategories.ACTIONS,
+    label: 'Set Custom Status',
+    color: '#10b981',
+    description: 'Sets the bot profile status text',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' },
+      { id: 'status_text', label: 'Status Text', type: 'string', defaultValue: 'ARC Studio' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' }
+    ]
+  },
+  {
+    type: 'action_fetch_user', category: NodeCategories.ACTIONS, label: 'Get User Info', color: '#10b981',
+    description: 'Fetches a Discord user profile and exposes both the full user object and common profile fields',
+    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'user_id', label: 'User ID', type: 'string', defaultValue: '' }],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' }, { id: 'user', label: 'User Object', type: 'object' },
+      { id: 'user_id_out', label: 'User ID', type: 'string' }, { id: 'username', label: 'Username', type: 'string' },
+      { id: 'global_name', label: 'Display Name', type: 'string' }, { id: 'discriminator', label: 'Discriminator', type: 'string' },
+      { id: 'avatar', label: 'Avatar Hash', type: 'string' }, { id: 'bot', label: 'Is Bot', type: 'boolean' },
+      { id: 'public_flags', label: 'Public Flags', type: 'number' }
+    ]
+  },
+  {
+    type: 'action_fetch_guild', category: NodeCategories.ACTIONS, label: 'Get Server Info', color: '#10b981',
+    description: 'Fetches a Discord server and exposes its full server object, owner, features, and common settings',
+    inputs: [{ id: 'exec', label: 'Exec', type: 'exec' }, { id: 'guild_id', label: 'Server ID', type: 'string', defaultValue: '' }],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' }, { id: 'guild', label: 'Server Object', type: 'object' },
+      { id: 'guild_id_out', label: 'Server ID', type: 'string' }, { id: 'name', label: 'Name', type: 'string' },
+      { id: 'owner_id', label: 'Owner ID', type: 'string' }, { id: 'description', label: 'Description', type: 'string' },
+      { id: 'icon', label: 'Icon Hash', type: 'string' }, { id: 'member_count', label: 'Approx. Members', type: 'number' },
+      { id: 'features', label: 'Features', type: 'object' }, { id: 'preferred_locale', label: 'Preferred Locale', type: 'string' },
+      { id: 'verification_level', label: 'Verification Level', type: 'number' }
+    ]
+  },
+  {
+    type: 'action_fetch_member', category: NodeCategories.ACTIONS, label: 'Get Server Member', color: '#10b981',
+    description: 'Fetches a member in a server and exposes the full member and user objects, roles, and profile fields',
+    inputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' }, { id: 'guild_id', label: 'Server ID', type: 'string', defaultValue: '' },
+      { id: 'user_id', label: 'User ID', type: 'string', defaultValue: '' }
+    ],
+    outputs: [
+      { id: 'exec', label: 'Exec', type: 'exec' }, { id: 'member', label: 'Member Object', type: 'object' },
+      { id: 'user', label: 'User Object', type: 'object' }, { id: 'user_id_out', label: 'User ID', type: 'string' },
+      { id: 'username', label: 'Username', type: 'string' }, { id: 'nickname', label: 'Nickname', type: 'string' },
+      { id: 'roles', label: 'Role IDs', type: 'object' }, { id: 'joined_at', label: 'Joined At', type: 'string' },
+      { id: 'premium_since', label: 'Boosted Since', type: 'string' }, { id: 'deaf', label: 'Server Deafened', type: 'boolean' },
+      { id: 'mute', label: 'Server Muted', type: 'boolean' }, { id: 'pending', label: 'Membership Pending', type: 'boolean' }
+    ]
+  },
+  {
     type: 'action_set_presence',
     category: NodeCategories.ACTIONS,
     label: 'Set App Presence',
