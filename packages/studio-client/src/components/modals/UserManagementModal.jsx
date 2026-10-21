@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import { PasswordInput, SelectInput, TextInput, Toggle } from '../ui/Inputs.jsx';
-import { Activity, KeyRound, Pencil, Shield, SlidersHorizontal, Trash2, UserPlus, Users } from 'lucide-react';
+import { Activity, CheckCircle2, Clock3, KeyRound, Pencil, Shield, SlidersHorizontal, Trash2, UserPlus, Users, XCircle } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl } from '../../core/api.js';
 //
@@ -32,6 +32,17 @@ const PERMISSION_OPTIONS = [
   { value: 'bot:control', label: 'Control bot', detail: 'Connect or disconnect the Discord gateway.' },
   { value: 'emojis:upload', label: 'Manage emojis', detail: 'Upload and manage application emojis.' }
 ];
+
+function DiscordDeliveryStatus({ status }) {
+  const delivery = {
+    success: { Icon: CheckCircle2, label: 'Sent' },
+    failed: { Icon: XCircle, label: 'Failed' },
+    in_progress: { Icon: Clock3, label: 'In progress' }
+  }[status];
+  if (!delivery) return null;
+  const { Icon, label } = delivery;
+  return <span className={`team-activity-delivery team-activity-delivery-${status}`} title={`Discord log: ${label.toLowerCase()}`} aria-label={`Discord log ${label.toLowerCase()}`}><Icon size={12} /></span>;
+}
 
 export function UserManagementModal({ isOpen, onClose, authToken, currentUsername = '', currentUserId = '', onCurrentUserChange }) {
   const [users, setUsers] = useState([]);
@@ -100,6 +111,20 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
   }, [authToken]);
 
   useEffect(() => { if (isOpen) fetchUsers(); }, [isOpen, fetchUsers]);
+
+  useEffect(() => {
+    if (!isOpen || !authToken || users.length <= 1) return undefined;
+    let active = true;
+    const refreshActivity = async () => {
+      try {
+        const response = await fetch(apiUrl('/api/activity?limit=50'), { headers: { 'x-arc-token': authToken } });
+        const data = await response.json();
+        if (active && response.ok) setActivity(data.activity || []);
+      } catch {}
+    };
+    const timer = window.setInterval(refreshActivity, 5000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [isOpen, authToken, users.length]);
 
   const createUser = async (event) => {
     event.preventDefault();
@@ -308,7 +333,7 @@ export function UserManagementModal({ isOpen, onClose, authToken, currentUsernam
     {users.length > 1 && <section className="team-activity-section">
       <div className="team-list-heading"><h3><Activity size={15} /> Recent activity</h3><span>{activity.length}</span></div>
       {activity.length ? <div className="team-activity-list">{activity.map((entry) => <article className="team-activity-row" key={entry.id}>
-        <div><strong>{entry.summary}</strong><small>{entry.actor?.username || 'Unknown user'} · {new Date(entry.timestamp).toLocaleString()}</small>
+        <div><div className="team-activity-summary"><strong>{entry.summary}</strong><DiscordDeliveryStatus status={entry.webhookDelivery} /></div><small>{entry.actor?.username || 'Unknown user'} · {new Date(entry.timestamp).toLocaleString()}</small>
           {entry.details?.changedNodes?.length > 0 && <small className="team-activity-node-list">{entry.details.changedNodes.slice(0, 5).map((node) => `${node.change} ${node.name}${node.fields?.length ? ` (${node.fields.join(', ')})` : ''}`).join(' · ')}{entry.details.changedNodes.length > 5 ? ` · +${entry.details.changedNodes.length - 5} more` : ''}</small>}
           {entry.details?.blockTypes?.length > 0 && <small className="team-activity-node-list">Blocks: {entry.details.blockTypes.join(' · ')}</small>}
         </div>
