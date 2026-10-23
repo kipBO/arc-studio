@@ -57,7 +57,6 @@ window.addEventListener("DOMContentLoaded", () => {
   function generateCollisionMask() {
     mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
-    // Selecteer alle elementen waar sneeuw op moet blijven liggen
     const snowElements = document.querySelectorAll(
       ".catch-snow-text, .catch-snow-btn, .catch-snow-button, .catch-snow-element",
     );
@@ -68,9 +67,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const borderRadius = parseFloat(style.borderRadius) || 0;
 
       mctx.save();
-      mctx.fillStyle = "#ff0000"; // De rode kleur die de pixel-checker zoekt
-
-      // Als het element afgeronde hoeken heeft, tekenen we de exacte vorm inclusief border-radius
+      mctx.fillStyle = "#ff0000"; 
       if (borderRadius > 0) {
         mctx.beginPath();
         mctx.roundRect(
@@ -82,7 +79,6 @@ window.addEventListener("DOMContentLoaded", () => {
         );
         mctx.fill();
       } else if (el.classList.contains("catch-snow-text")) {
-        // Alleen voor pure tekst-elementen zonder achtergrond/border-radius gebruiken we je originele tekst-checker
         mctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
         mctx.textAlign = "left";
         mctx.textBaseline = "top";
@@ -137,7 +133,6 @@ window.addEventListener("DOMContentLoaded", () => {
           });
         }
       } else {
-        // Element zonder border-radius en geen pure tekst krijgt een standaard strakke rechthoek
         mctx.fillRect(rect.left, rect.top, rect.width, rect.height);
       }
       mctx.restore();
