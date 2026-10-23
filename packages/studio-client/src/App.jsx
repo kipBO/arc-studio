@@ -22,7 +22,6 @@ function formatCompactLastSeen(value) {
   return new Date(timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 const createEditorId = (prefix) => `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}_${Math.random().toString(36).slice(2)}`}`;
-const isNamespacedAdapterNodeType = (type) => typeof type === 'string' && type.includes('.');
 const SplashScreen = lazyNamed(() => import('./components/splash/SplashScreen.jsx'), 'SplashScreen');
 const NodePalette = lazyNamed(() => import('./components/palette/NodePalette.jsx'), 'NodePalette');
 const CommandPalette = lazyNamed(() => import('./components/palette/CommandPalette.jsx'), 'CommandPalette');
@@ -52,14 +51,16 @@ import { SidebarResizeHandle } from './components/ui/SidebarResizeHandle.jsx';
 import { ReleaseNotes } from './components/ui/ReleaseNotes.jsx';
 import { arcEvents } from './core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl, studioWebSocketUrl } from './core/api.js';
+import { probeInternetConnectivity } from './core/networkConnectivity.js';
 import { xhrJson } from './core/xhrJson.js';
 import { readAppStorage, removeAppStorage, writeAppStorage } from './core/storage.js';
 import { getArcUiScale } from './core/uiScale.js';
+import { isProjectVariableUpdateForActiveProject } from './core/projectVariables.js';
 import studioPackage from '../package.json';
-import { classifyArcUpdate, compareArcVersions, getArcVersionDistance } from './core/appUpdates.js';
+import { classifyArcUpdate, compareArcVersions } from './core/appUpdates.js';
 import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from './core/shortcuts.js';
 import { playUiSound, unlockUiSounds } from './core/uiSounds.js';
-import { BuiltInNodeDefinitions, createDefaultNodeData, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getSwitchCasePins, getTextTemplateSlots, registerPluginNodeDefinitions, renderTextTemplate } from './components/nodes/nodeDefinitions.js';
+import { BuiltInNodeDefinitions, BundledNodeTypes, createDefaultNodeData, getArrayCreatePins, getAvailableNodeDefinitions, getMathListPins, getNodeArgumentPins, getNodeRegistryDefinitions, getNodeTemplateInputPins, getPermissionOverwritePins, getSwitchCasePins, getTextTemplateSlots, isNodeTypeSupported, registerPluginNodeDefinitions, renderTextTemplate, setWorkspaceNodeDefinitions } from './components/nodes/nodeDefinitions.js';
 import { createEmbedBlock, embedBlockPins, getEmbedBlocks } from './components/nodes/EmbedNodeBuilder.jsx';
 import { createDefaultModal } from './components/nodes/ModalNodeBuilder.jsx';
 import { evaluateMathNode } from '../../studio-server/src/engine/MathOperations.js';
@@ -72,6 +73,7 @@ const LEGACY_EMBED_PIN_FIELDS = {
 const DEFAULT_SETTINGS = {
   snapToGrid: true,
   zoomCanvasWithScroll: false,
+  canvasRightClickPan: false,
   canvasQuality: 'auto',
   wirePulse: true,
   wireStyle: 'bezier',
@@ -80,6 +82,7 @@ const DEFAULT_SETTINGS = {
   showGrid: true,
   reduceMotion: false,
   uiScale: '100',
+  fontScale: '100',
   autoSave: true,
   autoSaveIntervalSeconds: 30,
   autoSnapshots: true,
@@ -100,14 +103,20 @@ const SIDEBAR_WIDTH_MAX = 480;
 const DEFAULT_SIDEBAR_WIDTHS = { projects: 320, library: 320, plugins: 360, bot: 360, variables: 320 };
 const APP_EMOJI_CACHE_TTL = 14 * 24 * 60 * 60 * 1000;
 const PROJECT_STARTER_ICONS = { blank: Plus, ticket: Ticket, leveling: TrendingUp, moderation: ShieldCheck, basic: Bot, utility: Braces };
-function LazyFeatureLoading({ label = 'Opening feature…' }) {
-  return <div className="studio-lazy-feature-loading" role="status" aria-live="polite"><span aria-hidden="true" />{label}</div>;
+function LazyFeatureLoading({ label = 'Opening feature…', kind = 'modal', isDesktop = false, width }) {
+  if (isDesktop) return <div className="studio-lazy-feature-loading" role="status" aria-live="polite"><span aria-hidden="true" />{label}</div>;
+  return <div className={`studio-lazy-skeleton studio-lazy-skeleton-${kind}`} role="status" aria-label={label} style={width ? { '--arc-sidebar-width': `${width}px` } : undefined}>
+    {kind === 'sidebar' ? <><div className="studio-skeleton-header"><i /><i /><i /></div><div className="studio-skeleton-tabs"><i /><i /><i /></div><div className="studio-skeleton-content"><i /><i /><i /><i /><i /><i /></div></>
+      : kind === 'editor' ? <div className="studio-skeleton-editor-lines"><i /><i /><i /><i /><i /><i /></div>
+        : kind === 'page' ? <div className="studio-skeleton-page"><i /><i /><i /><i /><i /></div>
+          : <div className="studio-skeleton-modal"><div className="studio-skeleton-header"><i /><i /><i /></div><div className="studio-skeleton-content"><i /><i /><i /><i /><i /></div></div>}
+  </div>;
 }
-function LazyMountedFeature({ Component, isOpen, loadingLabel, ...props }) {
+function LazyMountedFeature({ Component, isOpen, loadingLabel, loadingKind = 'modal', isDesktop = false, ...props }) {
   const [hasOpened, setHasOpened] = useState(isOpen);
   useEffect(() => { if (isOpen) setHasOpened(true); }, [isOpen]);
   if (!hasOpened) return null;
-  return <Suspense fallback={<LazyFeatureLoading label={loadingLabel} />}><Component {...props} isOpen={isOpen} /></Suspense>;
+  return <Suspense fallback={<LazyFeatureLoading label={loadingLabel} kind={loadingKind} isDesktop={isDesktop} width={props.sidebarWidth} />}><Component {...props} isOpen={isOpen} /></Suspense>;
 }
 const TAG_GROUP_COLORS = [
   { id: 'blue', label: 'Blue', value: '#5798ee' },
@@ -276,8 +285,9 @@ function getTemplateValuePaths(graph, node, variables) {
   for (const wire of graph.connections || []) {
     if (wire.targetNodeId !== node.id) continue;
     const argument = /^arg_(\d+)$/.exec(wire.targetPinId);
-    if (!argument) continue;
-    const root = `arg${argument[1]}`;
+    const slot = /^slot_(.+)$/.exec(wire.targetPinId);
+    if (!argument && !slot) continue;
+    const root = argument ? `arg${argument[1]}` : slot[1];
     const sample = getNodeOutputSample(nodeById.get(wire.sourceNodeId), wire.sourcePinId, variables, graph.nodes || []);
     collectTemplateValuePaths(sample, root, 0, paths);
   }
@@ -552,9 +562,7 @@ export function App() {
   const [supportedWorkspaceNodeTypes, setSupportedWorkspaceNodeTypes] = useState(null);
   const [workspaceCompatibilityNotice, setWorkspaceCompatibilityNotice] = useState('');
   const [pluginDefinitionsRevision, setPluginDefinitionsRevision] = useState(0);
-  const availableNodeDefinitions = useMemo(() => supportedWorkspaceNodeTypes
-    ? BuiltInNodeDefinitions.filter((definition) => supportedWorkspaceNodeTypes.has(definition.type))
-    : BuiltInNodeDefinitions, [pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
+  const availableNodeDefinitions = useMemo(() => getAvailableNodeDefinitions(BuiltInNodeDefinitions, supportedWorkspaceNodeTypes), [pluginDefinitionsRevision, supportedWorkspaceNodeTypes]);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine !== false);
   const [appUpdate, setAppUpdate] = useState(null);
@@ -601,6 +609,10 @@ export function App() {
   const [hasThemeChoice, setHasThemeChoice] = useState(hasSavedThemeChoice);
   const [settings, setSettings] = useState(() => readStoredJson('arc_editor_settings', { ...DEFAULT_SETTINGS, uiSounds: desktopMode }));
   const uiScale = ['80', '90', '100', '110', '120', '130', '140'].includes(String(settings.uiScale)) ? String(settings.uiScale) : '100';
+  const fontScale = ['80', '90', '100', '110', '120', '130', '140'].includes(String(settings.fontScale)) ? String(settings.fontScale) : '100';
+  useEffect(() => {
+    document.documentElement.style.setProperty('--arc-font-scale', String(Number(fontScale) / 100));
+  }, [fontScale]);
   const [isLocked, setIsLocked] = useState(() => {
     try { return readAppStorage('arc_ui_locked') === 'true'; }
     catch { return false; }
@@ -626,6 +638,7 @@ export function App() {
   const projectVariablesSaveRef = useRef({ timer: null, revision: 0 });
   const [savingProjectVariables, setSavingProjectVariables] = useState(false);
   const [projectVariables, setProjectVariables] = useState([]);
+  const [disabledBuiltInVariables, setDisabledBuiltInVariables] = useState([]);
   const [newProjectName, setNewProjectName] = useState('');
   const [projectNameInvalid, setProjectNameInvalid] = useState(false);
   const [projectNameShakeKey, setProjectNameShakeKey] = useState(0);
@@ -670,6 +683,7 @@ export function App() {
   const [projectNameManuallyEdited, setProjectNameManuallyEdited] = useState(false);
   const [isPluginStoreOpen, setIsPluginStoreOpen] = useState(false);
   const [installedPlugins, setInstalledPlugins] = useState([]);
+  const installedPluginsRef = useRef([]);
   const [isBotSettingsOpen, setIsBotSettingsOpen] = useState(false);
   const [isBotSidebarOpen, setIsBotSidebarOpen] = useState(false);
   const [commandBrowserRequest, setCommandBrowserRequest] = useState(0);
@@ -698,6 +712,7 @@ export function App() {
   const [validationResult, setValidationResult] = useState(null);
   const [botStatus, setBotStatus] = useState('DISCONNECTED');
   const [botMetrics, setBotMetrics] = useState({ latencyMs: null, averageLatencyMs: null, jitterMs: null, rateLimitedUntil: 0, rateLimitScope: null });
+  const [discordAuthWarning, setDiscordAuthWarning] = useState(null);
   const botStartPendingRef = useRef(false);
   const rateLimitAnnouncedUntilRef = useRef(0);
   const [gatewayStartedRequest, setGatewayStartedRequest] = useState(0);
@@ -808,18 +823,53 @@ export function App() {
     setProjectImportOldVersionApproved(false);
   }, [desktopFileImportBusy, desktopMode, openedProjectFiles, projectImportFile]);
   useEffect(() => {
-    const updateNetworkState = () => {
-      const online = navigator.onLine !== false;
-      setNetworkOnline(online);
-      if (!online && !localDesktopWorkspace) {
+    let active = true;
+    let probeInFlight = false;
+    let confirmedOffline = false;
+    let probeGeneration = 0;
+    const updateNetworkState = async () => {
+      if (navigator.onLine !== false) {
+        probeGeneration += 1;
+        confirmedOffline = false;
+        setNetworkOnline(true);
+        return;
+      }
+      setNetworkOnline(false);
+      if (localDesktopWorkspace || probeInFlight || confirmedOffline) return;
+      probeInFlight = true;
+      const generation = ++probeGeneration;
+      const reachable = await probeInternetConnectivity();
+      probeInFlight = false;
+      if (!active) return;
+      if (generation !== probeGeneration) {
+        if (navigator.onLine === false) void updateNetworkState();
+        return;
+      }
+      if (reachable) {
+        setNetworkOnline(true);
+        return;
+      }
+      confirmedOffline = true;
+      setNetworkOnline(false);
+      {
         const socket = wsRef.current;
         if (socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(socket.readyState)) socket.close(4000, 'Network unavailable');
       }
+      arcEvents.emit('toast:notify', {
+        id: 'arc-offline-signout',
+        title: 'Signed out',
+        message: 'ARC Studio could not reach the internet. Sign in again when your connection is restored.',
+        type: 'warning',
+        duration: 6000
+      });
+      forceSignOutRef.current?.();
     };
     window.addEventListener('online', updateNetworkState);
     window.addEventListener('offline', updateNetworkState);
-    updateNetworkState();
+    void updateNetworkState();
     return () => {
+      active = false;
+      probeGeneration += 1;
       window.removeEventListener('online', updateNetworkState);
       window.removeEventListener('offline', updateNetworkState);
     };
@@ -1546,33 +1596,53 @@ export function App() {
       .then(async (system) => {
         if (cancelled) return;
         if (typeof system.isSetupCompleted !== 'boolean') throw new Error('Workspace returned an invalid status response.');
-        if (desktopMode && workspaceMode === 'remote') {
-          const serverVersion = String(system.version || '').trim();
-          const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
-          const versionDistance = getArcVersionDistance(serverVersion, studioPackage.version);
-          if (versionOrder === null || versionDistance === null) throw new Error('This workspace does not report a version ARC Studio can verify.');
-          if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app. Update the workspace server before connecting.`);
-          if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app. Update the desktop app before connecting.`);
-          let serverNodeTypes = system.supportedNodeTypes;
-          let serverAdapterNodeTypes = new Set();
+        const serverVersion = String(system.version || '').trim();
+        const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
+        let serverNodeTypes = Array.isArray(system.supportedNodeTypes) ? system.supportedNodeTypes : null;
+        let hasWorkspaceSchemas = false;
+        let registryLoadIssue = '';
+        try {
           const registryResponse = await fetch(apiUrl('/api/nodes/registry'), { signal: controller.signal, cache: 'no-store' });
-          const registry = registryResponse.ok ? await registryResponse.json().catch(() => null) : null;
-          const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
-          if (definitions?.length) {
-            serverNodeTypes = definitions.map((definition) => definition?.type);
-            serverAdapterNodeTypes = new Set(definitions.filter((definition) => definition?.pluginAdapter === true).map((definition) => definition.type));
+          if (registryResponse.ok) {
+            const registry = await registryResponse.json();
+            const definitions = getNodeRegistryDefinitions(registry);
+            if (definitions) {
+              setWorkspaceNodeDefinitions(definitions);
+              registerPluginNodeDefinitions(installedPluginsRef.current);
+              serverNodeTypes = definitions.map((definition) => definition.type);
+              setPluginDefinitionsRevision((revision) => revision + 1);
+              hasWorkspaceSchemas = true;
+            } else {
+              registryLoadIssue = 'Workspace node schemas are unavailable or use an unsupported schema version.';
+            }
+          } else {
+            registryLoadIssue = `Workspace node schemas returned HTTP ${registryResponse.status}.`;
           }
-          if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
+        } catch (error) {
+          if (error.name === 'AbortError' && cancelled) return;
+          registryLoadIssue = `Workspace node schemas could not be loaded${error?.message ? `: ${error.message}` : '.'}`;
+        }
+        if (!hasWorkspaceSchemas) {
+          setWorkspaceNodeDefinitions(null);
+          registerPluginNodeDefinitions(installedPluginsRef.current);
+          setPluginDefinitionsRevision((revision) => revision + 1);
+        }
+        if (serverNodeTypes?.length && serverNodeTypes.every((type) => typeof type === 'string')) {
           const serverNodeTypeSet = new Set(serverNodeTypes);
-          const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
-          const unsupportedCount = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type) && !serverAdapterNodeTypes.has(type) && !isNamespacedAdapterNodeType(type)).length;
-          if (unsupportedCount) throw new Error(`This workspace uses ${unsupportedCount} node feature${unsupportedCount === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
-          const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
           setSupportedWorkspaceNodeTypes(serverNodeTypeSet);
-          setWorkspaceCompatibilityNotice(hiddenCount
-            ? `${hiddenCount} node type${hiddenCount === 1 ? ' is' : 's are'} hidden because this workspace does not support ${hiddenCount === 1 ? 'it' : 'them'}.`
-            : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}; some server features may be unavailable.`
-              : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}; some features may not be available in this desktop app.` : '');
+          const workspaceOnlyNodeCount = hasWorkspaceSchemas ? [...serverNodeTypeSet].filter((type) => !BundledNodeTypes.has(type)).length : 0;
+          setWorkspaceCompatibilityNotice(workspaceOnlyNodeCount
+            ? `${workspaceOnlyNodeCount} workspace node type${workspaceOnlyNodeCount === 1 ? '' : 's'} use server-provided schemas and generic editors. Node behavior runs on the workspace server.`
+            : registryLoadIssue ? `${registryLoadIssue} The bundled node schemas will be used.`
+            : versionOrder === null ? 'Connected using workspace-provided node support metadata.'
+              : versionOrder < 0 ? `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`
+                : versionOrder > 0 ? `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.` : '');
+        } else {
+          setWorkspaceNodeDefinitions(null);
+          setSupportedWorkspaceNodeTypes(null);
+          setWorkspaceCompatibilityNotice(desktopMode && workspaceMode === 'remote'
+            ? `Connected to workspace version ${serverVersion || 'unknown'}. ${registryLoadIssue || 'Its node registry is unavailable.'} This client will use its bundled node schemas.`
+            : registryLoadIssue);
         }
         if (typeof system.version === 'string' && system.version.trim()) setStudioServerVersion(system.version.trim());
         setTransientCanvasMotionSupported(system.collaborationFeatures?.transientCanvasMotion === true);
@@ -1645,11 +1715,14 @@ export function App() {
   }, [workspaceRevision, workspaceMode, desktopMode, localSessionRestoreReady, authToken]);
 
   useEffect(() => {
-    if (!authToken) { setProjectVariables([]); return undefined; }
+    if (!authToken) { setProjectVariables([]); setDisabledBuiltInVariables([]); return undefined; }
     let cancelled = false;
     fetch(apiUrl('/api/variables/project'), { headers: { 'x-arc-token': authToken } })
       .then((response) => response.json())
-      .then((data) => { if (!cancelled && Array.isArray(data.variables)) setProjectVariables(data.variables); })
+      .then((data) => {
+        if (!cancelled && Array.isArray(data.variables)) setProjectVariables(data.variables);
+        if (!cancelled && Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [authToken, activeProjectId, workspaceRevision, workspaceMode]);
@@ -1667,21 +1740,29 @@ export function App() {
   useEffect(() => {
     if (!authToken) {
       registerPluginNodeDefinitions([]);
+      installedPluginsRef.current = [];
       setInstalledPlugins([]);
       setPluginDefinitionsRevision((revision) => revision + 1);
       return undefined;
     }
     let cancelled = false;
     fetch(apiUrl('/api/plugins/installed'), { headers: { 'x-arc-token': authToken } })
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error(`Workspace returned HTTP ${response.status}.`);
+        return response.json();
+      })
       .then((data) => {
         if (cancelled) return;
-        const plugins = Array.isArray(data.plugins) ? data.plugins : [];
+        if (!Array.isArray(data.plugins)) throw new Error('Workspace returned an invalid installed plugin list.');
+        const plugins = data.plugins;
+        installedPluginsRef.current = plugins;
         setInstalledPlugins(plugins);
         registerPluginNodeDefinitions(plugins);
         setPluginDefinitionsRevision((revision) => revision + 1);
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (!cancelled) arcEvents.emit('toast:notify', { title: 'Plugin nodes could not be loaded', message: error.message || 'Could not load installed plugin definitions from this workspace.', type: 'warning' });
+      });
     return () => { cancelled = true; };
   }, [authToken, workspaceRevision, workspaceMode]);
 
@@ -1951,6 +2032,7 @@ export function App() {
             setBotStatus(msg.payload.botStatus || 'DISCONNECTED');
             setBotMetrics(msg.payload.botMetrics || { latencyMs: null, averageLatencyMs: null, jitterMs: null, rateLimitedUntil: 0, rateLimitScope: null });
             setBotProfile(msg.payload.botProfile || null);
+            setDiscordAuthWarning(msg.payload.discordAuthWarning || null);
             setLogs(msg.payload.logs || []);
             if (msg.payload.graphLibrary) {
               setGraphTemplates(msg.payload.graphLibrary.templates || []);
@@ -1998,6 +2080,10 @@ export function App() {
                 setActiveTabId(preferredId);
               }
             }
+          } else if (msg.type === 'GRAPH_LIBRARY_UPDATED' && msg.payload) {
+            if (Array.isArray(msg.payload.templates)) setGraphTemplates(msg.payload.templates);
+            if (Array.isArray(msg.payload.snapshots)) setGraphSnapshots(msg.payload.snapshots);
+            if (typeof msg.payload.defaultGraphId === 'string') setDefaultGraphId(msg.payload.defaultGraphId);
           } else if (msg.type === 'PROJECTS_UPDATED') {
             const payload = msg.payload || {};
             const nextProjects = Array.isArray(payload.projects) ? payload.projects : [];
@@ -2008,6 +2094,7 @@ export function App() {
             const payload = msg.payload || {};
             const nextProjects = Array.isArray(payload.projects) ? payload.projects : [];
             const nextProjectId = payload.activeProjectId || '';
+            activeProjectIdRef.current = nextProjectId;
             setProjects(nextProjects);
             setMaxProjects(localDesktopWorkspace ? null : payload.maxProjects === undefined ? 10 : payload.maxProjects);
             setActiveProjectId(nextProjectId);
@@ -2024,6 +2111,7 @@ export function App() {
             setGraphSnapshots(payload.graphLibrary?.snapshots || []);
             setDefaultGraphId(payload.graphLibrary?.defaultGraphId ?? '');
             setBotProfile(payload.botProfile || null);
+            setDiscordAuthWarning(payload.discordAuthWarning || null);
             setBotStatus('DISCONNECTED');
             setTabs([]);
             setActiveTabId(null);
@@ -2054,6 +2142,7 @@ export function App() {
             }
             setWorkspaceRevision((revision) => revision + 1);
           } else if (msg.type === 'PROJECT_VARIABLES_UPDATED') {
+            if (!isProjectVariableUpdateForActiveProject(msg.payload, activeProjectIdRef.current)) return;
             setProjectVariables(Array.isArray(msg.payload.variables) ? msg.payload.variables : []);
           } else if (msg.type === 'NOTE_EDIT_LOCKS_UPDATED') {
             const payload = msg.payload || {};
@@ -2402,6 +2491,7 @@ export function App() {
           } else if (msg.type === 'BOT_STATUS') {
             setBotStatus(msg.payload.status);
             if (msg.payload.user) setBotProfile((profile) => ({ ...profile, ...msg.payload.user }));
+            if (Object.prototype.hasOwnProperty.call(msg.payload, 'discordAuthWarning')) setDiscordAuthWarning(msg.payload.discordAuthWarning || null);
           } else if (msg.type === 'BOT_METRICS') {
             const rateLimitedUntil = Number(msg.payload?.rateLimitedUntil) || 0;
             if (rateLimitedUntil > Date.now() && rateLimitedUntil > rateLimitAnnouncedUntilRef.current) {
@@ -2835,19 +2925,45 @@ export function App() {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'Could not save project variables.');
-        if (projectVariablesSaveRef.current.revision === revision && activeProjectIdRef.current === projectId) setProjectVariables(Array.isArray(data.variables) ? data.variables : nextVariables);
+        if (projectVariablesSaveRef.current.revision === revision && activeProjectIdRef.current === projectId) {
+          setProjectVariables(Array.isArray(data.variables) ? data.variables : nextVariables);
+          if (Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
+        }
       } catch (error) {
         if (projectVariablesSaveRef.current.revision !== revision || activeProjectIdRef.current !== projectId) return;
         arcEvents.emit('toast:notify', { title: 'Project variables not saved', message: error.message, type: 'error' });
         try {
           const response = await fetch(apiUrl('/api/variables/project'), { headers: { 'x-arc-token': authToken } });
           const data = await response.json();
-          if (response.ok && activeProjectIdRef.current === projectId && Array.isArray(data.variables)) setProjectVariables(data.variables);
+          if (response.ok && activeProjectIdRef.current === projectId && Array.isArray(data.variables)) {
+            setProjectVariables(data.variables);
+            if (Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
+          }
         } catch {}
       } finally {
         if (projectVariablesSaveRef.current.revision === revision) setSavingProjectVariables(false);
       }
     }, 220);
+  }, [authToken, activeProjectId]);
+
+  const handleRestoreSystemVariable = useCallback(async (name) => {
+    if (!authToken || !activeProjectId) return false;
+    try {
+      const response = await fetch(apiUrl('/api/variables/project/restore-builtin'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ name })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Could not restore system variable.');
+      if (Array.isArray(data.variables)) setProjectVariables(data.variables);
+      if (Array.isArray(data.disabledBuiltInVariables)) setDisabledBuiltInVariables(data.disabledBuiltInVariables);
+      arcEvents.emit('toast:notify', { title: 'System variable restored', message: `${name} is now restored and active.`, type: 'success' });
+      return true;
+    } catch (error) {
+      arcEvents.emit('toast:notify', { title: 'Could not restore system variable', message: error.message, type: 'error' });
+      return false;
+    }
   }, [authToken, activeProjectId]);
 
   useEffect(() => () => window.clearTimeout(projectVariablesSaveRef.current.timer), [activeProjectId, workspaceRevision, authToken]);
@@ -3224,17 +3340,49 @@ export function App() {
   }, [authToken]);
 
   const handleSetDefaultGraph = useCallback(async (graph) => {
-    if (!authToken) return;
+    if (!authToken || !graph) return;
+    const isCurrentDefault = defaultGraphId === graph.id;
     try {
-      const res = await fetch(apiUrl('/api/graphs/default'), { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphId: graph.id }) });
+      if (isCurrentDefault) {
+        if (graph.id === 'tab_slash_help') {
+          arcEvents.emit('toast:notify', { title: 'Default active', message: 'New graphs already use the standard slash command starter.', type: 'info' });
+          return;
+        }
+        const res = await fetch(apiUrl('/api/graphs/default'), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+          body: JSON.stringify({ graphId: 'tab_slash_help' })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Could not reset the default graph.');
+        setDefaultGraphId(data.defaultGraphId || 'tab_slash_help');
+        arcEvents.emit('toast:notify', { title: 'Default removed', message: 'Restored the standard slash command graph for new graphs.', type: 'info' });
+        return;
+      }
+
+      let targetGraphId = graph.id;
+      const isSaved = savedGraphs.some((saved) => saved.id === graph.id) || graphTemplates.some((t) => t.id === graph.id);
+      if (!isSaved) {
+        const saved = await persistGraph(graph);
+        if (!saved) return;
+        targetGraphId = saved.id;
+      } else if (graph.isDirty) {
+        await persistGraph(graph);
+      }
+
+      const res = await fetch(apiUrl('/api/graphs/default'), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken },
+        body: JSON.stringify({ graphId: targetGraphId })
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not change the default graph.');
       setDefaultGraphId(data.defaultGraphId);
-      arcEvents.emit('toast:notify', { title: 'Default updated', message: `${graph.name} will be used for new graphs.`, type: 'success' });
+      arcEvents.emit('toast:notify', { title: 'Default updated', message: `${graph.name || 'Graph'} will be used for new graphs.`, type: 'success' });
     } catch (error) {
       arcEvents.emit('toast:notify', { title: 'Default update failed', message: error.message, type: 'error' });
     }
-  }, [authToken]);
+  }, [authToken, defaultGraphId, graphTemplates, persistGraph, savedGraphs]);
 
   const handleCloseTab = useCallback((id) => {
     const closingGraph = tabs.find((tab) => tab.id === id);
@@ -3333,22 +3481,55 @@ export function App() {
   }, [authToken, handleOpenGraph]);
   desktopGraphImportHandlerRef.current = handleImportGraph;
 
-  const handleDeleteSavedGraph = useCallback(async (graph) => {
-    if (!authToken) return;
-    try {
-      const res = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}`), { method: 'DELETE', headers: { 'x-arc-token': authToken } });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not delete saved graph.');
-      setSavedGraphs((previous) => previous.filter((item) => item.id !== graph.id));
-      setDefaultGraphId(data.defaultGraphId || 'tab_slash_help');
-      const remaining = tabs.filter((tab) => tab.id !== graph.id);
-      setTabs(remaining);
-      if (activeTabId === graph.id) setActiveTabId(remaining[0]?.id || null);
-      arcEvents.emit('toast:notify', { title: 'Graph deleted', message: graph.name || 'Untitled graph', type: 'success' });
-    } catch (error) {
-      arcEvents.emit('toast:notify', { title: 'Delete failed', message: error.message, type: 'error' });
+  const handleDeleteSavedGraphs = useCallback(async (graphs) => {
+    const targets = [...new Map(graphs.filter((graph) => graph?.id).map((graph) => [graph.id, graph])).values()];
+    if (!authToken || !targets.length) return;
+    const names = targets.slice(0, 3).map((graph) => graph.name || 'Untitled graph').join(', ');
+    const extra = targets.length > 3 ? ` and ${targets.length - 3} more` : '';
+    const confirmation = targets.length === 1
+      ? `Delete “${names}” from the Library? This cannot be undone.`
+      : `Delete these ${targets.length} saved graphs from the Library? ${names}${extra}. This cannot be undone.`;
+    if (!window.confirm(confirmation)) return;
+
+    const deletedIds = [];
+    let nextDefaultGraphId = null;
+    let deleteError = null;
+    for (const graph of targets) {
+      try {
+        const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}`), { method: 'DELETE', headers: { 'x-arc-token': authToken } });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Could not delete ${graph.name || 'saved graph'}.`);
+        deletedIds.push(graph.id);
+        nextDefaultGraphId = data.defaultGraphId || 'tab_slash_help';
+      } catch (error) {
+        deleteError = error;
+        break;
+      }
     }
+
+    if (deletedIds.length) {
+      const deleted = new Set(deletedIds);
+      setSavedGraphs((previous) => previous.filter((graph) => !deleted.has(graph.id)));
+      setDefaultGraphId(nextDefaultGraphId || 'tab_slash_help');
+      const remaining = tabs.filter((tab) => !deleted.has(tab.id));
+      setTabs(remaining);
+      if (deleted.has(activeTabId)) setActiveTabId(remaining[0]?.id || null);
+    }
+
+    if (deleteError) {
+      const message = deletedIds.length
+        ? `${deletedIds.length} graph${deletedIds.length === 1 ? '' : 's'} deleted. ${deleteError.message}`
+        : deleteError.message;
+      arcEvents.emit('toast:notify', { title: 'Delete incomplete', message, type: 'error' });
+      return;
+    }
+    arcEvents.emit('toast:notify', {
+      title: targets.length === 1 ? 'Graph deleted' : 'Graphs deleted',
+      message: targets.length === 1 ? names : `${deletedIds.length} graphs removed from the Library`,
+      type: 'success'
+    });
   }, [activeTabId, authToken, tabs]);
+  const handleDeleteSavedGraph = useCallback((graph) => handleDeleteSavedGraphs([graph]), [handleDeleteSavedGraphs]);
 
   const handleExportBot = useCallback(async (projectId = activeProjectId, skipReview = false, exportOptions = {}) => {
     if (!authToken || exportInFlightRef.current) return;
@@ -3374,8 +3555,23 @@ export function App() {
         if (['action_send_message', 'action_edit_message'].includes(node.type)) {
           permissions.add('View Channels');
           permissions.add('Send Messages');
+          if (node.type === 'action_send_message' && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) permissions.add('Send Messages in Threads');
           if (node.data?.embed || node.data?.blocks?.length || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')) permissions.add('Embed Links');
           if (node.data?.files?.length || graph.connections?.some((wire) => ['files', 'file_data'].includes(wire.targetPinId) && wire.targetNodeId === node.id)) permissions.add('Attach Files');
+        }
+        if (node.type === 'action_create_thread') {
+          permissions.add('View Channels');
+          const typeIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type');
+          const threadType = String(node.data?.thread_type || 'public').toLowerCase();
+          if (typeIsWired || !['public', 'private'].includes(threadType)) {
+            permissions.add('Create Public Threads');
+            permissions.add('Create Private Threads');
+          } else permissions.add(threadType === 'private' ? 'Create Private Threads' : 'Create Public Threads');
+        }
+        if (node.type === 'action_start_thread_from_message') {
+          permissions.add('View Channels');
+          permissions.add('Send Messages');
+          permissions.add('Create Public Threads');
         }
         if (['action_create_channel', 'action_edit_channel', 'action_delete_channel', 'action_voice_channel_status'].includes(node.type)) permissions.add('Manage Channels');
         if (['action_create_role', 'action_member_role'].includes(node.type)) permissions.add('Manage Roles');
@@ -3532,7 +3728,7 @@ export function App() {
   const makeNode = useCallback((type, position = null, data = null, label = null) => {
     const definition = BuiltInNodeDefinitions.find((item) => item.type === type);
     if (!definition) return null;
-    if (supportedWorkspaceNodeTypes && !supportedWorkspaceNodeTypes.has(type)) return null;
+    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return null;
     const nodeData = data ? structuredClone(data) : createDefaultNodeData(type);
     if (type === 'function_input' && data) nodeData.paramId = `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
     if (['variable_get', 'variable_set'].includes(type) && !availableVariables.some((variable) => variable.id === nodeData.variableId)) nodeData.variableId = '';
@@ -3563,7 +3759,7 @@ export function App() {
   }, [activeNodes, activeTabId, handleNodesChange, recordHistory]);
 
   const handlePlaceNode = useCallback((type, position = null) => {
-    if (supportedWorkspaceNodeTypes && !supportedWorkspaceNodeTypes.has(type)) return;
+    if (!isNodeTypeSupported(type, supportedWorkspaceNodeTypes)) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const center = position || paletteNodePosition || viewportCenterRef.current;
@@ -3582,7 +3778,7 @@ export function App() {
     const requestedTypes = payload?.type === 'multi-node'
       ? payload.nodeTypes || []
       : [payload?.type === 'graph-call' ? 'function_call' : payload?.type === 'prefab' ? nodePrefabs.find((item) => item.id === payload.prefabId)?.node?.type : payload?.type === 'embed-asset' ? 'build_embed' : payload?.type === 'variable-get' ? 'variable_get' : payload?.nodeType].filter(Boolean);
-    if (supportedWorkspaceNodeTypes && !requestedTypes.some((type) => supportedWorkspaceNodeTypes.has(type))) return;
+    if (requestedTypes.length && !requestedTypes.some((type) => isNodeTypeSupported(type, supportedWorkspaceNodeTypes))) return;
     const targetGraph = activeGraph || handleAddBlankGraph();
     if (!targetGraph) return;
     const placement = position || nodeTopLeftAtCenter(
@@ -3667,6 +3863,7 @@ export function App() {
       graphId,
       collabId,
       route,
+      readOnly: Boolean(routeOverride?.readOnly || route?.readOnly),
       nodeId: node?.id || null,
       fieldKey,
       label,
@@ -3681,12 +3878,13 @@ export function App() {
     });
   }, [activeGraph, activeConnections, activeNodes, activeProjectId, availableVariables, embedStudio]);
 
-  const openVariableTextEditor = useCallback((variable, scope) => {
+  const openVariableTextEditor = useCallback((variable, scope, isReadOnly = false) => {
     const targetGraphId = activeTabId;
     setVariableScope(scope === 'graph' ? 'graph' : 'project');
     const structured = variable.type === 'array' || variable.type === 'object';
     const initialValue = structured ? JSON.stringify(variable.initialValue ?? (variable.type === 'array' ? [] : {}), null, 2) : String(variable.initialValue ?? '');
     const applyValue = (text) => {
+      if (isReadOnly) return true;
       let initialValue = text;
       if (structured) {
         try {
@@ -3710,7 +3908,7 @@ export function App() {
       return true;
     };
     openDiscordTextStudio(null, null, `${variable.name}${structured ? ' · JSON' : ''}`, initialValue, 12000, applyValue, '', null, {
-      kind: 'text-variable', scope, variableId: variable.id, label: `${variable.name}${structured ? ' · JSON' : ''}`, maxLength: 12000
+      kind: 'text-variable', scope, variableId: variable.id, label: `${variable.name}${structured ? ' · JSON' : ''}`, maxLength: 12000, readOnly: isReadOnly
     });
   }, [activeTabId, handleProjectVariablesChange, handleVariablesChange, openDiscordTextStudio, projectVariables, tabs]);
 
@@ -3883,14 +4081,14 @@ export function App() {
         }
         initialBlocks = migratedBlocks;
       }
-      const blockPins = embedBlockPins(initialBlocks);
+      const blockPins = embedBlockPins(initialBlocks, availableVariables);
       const sourcePinLabel = (wire) => {
         const sourceNode = activeNodes.find((item) => item.id === wire.sourceNodeId);
         if (!sourceNode) return wire.sourcePinId;
         if (sourceNode.type === 'variable_get') return availableVariables.find((variable) => variable.id === sourceNode.data?.variableId)?.name || 'Value';
         if (sourceNode.type === 'function_input') return sourceNode.data?.name || 'Value';
         const sourceDefinition = BuiltInNodeDefinitions.find((item) => item.type === sourceNode.type);
-        const dynamicPins = sourceNode.type === 'build_embed' ? embedBlockPins(getEmbedBlocks(sourceNode.data || {})) : [];
+        const dynamicPins = sourceNode.type === 'build_embed' ? embedBlockPins(getEmbedBlocks(sourceNode.data || {}), availableVariables) : [];
         return [...(sourceDefinition?.outputs || []), ...dynamicPins].find((pin) => pin.id === wire.sourcePinId)?.label || wire.sourcePinId;
       };
       const makeToken = (label) => {
@@ -4968,6 +5166,10 @@ export function App() {
     window.clearTimeout(collaborationActionTimerRef.current);
     collaborationActionTimerRef.current = null;
     setWorkspaceMode(mode);
+    installedPluginsRef.current = [];
+    setInstalledPlugins([]);
+    registerPluginNodeDefinitions([]);
+    setPluginDefinitionsRevision((revision) => revision + 1);
     setTransientCanvasMotionSupported(false);
     setSupportedWorkspaceNodeTypes(null);
     setWorkspaceCompatibilityNotice('');
@@ -5012,34 +5214,37 @@ export function App() {
       let compatibilityNotice = '';
       let supportedNodeTypes = null;
       if (desktopMode) {
+        setWorkspaceNodeDefinitions(null);
+        setPluginDefinitionsRevision((revision) => revision + 1);
         const serverVersion = String(status.version || '').trim();
         const versionOrder = compareArcVersions(serverVersion, studioPackage.version);
-        const versionDistance = getArcVersionDistance(serverVersion, studioPackage.version);
-        if (versionOrder === null || versionDistance === null) throw new Error('This workspace does not report a version ARC Studio can verify. Update its server or use a compatible desktop build.');
-        if (versionOrder < 0 && versionDistance > 5) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than five releases behind this desktop app (${studioPackage.version}). Update the workspace server before connecting.`);
-        if (versionOrder > 0 && versionDistance > 2) throw new Error(`This workspace runs ARC Studio ${serverVersion}, more than two releases newer than this desktop app (${studioPackage.version}). Update the desktop app before connecting.`);
-        let serverNodeTypes = status.supportedNodeTypes;
-        let serverAdapterNodeTypes = new Set();
-        const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
-        if (registryResponse.ok) {
-          const registry = await registryResponse.json().catch(() => null);
-          const definitions = Array.isArray(registry?.definitions) ? registry.definitions : registry?.definitions && typeof registry.definitions === 'object' ? Object.values(registry.definitions) : null;
-          if (definitions?.length) {
-            serverNodeTypes = definitions.map((definition) => definition?.type);
-            serverAdapterNodeTypes = new Set(definitions.filter((definition) => definition?.pluginAdapter === true).map((definition) => definition.type));
+        let serverNodeTypes = Array.isArray(status.supportedNodeTypes) ? status.supportedNodeTypes : null;
+        let registryLoaded = false;
+        try {
+          const registryResponse = await fetch(`${url}/api/nodes/registry`, { signal: controller.signal, cache: 'no-store' });
+          if (registryResponse.ok) {
+            const registry = await registryResponse.json();
+            const definitions = getNodeRegistryDefinitions(registry);
+            if (definitions) {
+              const workspaceOnlyTypes = definitions.filter((definition) => !BundledNodeTypes.has(definition.type));
+              setWorkspaceNodeDefinitions(definitions);
+              registerPluginNodeDefinitions(installedPluginsRef.current);
+              setPluginDefinitionsRevision((revision) => revision + 1);
+              serverNodeTypes = definitions.map((definition) => definition.type);
+              registryLoaded = true;
+              if (workspaceOnlyTypes.length) compatibilityNotice = `${workspaceOnlyTypes.length} workspace node type${workspaceOnlyTypes.length === 1 ? '' : 's'} use server-provided schemas and generic editors. Node behavior runs on the workspace server.`;
+            }
           }
+        } catch (error) {
+          compatibilityNotice = `Could not load this workspace's node schemas${error?.message ? `: ${error.message}` : '.'} The bundled node catalog will be used.`;
         }
-        if (!Array.isArray(serverNodeTypes) && !registryResponse.ok) throw new Error('Could not check which node features this workspace supports. Update the workspace server or use the matching desktop version.');
-        if (!Array.isArray(serverNodeTypes) || !serverNodeTypes.length || !serverNodeTypes.every((type) => typeof type === 'string')) throw new Error('This workspace did not provide a valid node compatibility list. Update the workspace server before connecting.');
-        const serverNodeTypeSet = new Set(serverNodeTypes);
-        const clientNodeTypes = new Set(BuiltInNodeDefinitions.map((definition) => definition.type));
-        const unsupported = [...serverNodeTypeSet].filter((type) => !clientNodeTypes.has(type) && !serverAdapterNodeTypes.has(type) && !isNamespacedAdapterNodeType(type));
-        if (unsupported.length) throw new Error(`This workspace uses ${unsupported.length} node feature${unsupported.length === 1 ? '' : 's'} this desktop app does not support. Update the desktop app before connecting.`);
-        const hiddenCount = BuiltInNodeDefinitions.filter((definition) => !definition.hidden && !serverNodeTypeSet.has(definition.type)).length;
-        supportedNodeTypes = serverNodeTypeSet;
-        if (hiddenCount) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. ${hiddenCount} node type${hiddenCount === 1 ? ' is' : 's are'} hidden because this workspace does not support ${hiddenCount === 1 ? 'it' : 'them'}.`;
-        else if (versionOrder < 0) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. Some server features may be unavailable in this desktop app.`;
-        else if (versionOrder > 0) compatibilityNotice = `Connected to ARC Studio ${serverVersion}. Some features may not be available in this desktop app.`;
+        if (!registryLoaded && !compatibilityNotice) compatibilityNotice = 'This workspace does not provide node schemas. The bundled node catalog will be used.';
+        if (Array.isArray(serverNodeTypes) && serverNodeTypes.length && serverNodeTypes.every((type) => typeof type === 'string')) {
+          supportedNodeTypes = new Set(serverNodeTypes);
+        }
+        if (!compatibilityNotice && versionOrder === null) compatibilityNotice = 'Connected to a workspace with an unrecognized version. Compatibility is based on the available node schema.';
+        else if (!compatibilityNotice && versionOrder < 0) compatibilityNotice = `Connected to older workspace version ${serverVersion}. Node behavior runs on the workspace server.`;
+        else if (!compatibilityNotice && versionOrder > 0) compatibilityNotice = `Connected to newer workspace version ${serverVersion}. Some editor-specific controls may not be available.`;
       }
       const name = (typeof status.workspaceName === 'string' && status.workspaceName.trim() ? status.workspaceName.trim() : new URL(url).host).slice(0, 35);
       setRemoteWorkspaceName(name);
@@ -5393,10 +5598,34 @@ export function App() {
 
   const handlePluginsChanged = async () => {
     const pluginsResponse = await fetch(apiUrl('/api/plugins/installed'), { headers: { 'x-arc-token': authToken } });
+    if (!pluginsResponse.ok) throw new Error(`Could not refresh installed plugins. Workspace returned HTTP ${pluginsResponse.status}.`);
     const pluginsData = await pluginsResponse.json();
     const installed = Array.isArray(pluginsData.plugins) ? pluginsData.plugins : [];
-    setInstalledPlugins(installed);
+    const registryResponse = await fetch(apiUrl('/api/nodes/registry'), {
+      headers: { 'x-arc-token': authToken },
+      cache: 'no-store'
+    });
+    if (registryResponse.ok) {
+      const registry = await registryResponse.json();
+      const definitions = getNodeRegistryDefinitions(registry);
+      if (definitions) {
+        setWorkspaceNodeDefinitions(definitions);
+        registerPluginNodeDefinitions(installed);
+      }
+      else if (registry?.schemaVersion === 1) throw new Error('Workspace returned an invalid node registry after the plugin change.');
+      else {
+        setWorkspaceNodeDefinitions(null);
+        registerPluginNodeDefinitions(installed);
+      }
+    } else if (registryResponse.status === 404) {
+      setWorkspaceNodeDefinitions(null);
+      registerPluginNodeDefinitions(installed);
+    } else {
+      throw new Error(`Could not refresh workspace node schemas after the plugin change. Workspace returned HTTP ${registryResponse.status}.`);
+    }
+    installedPluginsRef.current = installed;
     registerPluginNodeDefinitions(installed);
+    setInstalledPlugins(installed);
     setPluginDefinitionsRevision((revision) => revision + 1);
     const response = await fetch(apiUrl('/api/graphs'), { headers: { 'x-arc-token': authToken } });
     const data = await response.json();
@@ -5418,8 +5647,8 @@ export function App() {
 
   if (workspaceSwitchOpen || needsSetup || needsProjectOnboarding || !authToken || !currentUser) {
     return (
-      <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
-        <Suspense fallback={<LazyFeatureLoading label="Loading ARC Studio…" />}><SplashScreen
+      <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-font-scale={fontScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100, '--arc-font-scale': Number(fontScale) / 100 }}>
+        <Suspense fallback={<LazyFeatureLoading label="Loading ARC Studio…" kind="page" isDesktop={desktopMode} />}><SplashScreen
           studioVersion={studioVersion}
           releaseChannel={currentUpdateChannel}
           needsSetup={needsSetup}
@@ -5460,7 +5689,7 @@ export function App() {
   }
 
   return (
-    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}${remoteWorkspaceBlocked ? ' workspace-paused' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100 }}>
+    <div className={`app-root ${macOSDesktop ? 'is-macos' : ''}`} data-theme={theme} data-release-channel={currentUpdateChannel} data-ui-scale={uiScale} data-font-scale={fontScale} data-compact-context={settings.compactContextMenus ? 'true' : undefined} data-reduce-motion={settings.reduceMotion ? 'true' : undefined} onContextMenu={(event) => { if (desktopMode) event.preventDefault(); }} style={{ '--arc-ui-scale': Number(uiScale) / 100, '--arc-font-scale': Number(fontScale) / 100 }}>
       <div className="app-client-surface">
       <TopBar
         tabs={tabs}
@@ -5473,6 +5702,7 @@ export function App() {
         networkOnline={networkOnline}
         botProfile={botProfile}
         currentUser={currentUser}
+        localWorkspace={localDesktopWorkspace}
         isLocked={isLocked || !canWriteGraphs}
         onToggleLock={canWriteGraphs ? handleToggleLock : undefined}
         onSelectTab={(graphId) => { setFollowCollaboratorRequest(null); setActiveTabId(graphId); rememberUserGraph(graphId); }}
@@ -5490,6 +5720,8 @@ export function App() {
         onCloseTab={handleCloseTab}
         onRenameGraph={handleRenameGraph}
         onDuplicateGraph={handleDuplicateGraph}
+        onSetDefault={handleSetDefaultGraph}
+        defaultGraphId={defaultGraphId}
         onSaveGraph={handleSaveGraph}
         onUndo={handleUndo}
         onRedo={handleRedo}
@@ -5547,13 +5779,14 @@ export function App() {
           }}
           aria-label="Graph editor"
         >
-          <Suspense fallback={<LazyFeatureLoading label="Opening editor…" />}>
+          <Suspense fallback={<LazyFeatureLoading label="Opening editor…" kind="editor" isDesktop={desktopMode} />}>
           {embedStudioOpenForActiveGraph && <EmbedStudioView
             key={`${embedStudio.graphId}:${embedStudio.nodeId || embedStudio.id || 'new'}`}
             name={embedStudio.name}
             content={embedStudio.content || ''}
             blocks={embedStudio.blocks}
             wiredFields={embedStudio.wiredFields || {}}
+            hasParentNode={Boolean(embedStudio.nodeId)}
             components={embedStudio.components || []}
             componentsOnly={embedStudio.mode === 'components-node'}
             initialTab={embedStudio.route?.tab}
@@ -5591,6 +5824,7 @@ export function App() {
             key={discordTextStudio.collabId}
             label={discordTextStudio.label}
             value={discordTextStudio.value}
+            readOnly={Boolean(discordTextStudio.readOnly)}
             sharedDraft={discordTextStudio.sharedDraft}
             maxLength={discordTextStudio.maxLength}
             appEmojis={appEmojis}
@@ -5647,6 +5881,7 @@ export function App() {
           </Suspense>
 
           {!embedStudioOpenForActiveGraph && !discordTextStudioOpenForActiveGraph && !permissionStudioOpenForActiveGraph && !slashCommandStudioOpenForActiveGraph && !modalStudioOpenForActiveGraph && <>
+          <div className="canvas-connection-guard" inert={remoteWorkspaceBlocked}>
           <NodeCanvas
             graphId={activeTabId}
             projectId={activeProjectId}
@@ -5666,6 +5901,7 @@ export function App() {
             functionGraphs={functionGraphs}
             callableGraphs={callableGraphs}
             appEmojis={appEmojis}
+            nodeDefinitions={availableNodeDefinitions}
             settings={settings}
             isLocked={isLocked || !canWriteGraphs}
             desktopMode={desktopMode}
@@ -5708,19 +5944,22 @@ export function App() {
             onSendGraphChat={sendGraphChatMessage}
             onMoveGraphChatBubble={moveGraphChatBubble}
           />
+          </div>
           <div className={`canvas-context-label ${!activeGraph ? 'is-no-graph' : graphValidation.errors.length ? 'has-validation-errors' : graphValidation.warnings.length ? 'has-validation-warnings' : 'is-validation-ready'}`}>
             {activeGraph ? <><span className="context-dot" />
               {activeNodes.length} nodes <span className="context-separator">·</span> {activeConnections.length} connections
-              <span className="context-separator">·</span> {graphValidation.errors.length ? `${graphValidation.errors.length} issues` : graphValidation.warnings.length ? 'Review' : 'Ready'}</>
+              <span className="context-separator">·</span> {graphValidation.errors.length || graphValidation.warnings.length
+                ? <button type="button" className="canvas-context-validation" onClick={handleValidateGraph} aria-label={`Open graph review with ${graphValidation.errors.length ? `${graphValidation.errors.length} issues` : `${graphValidation.warnings.length} warnings`}`}>{graphValidation.errors.length ? `${graphValidation.errors.length} issues` : 'Review'}</button>
+                : 'Ready'}</>
               : 'Open a graph to run checks.'}
-            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite"><span className="collaboration-connection-dot" />{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
-            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite"><span className="collaboration-connection-dot" />Flaky connection</span>}
+            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite">{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite">Flaky connection</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
           {isLocked && <div className="canvas-lock-state"><LockKeyhole size={13} /> Locked</div>}
           </>}
 
-          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
+          {isLibraryOpen && <Suspense fallback={<LazyFeatureLoading label="Opening Library…" kind="sidebar" isDesktop={desktopMode} width={sidebarWidths.library} />}><GraphLibraryPanel definitions={availableNodeDefinitions} newNodesUserKey={newNodesUserKey} graphActivity={projectCollaboration.projectId === activeProjectId ? projectCollaboration.graphActivity || [] : []} sidebarWidth={sidebarWidths.library} onSidebarResize={(width) => handleSidebarResize('library', width)} activeSection={librarySection} onActiveSectionChange={setLibrarySection} usageScope={activeProjectId} desktopMode={desktopMode} canImportGraph={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onImportGraph={handleImportGraph} graphs={savedGraphs} templates={graphTemplates} snapshots={graphSnapshots} nodePrefabs={nodePrefabs} embedAssets={embedAssets} graphVariables={availableVariables} defaultGraphId={defaultGraphId} activeGraph={activeGraph} openGraphIds={tabs.map((tab) => tab.id)} activeTabId={activeTabId} onClose={() => setIsLibraryOpen(false)} onOpenGraph={handleOpenGraph} onUseTemplate={(template) => handleAddTab(template)} onCreateFunction={handleAddFunctionGraph} onDeleteGraph={handleDeleteSavedGraph} onDeleteGraphs={handleDeleteSavedGraphs} onDuplicateGraph={handleDuplicateGraph} onRenameGraph={handleRenameGraph} onSaveTemplate={handleSaveGraphTemplate} onDeleteTemplate={handleDeleteGraphTemplate} onSetDefault={handleSetDefaultGraph} onExportBot={handleExportBot} exportInProgress={exportInProgress} onAddNode={handlePlaceNode} onAddPrefab={(prefab) => handleDropNode({ type: 'prefab', prefabId: prefab.id })} onDeletePrefab={handleDeleteNodePrefab} onCreateEmbed={createEmbedAsset} onOpenEmbed={openEmbedAsset} onDeleteEmbed={handleDeleteEmbedAsset} onManageVariables={() => { setIsProjectsOpen(false); setIsLibraryOpen(false); setIsPluginStoreOpen(false); setIsBotSidebarOpen(false); setIsVariablesOpen(true); }} onCreateSnapshot={async (graph, name) => {
             await ensureWorkspaceGraphsSaved();
             const response = await fetch(apiUrl(`/api/graphs/${encodeURIComponent(graph.id)}/snapshots`), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graph, name }) });
             const data = await response.json();
@@ -5747,7 +5986,7 @@ export function App() {
               <button className="icon-button compact" type="button" aria-label="Close projects" onClick={() => { if (!projectBusy) setIsProjectsOpen(false); }} disabled={projectBusy}><X size={14} /></button>
             </header>
             <p className="project-sidebar-description">Switch between bot projects or create a new one. {!localDesktopWorkspace && (maxProjects === null ? 'No project limit.' : `${projects.length} of ${maxProjects} projects.`)}</p>
-            <div className="project-switcher-list">
+            <div className={`project-switcher-list ${projects.length ? '' : 'is-empty'}`}>
               {projects.map((project) => <div key={project.id} className={`project-switcher-row ${project.id === activeProjectId ? 'is-active' : ''}`} onContextMenu={(event) => openProjectMenu(event, project)}>
                 <button
                   type="button"
@@ -5765,7 +6004,11 @@ export function App() {
                   openProjectMenu(event, project, { x: rect.right, y: rect.bottom });
                 }}><MoreHorizontal size={15} /></button>
               </div>)}
-              {!projects.length && <p className="muted-copy">No projects yet.</p>}
+              {!projects.length && <div className="project-switcher-empty">
+                <FolderTree size={19} aria-hidden="true" />
+                <strong>No projects yet</strong>
+                <span>Create a project below to start building a bot.</span>
+              </div>}
             </div>
             <form className="project-create-form" onSubmit={handleCreateProject}>
               <TextInput key={projectNameShakeKey} id="new-project-name" label="New project" placeholder="e.g. Moderation bot" value={newProjectName} maxLength={64} error={projectNameInvalid ? 'Enter a project name.' : undefined} wrapperClassName={projectNameInvalid ? 'project-name-invalid-shake' : ''} onChange={(event) => { setNewProjectName(event.target.value); setProjectNameInvalid(false); setProjectError(''); }} />
@@ -5796,15 +6039,16 @@ export function App() {
             }}><Trash2 size={14} />Delete project</button>
             </>}
           </div>}
-          <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
-          <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" networkOnline={networkOnline} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
-          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
+          <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSidebarOpen} loadingLabel="Opening app settings…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.bot} onSidebarResize={(width) => handleSidebarResize('bot', width)} onClose={() => setIsBotSidebarOpen(false)} onViewCommands={() => setCommandBrowserRequest((request) => request + 1)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
+          <LazyMountedFeature Component={PluginStoreModal} isOpen={isPluginStoreOpen} loadingLabel="Opening Plugin Store…" loadingKind="sidebar" isDesktop={desktopMode} sidebarWidth={sidebarWidths.plugins} onSidebarResize={(width) => handleSidebarResize('plugins', width)} onClose={() => setIsPluginStoreOpen(false)} authToken={authToken} canInstall={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canManageSource={currentUser?.permissions?.includes('*')} onInstalled={handlePluginsChanged} />
+          <LazyMountedFeature Component={GraphVariablesModal} isOpen={isVariablesOpen} loadingLabel="Opening variables…" loadingKind="sidebar" isDesktop={desktopMode} presentation="sidebar" sidebarWidth={sidebarWidths.variables} activeScope={variableScope} onScopeChange={setVariableScope} onSidebarResize={(width) => handleSidebarResize('variables', width)} onClose={() => setIsVariablesOpen(false)} variables={graphVariables} projectVariables={projectVariables} canEdit={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} canEditGraph={Boolean(activeGraph && (currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write')))} canEditProject={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('graphs:write'))} onChange={handleVariablesChange} onProjectChange={handleProjectVariablesChange} onOpenTextEditor={openVariableTextEditor} onRestoreSystemVariable={handleRestoreSystemVariable} isSaving={savingProjectVariables || savingGraphIds.includes(activeTabId)} />
         </main>
       </div>
 
       <ControlDock
         logs={logs}
         botStatus={botStatus}
+        discordAuthWarning={discordAuthWarning}
         networkOnline={networkOnline}
         botMetrics={botMetrics}
         botProfile={botProfile}
@@ -5817,6 +6061,7 @@ export function App() {
         graphLookup={graphLookup}
         graphValidationReports={[...graphLookup.values()].map((graph) => ({ graph, report: validateGraph(graph, graphLookup, botProfile?.intentSummary, projectVariables) }))}
         graphNodes={activeNodes}
+        nodeDefinitions={availableNodeDefinitions}
         authToken={authToken}
         isLocked={isLocked}
         canControlBot={Boolean(currentUser?.permissions?.includes('*') || currentUser?.permissions?.includes('bot:control'))}
@@ -5832,8 +6077,8 @@ export function App() {
         onTraceIssue={traceGraphNode}
       />
 
-      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" newNodesUserKey={newNodesUserKey} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
-      <LazyMountedFeature Component={CommandPalette} isOpen={isCommandPaletteOpen} loadingLabel="Opening search…"
+      <LazyMountedFeature Component={NodePalette} isOpen={isPaletteOpen} loadingLabel="Opening node palette…" isDesktop={desktopMode} newNodesUserKey={newNodesUserKey} onClose={() => { setIsPaletteOpen(false); setPaletteNodePosition(null); }} onSelectNode={handlePlaceNode} pluginDefinitionsRevision={pluginDefinitionsRevision} definitions={availableNodeDefinitions} />
+      <LazyMountedFeature Component={CommandPalette} isOpen={isCommandPaletteOpen} loadingLabel="Opening search…" isDesktop={desktopMode}
         graphs={[...graphLookup.values()]}
         definitions={availableNodeDefinitions}
         plugins={installedPlugins}
@@ -5843,8 +6088,8 @@ export function App() {
         onOpenPlugin={() => { setIsCommandPaletteOpen(false); setIsLibraryOpen(false); setIsProjectsOpen(false); setIsPluginStoreOpen(true); }}
         onGoToNode={traceGraphNode}
       />
-      <EmojiPickerOverlay appEmojis={appEmojis} shortcut={(desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker} />
-      <LazyMountedFeature Component={EditorSettingsModal} isOpen={isSettingsOpen} loadingLabel="Opening settings…"
+      <EmojiPickerOverlay appEmojis={appEmojis} shortcut={(desktopMode ? settings.shortcuts?.emojiPicker : null) || DEFAULT_SHORTCUTS.emojiPicker} desktopMode={desktopMode} />
+      <LazyMountedFeature Component={EditorSettingsModal} isOpen={isSettingsOpen} loadingLabel="Opening settings…" isDesktop={desktopMode}
         onClose={() => setIsSettingsOpen(false)}
         settings={settings}
         onUpdateSettings={handleUpdateSettings}
@@ -5903,7 +6148,7 @@ export function App() {
           })}</span></div>)}
         </div>
       </Modal>
-      <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSettingsOpen} loadingLabel="Opening app settings…" onClose={() => setIsBotSettingsOpen(false)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
+      <LazyMountedFeature Component={BotSettingsModal} isOpen={isBotSettingsOpen} loadingLabel="Opening app settings…" isDesktop={desktopMode} onClose={() => setIsBotSettingsOpen(false)} authToken={authToken} profile={botProfile} onProfileChange={setBotProfile} />
       <Modal
         isOpen={Boolean(exportReview)}
         onClose={() => setExportReview(null)}
@@ -5958,7 +6203,7 @@ export function App() {
           })}
         </div>
       </Modal>
-      <LazyMountedFeature Component={GraphValidationModal} isOpen={Boolean(validationResult)} loadingLabel="Opening validation results…" onClose={() => setValidationResult(null)} graphName={validationResult?.graphName || activeGraph?.name} result={validationResult} onTraceIssue={traceGraphNode} />
+      <LazyMountedFeature Component={GraphValidationModal} isOpen={Boolean(validationResult)} loadingLabel="Opening validation results…" isDesktop={desktopMode} onClose={() => setValidationResult(null)} graphName={validationResult?.graphName || activeGraph?.name} result={validationResult} onTraceIssue={traceGraphNode} />
       <Modal
         isOpen={gatewayIntentConfirm.length > 0}
         onClose={() => setGatewayIntentConfirm([])}
@@ -6078,7 +6323,7 @@ export function App() {
         <ReleaseNotes>{releaseNotesNotice?.notes}</ReleaseNotes>
       </Modal>
       {desktopMode && stableUpdateReady && <div className="stable-update-ready-notice" role="status">ARC Studio update ready · it will be applied on next launch.</div>}
-      <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
+      <LazyMountedFeature Component={UserManagementModal} isOpen={!desktopMode && isUserMgmtOpen} loadingLabel="Opening Team access…" isDesktop={desktopMode} onClose={() => setIsUserMgmtOpen(false)} authToken={authToken} currentUsername={currentUser?.username} currentUserId={currentUser?.id} onCurrentUserChange={setCurrentUser} />
       </div>
       <ToastContainer />
       <TooltipLayer />
@@ -6371,7 +6616,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       inputNames.add(name.toLowerCase());
     }
   }
-  if (isFunction && nodes.some((node) => !isPureFunctionNode(node.type))) errors.push('Function graphs support value, text, comparison, calculation, and function-call nodes only.');
+  if (isFunction && nodes.some((node) => String(node.type).startsWith('event_'))) errors.push('Function graphs cannot contain event trigger nodes.');
     if (graphLookup && hasFunctionCycle(graph, graphLookup)) errors.push('Graphs cannot call themselves, directly or indirectly.');
   const hasEventNode = nodes.some((node) => String(node.type).startsWith('event_'));
   const hasActionNode = nodes.some((node) => String(node.type).startsWith('action_'));
@@ -6458,15 +6703,25 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
       const isEdit = node.type === 'action_edit_message';
       const label = node.label || (isEdit ? 'Edit Message' : 'Send Message');
       const hasChannel = Boolean(String(node.data?.channel_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'channel_id');
+      const hasThread = !isEdit && (Boolean(String(node.data?.thread_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'));
       const hasMessageId = Boolean(String(node.data?.message_id ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'message_id');
       const hasContent = Boolean(String(node.data?.content ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'content');
       const hasEmbed = connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed') || hasConfiguredEmbed(node);
       const hasComponents = (Array.isArray(node.data?.components) && node.data.components.some((row) => row.components?.length)) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'components');
-      if (!hasChannel) errors.push(`${label}: connect a channel ID.`);
+      if (!hasChannel && !hasThread) errors.push(`${label}: connect a channel ID or thread ID.`);
       if (isEdit && !hasMessageId) errors.push(`${label}: connect a message ID.`);
       if (!hasContent && !hasEmbed && !hasComponents && !isEdit) errors.push(`${label}: add message content, an embed, or components.`);
       const content = resolveKnownStringInput(node, 'content', node.data?.content || '');
       if (content !== undefined && content.length > 2000) errors.push(`${label}: content exceeds 2,000 characters after text variables are applied.`);
+    }
+    if (['action_create_thread', 'action_start_thread_from_message'].includes(node.type)) {
+      const label = node.label || definitions.get(node.type)?.label || 'Create Thread';
+      const hasInput = (id) => Boolean(String(node.data?.[id] ?? '').trim()) || connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === id);
+      if (!hasInput('channel_id')) errors.push(`${label}: connect a parent channel ID.`);
+      if (!hasInput('name')) errors.push(`${label}: enter a thread name.`);
+      if (node.type === 'action_start_thread_from_message' && !hasInput('message_id')) errors.push(`${label}: connect a message ID.`);
+      if (node.type === 'action_create_thread' && !['public', 'private'].includes(String(node.data?.thread_type || 'public').toLowerCase())
+        && !connections.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type')) errors.push(`${label}: choose public or private thread type.`);
     }
     if (['action_reply_interaction', 'action_defer_reply', 'action_defer_update'].includes(node.type)) {
       const label = node.label || definitions.get(node.type)?.label || 'Interaction Action';
@@ -6611,8 +6866,7 @@ function validateGraph(graph, graphLookup = null, intentSummary = null, projectV
 }
 
 function isPureFunctionNode(type) {
-  return type === 'function_input' || type === 'function_return' || type === 'function_call' || type === 'function_math' || type.startsWith('math_') || type.startsWith('logic_')
-    || type === 'compare_text' || type === 'format_text' || type.startsWith('value_');
+  return !String(type).startsWith('event_');
 }
 
 function hasFunctionCycle(graph, graphLookup, active = new Set(), visited = new Set()) {
@@ -6717,16 +6971,18 @@ function graphPin(node, direction, pinId, variables, graphLookup = null, connect
     }
   }
   let pins = definition[direction] || [];
+  if (direction === 'inputs') pins = [...pins, ...getNodeTemplateInputPins(node, pins, [...variables.values()], connections)];
   if (node.type === 'format_text' && direction === 'inputs') {
     const slots = getTextTemplateSlots(node.data?.template).flatMap((name) => {
       if ([...variables.values()].some((variable) => variable.name?.toLowerCase() === name.toLowerCase())) return [];
-      return [{ id: `slot_${name}`, type: 'string' }];
+      const argument = /^arg(\d+)$/i.exec(name);
+      return argument ? [{ id: `arg_${argument[1]}`, type: 'arg' }] : [{ id: `slot_${name}`, type: 'arg' }];
     });
     pins = slots;
   }
   if (node.type === 'build_embed' && direction === 'inputs') {
     if (Array.isArray(node.data?.blocks)) {
-      const pins = embedBlockPins(getEmbedBlocks(node.data));
+      const pins = embedBlockPins(getEmbedBlocks(node.data), [...variables.values()]);
       return [...pins, ...getNodeArgumentPins(node, pins, connections)].find((pin) => pin.id === pinId) || null;
     }
     const fields = Array.isArray(node.data?.fields) ? node.data.fields : [];
