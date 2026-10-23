@@ -39,6 +39,7 @@ const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 40 * 1024 * 1
 const liveGraphStates = new Map();
 const liveCollaborationActions = new Map();
 const liveGraphChatBubbles = new Map();
+const liveCanvasArrows = new Map();
 const liveCollaborationStudioDrafts = new Map();
 const liveNoteEditLocks = new Map();
 const recentProjectGraphUse = new Map();
@@ -69,6 +70,31 @@ const removeGraphChatBubble = (roomKey, bubbleId) => {
   sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_EXPIRED', payload: { projectId: entry.bubble.projectId, graphId: entry.bubble.graphId, id: bubbleId } });
   return true;
 };
+const removeCanvasArrow = (roomKey, arrowId, type = 'CANVAS_ARROW_EXPIRED') => {
+  const room = liveCanvasArrows.get(roomKey);
+  const entry = room?.get(arrowId);
+  if (!entry) return false;
+  clearTimeout(entry.timer);
+  room.delete(arrowId);
+  if (!room.size) liveCanvasArrows.delete(roomKey);
+  sendToCollaborationRoom(roomKey, { type, payload: { projectId: entry.arrow.projectId, graphId: entry.arrow.graphId, id: arrowId } });
+  return true;
+};
+const sendCanvasArrowSnapshot = (client, roomKey) => {
+  const room = liveCanvasArrows.get(roomKey);
+  const arrows = [...(room?.values() || [])].map(({ arrow }) => arrow).filter((arrow) => arrow.expiresAt > Date.now());
+  if (arrows.length) client.send(JSON.stringify({ type: 'CANVAS_ARROWS_SYNC', payload: { arrows } }));
+};
+const canvasArrowPoint = (value) => value && Number.isFinite(value.x) && Number.isFinite(value.y)
+  && Math.abs(value.x) <= 1_000_000 && Math.abs(value.y) <= 1_000_000
+  ? { x: Math.round(value.x), y: Math.round(value.y) }
+  : null;
+const collaborationRoleRank = (role) => ({ viewer: 1, operator: 2, editor: 3, admin: 4 }[String(role || '').toLowerCase()] || 0);
+const canManageLockedCanvasArrow = (user, arrow, projectId) => Boolean(user && arrow && (
+  arrow.createdById === user.id
+  || projectStore.projects.find((project) => project.id === projectId)?.ownerId === user.id
+  || collaborationRoleRank(user.role) > collaborationRoleRank(arrow.createdByRole)
+));
 const sendGraphChatSnapshot = (client, roomKey) => {
   const room = liveGraphChatBubbles.get(roomKey);
   if (!room) return;
@@ -676,6 +702,7 @@ wss.on('connection', (ws) => {
           if (room) for (const action of room.values()) ws.send(JSON.stringify({ type: 'COLLAB_ACTION_UPDATED', payload: action }));
           ws.send(JSON.stringify({ type: 'NOTE_EDIT_LOCKS_UPDATED', payload: { projectId, graphId, locks: noteLockSnapshot(nextRoomKey) } }));
           sendGraphChatSnapshot(ws, nextRoomKey);
+          sendCanvasArrowSnapshot(ws, nextRoomKey);
         }
         let liveState = ws.arcPresence ? liveGraphStates.get(`${projectId}:${graphId}`) : null;
         if (ws.arcPresence && !liveState) {
@@ -809,6 +836,149 @@ wss.on('connection', (ws) => {
         if (++ws.arcGraphChatMoveTimes.count > 30) return;
         entry.bubble = { ...entry.bubble, x: point.x, y: point.y };
         sendToCollaborationRoom(roomKey, { type: 'GRAPH_CHAT_BUBBLE', payload: entry.bubble });
+      } else if (msg.type === 'CANVAS_ARROW_ACTION') {
+        const roomKey = ws.arcRoomKey;
+        const payload = msg.payload;
+        const projectId = typeof msg.projectId === 'string' ? msg.projectId : '';
+        const graphId = typeof msg.graphId === 'string' ? msg.graphId : '';
+        const permissions = ws.arcUser?.permissions || [];
+        const operation = payload?.operation;
+        if (!roomKey || !ws.arcPresence || projectId !== ws.arcPresence.projectId || graphId !== ws.arcPresence.graphId
+          || !payload || typeof payload !== 'object' || Array.isArray(payload)) return;
+        if (['lock', 'unlock'].includes(operation) && !permissions.includes('*') && !permissions.includes('graphs:write')) return;
+        const graphExists = liveGraphStates.has(`${projectId}:${graphId}`)
+          || ws.arcManager?.getGraphs().some((graph) => graph.id === graphId);
+        if (!graphExists) return;
+        const now = Date.now();
+        if (!ws.arcCanvasArrowRate || now - ws.arcCanvasArrowRate.windowAt >= 1000) ws.arcCanvasArrowRate = { windowAt: now, count: 0 };
+        if (++ws.arcCanvasArrowRate.count > 40) return;
+        let room = liveCanvasArrows.get(roomKey);
+        if (operation === 'create') {
+          const recent = (ws.arcCanvasArrowCreateTimes || []).filter((time) => now - time < 10_000);
+          if (recent.length >= 20) return;
+          ws.arcCanvasArrowCreateTimes = [...recent, now];
+          const start = canvasArrowPoint(payload.start);
+          const end = canvasArrowPoint(payload.end);
+          if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 8 || (room?.size || 0) >= 300) return;
+          const arrow = {
+            id: randomUUID(),
+            projectId,
+            graphId,
+            start,
+            end,
+            color: ws.arcColor || collaboratorColor(ws.arcUser.id),
+            createdBy: ws.arcUser.username,
+            createdById: ws.arcUser.id,
+            createdByRole: ws.arcUser.role,
+            createdAt: now,
+            expiresAt: now + 12_000,
+            locked: false
+          };
+          if (!room) { room = new Map(); liveCanvasArrows.set(roomKey, room); }
+          const entry = { arrow, timer: null };
+          entry.timer = setTimeout(() => removeCanvasArrow(roomKey, arrow.id), 12_010);
+          entry.timer.unref?.();
+          room.set(arrow.id, entry);
+          sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: arrow });
+          return;
+        }
+        const arrowId = typeof payload.id === 'string' ? payload.id : '';
+        if (operation !== 'move-many' && (!arrowId || arrowId.length > 100)) return;
+        if (operation === 'move-many') {
+          if (!Array.isArray(payload.arrows) || payload.arrows.length > 300) return;
+          if (!ws.arcCanvasArrowMoveBudget || now - ws.arcCanvasArrowMoveBudget.windowAt >= 1000) {
+            ws.arcCanvasArrowMoveBudget = { windowAt: now, count: 0 };
+          }
+          if (ws.arcCanvasArrowMoveBudget.count + payload.arrows.length > 300) return;
+          ws.arcCanvasArrowMoveBudget.count += payload.arrows.length;
+          const moves = payload.arrows.flatMap((item) => {
+            const id = typeof item?.id === 'string' && item.id.length <= 100 ? item.id : '';
+            const start = canvasArrowPoint(item?.start);
+            const end = canvasArrowPoint(item?.end);
+            const entry = liveCanvasArrows.get(roomKey)?.get(id);
+            return entry && entry.arrow.expiresAt > now && start && end && Math.hypot(end.x - start.x, end.y - start.y) >= 8
+              ? [{ entry, start, end }]
+              : [];
+          });
+          for (const move of moves) {
+            move.entry.arrow = { ...move.entry.arrow, start: move.start, end: move.end };
+            sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: move.entry.arrow });
+          }
+          return;
+        }
+        if (operation === 'lock' || operation === 'unlock') {
+          const key = `${projectId}:${graphId}`;
+          let state = liveGraphStates.get(key);
+          if (!state) {
+            const graph = ws.arcManager?.getGraphs().find((item) => item.id === graphId);
+            if (!graph) return;
+            const serializedGraph = JSON.stringify(graph);
+            state = { projectId, graphId, graph, revision: 0, updatedAt: now, user: null, serializedGraph, history: [{ revision: 0, graph }] };
+            liveGraphStates.set(key, state);
+          }
+          if (operation === 'lock') {
+            const entry = liveCanvasArrows.get(roomKey)?.get(arrowId);
+            if (!entry || entry.arrow.expiresAt <= now || !canManageLockedCanvasArrow(ws.arcUser, entry.arrow, projectId)) return;
+            if ((state.graph.arrows || []).filter((item) => item?.locked).length >= 300) {
+              ws.send(JSON.stringify({ type: 'CANVAS_ARROW_REJECTED', payload: { projectId, graphId, id: arrowId, message: 'This graph already has the maximum of 300 saved arrows.' } }));
+              return;
+            }
+            const arrow = { ...entry.arrow, locked: true, expiresAt: null };
+            const arrows = [...(state.graph.arrows || []).filter((item) => item.id !== arrow.id), arrow];
+            const graph = { ...state.graph, arrows };
+            removeCanvasArrow(roomKey, arrowId);
+            const serializedGraph = JSON.stringify(graph);
+            const revision = state.revision + 1;
+            const nextState = {
+              projectId, graphId, graph, revision, updatedAt: now,
+              user: { id: ws.arcUser.id, username: ws.arcUser.username },
+              serializedGraph,
+              history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
+            };
+            liveGraphStates.set(key, nextState);
+            const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id };
+            delete syncPayload.serializedGraph;
+            delete syncPayload.history;
+            sendToCollaborationRoom(roomKey, { type: 'GRAPH_STATE_SYNC', payload: syncPayload });
+            return;
+          }
+          const savedArrow = (state.graph.arrows || []).find((item) => item.id === arrowId && item.locked);
+          if (!savedArrow || !canManageLockedCanvasArrow(ws.arcUser, savedArrow, projectId)) return;
+          const graph = { ...state.graph, arrows: state.graph.arrows.filter((item) => item.id !== arrowId) };
+          const serializedGraph = JSON.stringify(graph);
+          const revision = state.revision + 1;
+          const nextState = {
+            projectId, graphId, graph, revision, updatedAt: now,
+            user: { id: ws.arcUser.id, username: ws.arcUser.username },
+            serializedGraph,
+            history: [...(state.history || []), { revision, graph }].slice(-(serializedGraph.length <= 1_000_000 ? 8 : 2))
+          };
+          liveGraphStates.set(key, nextState);
+          const syncPayload = { ...nextState, sourceUserId: ws.arcUser.id };
+          delete syncPayload.serializedGraph;
+          delete syncPayload.history;
+          sendToCollaborationRoom(roomKey, { type: 'GRAPH_STATE_SYNC', payload: syncPayload });
+          const unlockedArrow = { ...savedArrow, locked: false, createdAt: now, expiresAt: now + 12_000 };
+          if (!room) { room = new Map(); liveCanvasArrows.set(roomKey, room); }
+          const entry = { arrow: unlockedArrow, timer: null };
+          entry.timer = setTimeout(() => removeCanvasArrow(roomKey, arrowId), 12_010);
+          entry.timer.unref?.();
+          room.set(arrowId, entry);
+          sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: unlockedArrow });
+          return;
+        }
+        const entry = liveCanvasArrows.get(roomKey)?.get(arrowId);
+        if (!entry || entry.arrow.expiresAt <= now) return;
+        if (operation === 'delete') {
+          removeCanvasArrow(roomKey, arrowId, 'CANVAS_ARROW_DELETED');
+          return;
+        }
+        if (operation !== 'move') return;
+        const start = canvasArrowPoint(payload.start);
+        const end = canvasArrowPoint(payload.end);
+        if (!start || !end || Math.hypot(end.x - start.x, end.y - start.y) < 8) return;
+        entry.arrow = { ...entry.arrow, start, end };
+        sendToCollaborationRoom(roomKey, { type: 'CANVAS_ARROW_UPDATED', payload: entry.arrow });
       } else if (msg.type === 'COLLAB_ACTION') {
         const roomKey = ws.arcRoomKey;
         const action = msg.action;
@@ -818,9 +988,9 @@ wss.on('connection', (ws) => {
         if (ws.arcManager?.deletedGraphIds?.has(msg.graphId)) return;
         const now = Date.now();
         const kind = action.kind;
-        if (!['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'library-drag', 'navigation', 'node-edit', 'studio-focus', 'studio-draft', 'studio-cursor', 'idle'].includes(kind)) return;
+        if (!['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'arrow-drag', 'library-drag', 'navigation', 'node-edit', 'studio-focus', 'studio-draft', 'studio-cursor', 'idle'].includes(kind)) return;
         if (!ws.arcActionRates || now - ws.arcActionRates.windowAt >= 1000) ws.arcActionRates = { windowAt: now, counts: Object.create(null) };
-        const rateGroup = kind === 'studio-draft' ? 'studio-draft' : ['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'library-drag'].includes(kind) ? 'canvas' : 'other';
+        const rateGroup = kind === 'studio-draft' ? 'studio-draft' : ['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'arrow-drag', 'library-drag'].includes(kind) ? 'canvas' : 'other';
         ws.arcActionRates.counts[rateGroup] = (ws.arcActionRates.counts[rateGroup] || 0) + 1;
         const limit = rateGroup === 'studio-draft' ? 30 : rateGroup === 'canvas' ? 90 : 35;
         if (ws.arcActionRates.counts[rateGroup] > limit) return;
@@ -848,11 +1018,13 @@ wss.on('connection', (ws) => {
         let cleanAction;
         if (kind === 'navigation') {
           cleanAction = { kind: 'navigation', label: typeof action.label === 'string' ? action.label.slice(0, 32) : 'Navigating menus' };
-        } else if (['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'library-drag'].includes(kind)) {
+        } else if (['cursor', 'selection', 'node-drag', 'note-drag', 'wire-drag', 'arrow-drag', 'library-drag'].includes(kind)) {
           const cursor = point(action.cursor);
           if (kind !== 'selection' && !cursor) return;
           cleanAction = { kind, ...(cursor ? { cursor } : {}), mode: typeof action.mode === 'string' ? action.mode.slice(0, 24) : kind };
           if (Array.isArray(action.selectedNodeIds)) cleanAction.selectedNodeIds = action.selectedNodeIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 2000);
+          if (Array.isArray(action.selectedNoteIds)) cleanAction.selectedNoteIds = action.selectedNoteIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 2000);
+          if (Array.isArray(action.selectedArrowIds)) cleanAction.selectedArrowIds = action.selectedArrowIds.filter((id) => typeof id === 'string' && id.length <= 100).slice(0, 300);
           const nodePositions = positions(action.nodePositions);
           const notePositions = positions(action.notePositions);
           if (nodePositions.length) cleanAction.nodePositions = nodePositions;
@@ -881,6 +1053,11 @@ wss.on('connection', (ws) => {
             if (!start) return;
             cleanAction.start = start;
             cleanAction.pinType = typeof action.pinType === 'string' ? action.pinType.slice(0, 32) : 'any';
+          }
+          if (kind === 'arrow-drag') {
+            const start = point(action.start);
+            if (!start) return;
+            cleanAction.start = start;
           }
           if (kind === 'node-edit' && typeof action.nodeId === 'string') cleanAction.nodeId = action.nodeId.slice(0, 100);
         } else if (kind === 'studio-draft') {
@@ -1026,9 +1203,58 @@ wss.on('connection', (ws) => {
           if (ownsLock && !incomingNote) removeNoteEditLock(roomKey, noteId);
         }
         if (Array.isArray(graph.notes) || adjustedNotes || Array.isArray(previous?.graph?.notes)) candidateGraph.notes = incomingNotes;
+        const previousArrows = (previous?.graph?.arrows || []).filter((arrow) => arrow?.locked === true);
+        const incomingArrows = Array.isArray(candidateGraph.arrows) ? candidateGraph.arrows : previousArrows;
+        const incomingArrowById = new Map(incomingArrows.filter((arrow) => typeof arrow?.id === 'string').map((arrow) => [arrow.id, arrow]));
+        const nextArrows = [];
+        const rejectedCanvasArrowIds = [];
+        const validLockedArrow = (arrow) => {
+          const start = canvasArrowPoint(arrow?.start);
+          const end = canvasArrowPoint(arrow?.end);
+          return arrow && typeof arrow.id === 'string' && arrow.id.length <= 100 && arrow.locked === true
+            && start && end && Math.hypot(end.x - start.x, end.y - start.y) >= 8
+            && typeof arrow.createdById === 'string' && arrow.createdById.length <= 100
+            && typeof arrow.createdBy === 'string' && arrow.createdBy.length <= 80
+            && typeof arrow.color === 'string' && /^#[0-9a-f]{6}$/i.test(arrow.color);
+        };
+        const previousArrowIds = new Set(previousArrows.map((arrow) => arrow.id));
+        for (const previousArrow of previousArrows) {
+          const incomingArrow = incomingArrowById.get(previousArrow.id);
+          if ((!incomingArrow || !sameCollaborationValue(incomingArrow, previousArrow))
+            && !canManageLockedCanvasArrow(ws.arcUser, previousArrow, projectId)) {
+            nextArrows.push(previousArrow);
+            rejectedCanvasArrowIds.push(previousArrow.id);
+          } else if (incomingArrow && validLockedArrow(incomingArrow)) {
+            nextArrows.push({
+              ...previousArrow,
+              start: canvasArrowPoint(incomingArrow.start),
+              end: canvasArrowPoint(incomingArrow.end)
+            });
+          }
+        }
+        for (const incomingArrow of incomingArrows) {
+          if (previousArrowIds.has(incomingArrow?.id) || !validLockedArrow(incomingArrow)
+            || incomingArrow.createdById !== ws.arcUser.id) continue;
+          if (nextArrows.length >= 300) {
+            rejectedCanvasArrowIds.push(incomingArrow.id);
+            continue;
+          }
+          nextArrows.push({
+            ...incomingArrow,
+            start: canvasArrowPoint(incomingArrow.start),
+            end: canvasArrowPoint(incomingArrow.end),
+            createdBy: ws.arcUser.username,
+            createdByRole: ws.arcUser.role
+          });
+        }
+        if (Array.isArray(graph.arrows) || previousArrows.length) candidateGraph.arrows = nextArrows;
         const serializedGraph = JSON.stringify(candidateGraph);
         const reportRejectedNoteEdits = () => {
           for (const rejected of rejectedNoteEdits) ws.send(JSON.stringify({ type: 'NOTE_EDIT_REJECTED', payload: { projectId, graphId: graph.id, ...rejected } }));
+          if (rejectedCanvasArrowIds.length) ws.send(JSON.stringify({
+            type: 'CANVAS_ARROW_REJECTED',
+            payload: { projectId, graphId: graph.id, ids: rejectedCanvasArrowIds, message: 'Only the arrow creator or a project owner with higher permission can change a locked arrow.' }
+          }));
         };
         if (previous?.serializedGraph === serializedGraph) {
           const syncPayload = { ...previous, clientId: payload.clientId, syncId: payload.syncId || null, sourceUserId: ws.arcUser.id };
