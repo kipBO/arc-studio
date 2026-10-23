@@ -160,7 +160,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     } catch (error) { setLogRetentionMessage(error.message || 'Could not save the retention setting.'); }
   };
 
-  return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace">
+  return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace" panelClassName="modal-editor-settings">
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
         const disabled = (tab.id === 'shortcuts' || tab.id === 'discord' || tab.id === 'data') && !desktopMode;
@@ -173,6 +173,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <SelectInput label="Canvas quality" value={['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto'} options={[{ value: 'auto', label: 'Auto' }, { value: 'fast', label: 'Fast' }, { value: 'optimal', label: 'Optimal' }, { value: 'quality', label: 'Quality' }]} onChange={(value) => update('canvasQuality', value)} />
       <Toggle label="Snap to grid" description="Align nodes while dragging" checked={settings.snapToGrid ?? true} onChange={(value) => update('snapToGrid', value)} />
       <Toggle label="Zoom with mouse wheel" description="Zoom the canvas without holding Ctrl or ⌘" checked={settings.zoomCanvasWithScroll ?? false} onChange={(value) => update('zoomCanvasWithScroll', value)} />
+      <Toggle label="Right-click to pan canvas" description="Drag with right-click to move the canvas and use left-click for its context menu" checked={settings.canvasRightClickPan ?? false} onChange={(value) => update('canvasRightClickPan', value)} />
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
       <Toggle label="Execution pulse" description="Animate active connections" checked={settings.wirePulse ?? true} onChange={(value) => update('wirePulse', value)} />
       <Toggle label="Magnetic sockets" description="Assist wire placement near pins" checked={settings.magneticSnap ?? true} onChange={(value) => update('magneticSnap', value)} />
@@ -182,6 +183,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <Toggle label="Reduce motion" description="Use shorter transitions and disable decorative animation" checked={settings.reduceMotion ?? false} onChange={(value) => update('reduceMotion', value)} />
       <SelectInput label="UI scale" value={String(settings.uiScale || '100')} options={['80', '90', '100', '110', '120', '130', '140'].map((value) => ({ value, label: `${value}%` }))} onChange={(value) => update('uiScale', value)} />
       <small className="settings-shortcut-hint">{platform === 'macos' ? '⌘' : 'Ctrl'} + / − adjusts scale</small>
+      <SelectInput label="Font scale" value={String(settings.fontScale || '100')} options={['80', '90', '100', '110', '120', '130', '140'].map((value) => ({ value, label: `${value}%` }))} onChange={(value) => update('fontScale', value)} />
     </div>}
 
     {activeTab === 'interface' && <div className="settings-section settings-tab-content">
