@@ -90,7 +90,7 @@ function highlightMarkdown(line) {
   return <span className={lineClass}>{tokens.length ? tokens : line || ' '}</span>;
 }
 
-export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function DiscordTextStudioView({ label, value = '', readOnly = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
   const editorRef = useRef(null);
@@ -147,19 +147,22 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
   const containsTemplate = /(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(draft);
 
   const close = () => {
-    if (draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
+    if (!readOnly && draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
     onClose?.();
   };
   useStudioEscape(close);
-  const apply = () => onApply?.(detectDiscordCodeLanguages(draft));
+  const apply = () => {
+    if (readOnly) return;
+    onApply?.(detectDiscordCodeLanguages(draft));
+  };
 
   useEffect(() => {
     const handleKeys = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') apply();
+      if (!readOnly && (event.metaKey || event.ctrlKey) && event.key === 'Enter') apply();
     };
     window.addEventListener('keydown', handleKeys);
     return () => window.removeEventListener('keydown', handleKeys);
-  }, [draft, onApply, onClose]);
+  }, [draft, onApply, onClose, readOnly]);
 
   const syncScroll = (event) => {
     const editor = event.currentTarget;
@@ -168,6 +171,7 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
     if (remoteCaretLayerRef.current) remoteCaretLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
   };
   const changeDraft = (event) => {
+    if (readOnly) return;
     const next = event.target.value;
     const bounded = maxLength ? Array.from(next).slice(0, maxLength).join('') : next;
     if (bounded !== draft) {
@@ -211,6 +215,7 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
     beforeInputRef.current = { text: draft, start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
   };
   const handleEditorKeyDown = (event) => {
+    if (readOnly) return;
     const command = event.metaKey || event.ctrlKey;
     if (command && !event.altKey) {
       const key = event.key.toLowerCase();
@@ -273,8 +278,8 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
   return <section className="discord-text-studio" aria-label={`Edit ${label}`}>
     <header className="discord-text-studio-header">
       <button type="button" className="discord-text-studio-back" onClick={close}><ArrowLeft size={15} /><span>Back</span></button>
-      <div className="discord-text-studio-title"><div><strong>Text editor</strong></div>{collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>{collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}</div>}</div>
-      <div className="discord-text-studio-actions"><button type="button" className="discord-text-studio-apply" onClick={apply}>Apply</button><button type="button" className="discord-text-studio-close" onClick={close} aria-label="Close editor"><X size={16} /></button></div>
+      <div className="discord-text-studio-title"><div><strong>Text editor</strong>{readOnly && <span className="read-only-badge">Locked (Read only)</span>}</div>{collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>{collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}</div>}</div>
+      <div className="discord-text-studio-actions">{!readOnly && <button type="button" className="discord-text-studio-apply" onClick={apply}>Apply</button>}<button type="button" className="discord-text-studio-close" onClick={close} aria-label="Close editor"><X size={16} /></button></div>
     </header>
     <div className="discord-text-studio-editor-shell">
       <div className="discord-text-studio-gutter" ref={gutterRef} aria-hidden="true">{lines.map((_, index) => <span key={index}>{index + 1}</span>)}</div>
@@ -287,11 +292,11 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
           const column = before.at(-1).length;
           return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
         })}</div>
-        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
+        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
       </div>
     </div>
     {containsTemplate && <div className="discord-text-studio-preview"><strong>Template preview</strong><pre>{templatePreview || '(empty)'}</pre></div>}
-    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
+    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
     <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
 }
