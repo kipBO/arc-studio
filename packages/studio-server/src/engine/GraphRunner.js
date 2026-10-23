@@ -1,524 +1,33 @@
 import { NodeDefinitions } from './NodeRegistry.js';
-import { EmbedBuilder, parseEmoji } from 'chezcord';
-import { CryptoEngine } from '../security/CryptoEngine.js';
-import { evaluateMathNode } from './MathOperations.js';
-import { renderTextTemplate } from './TemplateExpressions.js';
-//
-function waitFor(ms, signal) {
-  if (signal?.aborted) return Promise.reject(Object.assign(new Error('Graph execution cancelled.'), { name: 'AbortError' }));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(done, Math.max(0, ms));
-    function done() {
-      signal?.removeEventListener('abort', abort);
-      resolve();
-    }
-    function abort() {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', abort);
-      reject(Object.assign(new Error('Graph execution cancelled.'), { name: 'AbortError' }));
-    }
-    signal?.addEventListener('abort', abort, { once: true });
-  });
-}
-
-function regexSafetyError(pattern) {
-  if (pattern.length > 256) return 'Regex pattern is limited to 256 characters.';
-  if (/\\(?:[1-9]|k<)/.test(pattern)) return 'Regex backreferences are disabled because they can cause very slow matches.';
-  if (/\(\?<([=!])/.test(pattern)) return 'Regex lookbehind is not supported.';
-  const stack = [{ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false }];
-  let inClass = false;
-  let unboundedCount = 0;
-  let quantifierCount = 0;
-  for (let index = 0; index < pattern.length; index += 1) {
-    const char = pattern[index];
-    if (char === '\\') { index += 1; continue; }
-    if (inClass) { if (char === ']') inClass = false; continue; }
-    if (char === '[') { inClass = true; continue; }
-    if (char === '(') {
-      let headerEnd = index;
-      if (pattern[index + 1] === '?') {
-        if (pattern[index + 2] === ':' || pattern[index + 2] === '=' || pattern[index + 2] === '!') headerEnd = index + 2;
-        else if (pattern[index + 2] === '<') headerEnd = pattern.indexOf('>', index + 3);
-      }
-      stack.push({ hasQuantifier: false, hasUnboundedQuantifier: false, hasAlternation: false });
-      index = Math.max(index, headerEnd);
-      continue;
-    }
-    if (char === '|') { stack.at(-1).hasAlternation = true; continue; }
-    if (char === ')') {
-      if (stack.length === 1) continue;
-      const group = stack.pop();
-      const next = pattern[index + 1];
-      const quantified = next === '*' || next === '+' || next === '?' || next === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index + 1));
-      const repetition = next === '{' ? /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1)) : null;
-      const repetitionMax = next === '*' || next === '+' || repetition?.[2] === '' ? Infinity : next === '?' ? 1 : Number(repetition?.[2] ?? repetition?.[1] ?? 0);
-      const groupRepeatIsUnbounded = next === '*' || next === '+' || Boolean(repetition && repetition[2] === '');
-      if (quantified && (group.hasUnboundedQuantifier || group.hasQuantifier && groupRepeatIsUnbounded || group.hasAlternation && (groupRepeatIsUnbounded || repetitionMax > 10))) return 'Regex groups with nested repetition or repeated alternatives are not supported.';
-      const parent = stack.at(-1);
-      parent.hasQuantifier ||= group.hasQuantifier || quantified;
-      parent.hasUnboundedQuantifier ||= group.hasUnboundedQuantifier || groupRepeatIsUnbounded;
-      parent.hasAlternation ||= group.hasAlternation;
-      if (quantified) {
-        quantifierCount += 1;
-        if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
-        if (next === '{') {
-          const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index + 1));
-          const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
-          if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
-        }
-      }
-      if (quantified && (next === '*' || next === '+' || next === '{' && /^\{\d+,\}/.test(pattern.slice(index + 1)))) unboundedCount += 1;
-      continue;
-    }
-    const quantifier = char === '*' || char === '+' || char === '?' || char === '{' && /^\{\d+(?:,\d*)?\}/.test(pattern.slice(index));
-    if (quantifier) {
-      quantifierCount += 1;
-      if (quantifierCount > 32) return 'Regex patterns are limited to 32 repetition operators.';
-      if (char === '{') {
-        const repetition = /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(index));
-        const maximum = repetition?.[2] === '' ? Infinity : Number(repetition?.[2] ?? repetition?.[1]);
-        if (maximum > 1000) return 'Regex repetition counts are limited to 1,000.';
-      }
-      stack.at(-1).hasQuantifier = true;
-      const unbounded = char === '*' || char === '+' || char === '{' && /^\{\d+,\}/.test(pattern.slice(index));
-      if (unbounded) {
-        stack.at(-1).hasUnboundedQuantifier = true;
-        unboundedCount += 1;
-      }
-      if (char === '{') index += (pattern.slice(index).match(/^\{\d+(?:,\d*)?\}/)?.[0].length || 1) - 1;
-    }
-  }
-  if (unboundedCount > 4) return 'Regex patterns can use at most four unbounded repetitions.';
-  return '';
-}
-
-function readDataPath(source, path) {
-  const text = String(path || '').trim();
-  if (!text || text.length > 512) return { exists: false, value: undefined };
-  const parts = []; let index = 0;
-  while (index < text.length) {
-    if (text[index] === '.') {
-      if (index === 0 || index === text.length - 1 || text[index + 1] === '.' || text[index + 1] === '[') return { exists: false, value: undefined };
-      index += 1; continue;
-    }
-    if (text[index] === '[') {
-      const rest = text.slice(index);
-      const match = /^\[(?:(\d+)|"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)')\]/.exec(rest);
-      if (!match) return { exists: false, value: undefined };
-      parts.push(match[1] !== undefined ? Number(match[1]) : (match[2] ?? match[3]).replace(/\\([\\"'])/g, '$1'));
-      index += match[0].length;
-    } else {
-      const match = /^[A-Za-z_$][A-Za-z0-9_$-]*/.exec(text.slice(index));
-      if (!match) return { exists: false, value: undefined };
-      parts.push(match[0]); index += match[0].length;
-    }
-    if (parts.length > 64) return { exists: false, value: undefined };
-  }
-  let value = source;
-  for (const key of parts) {
-    if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || (typeof value !== 'object' && typeof value !== 'string') || !Object.hasOwn(Object(value), key)) return { exists: false, value: undefined };
-    value = value[key];
-  }
-  return { exists: true, value };
-}
-
-function compareArrayItem(actual, expected, operator) {
-  if (operator === 'exists') return actual.exists;
-  if (operator === 'is_empty') return actual.exists && (actual.value == null || actual.value === '' || Array.isArray(actual.value) && !actual.value.length || typeof actual.value === 'object' && !Array.isArray(actual.value) && !Object.keys(actual.value).length);
-  if (!actual.exists) return false;
-  const left = actual.value;
-  if (operator === 'not_equals') return !Object.is(left, expected);
-  if (operator === 'contains') return typeof left === 'string' ? left.includes(String(expected ?? '')) : Array.isArray(left) ? left.some((item) => Object.is(item, expected)) : false;
-  if (operator === 'starts_with') return typeof left === 'string' && left.startsWith(String(expected ?? ''));
-  if (operator === 'ends_with') return typeof left === 'string' && left.endsWith(String(expected ?? ''));
-  if (operator === 'greater_than') return left > expected;
-  if (operator === 'greater_or_equal') return left >= expected;
-  if (operator === 'less_than') return left < expected;
-  if (operator === 'less_or_equal') return left <= expected;
-  return Object.is(left, expected);
-}
-
-function evaluateDataNode(type, inputs = {}, data = {}) {
-  if (type === 'data_check_value') {
-    const value = inputs.value;
-    const state = value === undefined ? 'missing' : value === null ? 'null' : typeof value === 'string' && value.trim() === '' ? 'empty' : 'value';
-    return { value: state === 'value' ? value : inputs.fallback, state, is_missing: state === 'missing', is_null: state === 'null', is_empty: state === 'empty', has_value: state === 'value' };
-  }
-  if (type === 'data_format_number') {
-    const raw = inputs.value;
-    const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw.trim()) : NaN;
-    if (!Number.isFinite(value)) return { text: '', valid: false };
-    const style = ['decimal', 'percent', 'currency'].includes(inputs.style) ? inputs.style : 'decimal';
-    const minimumFractionDigits = Math.max(0, Math.min(20, Math.trunc(Number(inputs.minimum_fraction_digits) || 0)));
-    const maximumFractionDigits = Math.max(minimumFractionDigits, Math.min(20, Math.trunc(Number.isFinite(Number(inputs.maximum_fraction_digits)) ? Number(inputs.maximum_fraction_digits) : 2)));
-    try {
-      const options = { style, useGrouping: true, minimumFractionDigits, maximumFractionDigits };
-      if (style === 'currency') { const currency = String(inputs.currency || 'USD').toUpperCase(); if (!/^[A-Z]{3}$/.test(currency)) return { text: '', valid: false }; options.currency = currency; }
-      return { text: new Intl.NumberFormat(String(inputs.locale || 'en-US'), options).format(value), valid: true };
-    } catch { return { text: '', valid: false }; }
-  }
-  if (type === 'data_get_value_by_path') {
-    const result = readDataPath(inputs.value, inputs.path);
-    return { value: result.exists ? result.value : inputs.fallback, exists: result.exists };
-  }
-  if (type === 'data_find_array_item' || type === 'data_filter_array') {
-    const array = Array.isArray(inputs.array) ? inputs.array.slice(0, 10000) : [];
-    const path = String(inputs.path ?? '').trim();
-    const operator = ['equals', 'not_equals', 'contains', 'starts_with', 'ends_with', 'greater_than', 'greater_or_equal', 'less_than', 'less_or_equal', 'exists', 'is_empty'].includes(inputs.operator) ? inputs.operator : 'equals';
-    const matches = array.map((item, index) => ({ item, index, actual: path ? readDataPath(item, path) : { exists: true, value: item } }))
-      .filter(({ actual }) => compareArrayItem(actual, inputs.value, type === 'data_find_array_item' ? 'equals' : operator));
-    if (type === 'data_find_array_item') { const found = matches[0]; return { item: found?.item ?? null, index: found?.index ?? -1, found: Boolean(found) }; }
-    const filtered = matches.map(({ item }) => item);
-    return { array: filtered, count: filtered.length };
-  }
-  if (type === 'data_permission_overwrites') {
-    const permissionBits = {
-      CreateInstantInvite: 0, KickMembers: 1, BanMembers: 2, Administrator: 3, ManageChannels: 4, ManageGuild: 5, AddReactions: 6, ViewAuditLog: 7,
-      PrioritySpeaker: 8, Stream: 9, ViewChannel: 10, SendMessages: 11, SendTTSMessages: 12, ManageMessages: 13, EmbedLinks: 14, AttachFiles: 15,
-      ReadMessageHistory: 16, MentionEveryone: 17, UseExternalEmojis: 18, ViewGuildInsights: 19, Connect: 20, Speak: 21, MuteMembers: 22,
-      DeafenMembers: 23, MoveMembers: 24, UseVAD: 25, ChangeNickname: 26, ManageNicknames: 27, ManageRoles: 28, ManageWebhooks: 29,
-      ManageGuildExpressions: 30, UseApplicationCommands: 31, RequestToSpeak: 32, ManageEvents: 33, ManageThreads: 34, CreatePublicThreads: 35,
-      CreatePrivateThreads: 36, UseExternalStickers: 37, SendMessagesInThreads: 38, UseEmbeddedActivities: 39, ModerateMembers: 40,
-      ViewCreatorMonetizationAnalytics: 41, UseSoundboard: 42, CreateGuildExpressions: 43, CreateEvents: 44, UseExternalSounds: 45,
-      SendVoiceMessages: 46, SetVoiceChannelStatus: 48, SendPolls: 49, UseExternalApps: 50, PinMessages: 51, BypassSlowmode: 52
-    };
-    const parsePermissionBits = (value) => {
-      const text = String(value ?? '').trim();
-      if (!/^(?:\d+|0x[\da-f]+)$/i.test(text)) return 0n;
-      try { return BigInt(text); } catch { return 0n; }
-    };
-    const serializePermissions = (value, customBits = '') => {
-      const names = Array.isArray(value) ? value : [];
-      const mask = names.reduce((total, name) => permissionBits[name] === undefined ? total : total | (1n << BigInt(permissionBits[name])), parsePermissionBits(customBits));
-      return mask ? mask.toString() : '';
-    };
-    const overwrites = [];
-    const targetCount = Math.min(100, Math.max(1, ...Object.keys(inputs).map((key) => Number(/^target_id_(\d+)$/.exec(key)?.[1]) || 0)));
-    for (let index = 1; index <= targetCount; index += 1) {
-      const id = String(inputs[`target_id_${index}`] ?? '').trim();
-      if (!id) continue;
-      const permission = { id, type: Number(data[`target_type_${index}`]) === 1 ? 1 : 0 };
-      const allow = serializePermissions(data[`allow_${index}`], data[`allowBits_${index}`]);
-      const deny = serializePermissions(data[`deny_${index}`], data[`denyBits_${index}`]);
-      if (allow) permission.allow = allow;
-      if (deny) permission.deny = deny;
-      overwrites.push(permission);
-    }
-    return { overwrites };
-  }
-  if (type === 'data_to_json') {
-    try {
-      const json = JSON.stringify(inputs.value);
-      return { json: json ?? '', valid: json !== undefined };
-    } catch { return { json: '', valid: false }; }
-  }
-  if (type === 'data_parse_json') {
-    try { return { value: JSON.parse(String(inputs.json ?? '')), valid: true }; }
-    catch { return { value: null, valid: false }; }
-  }
-  if (type === 'data_to_number') {
-    const text = String(inputs.text ?? '').trim();
-    const valid = Boolean(text) && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text) && Number.isFinite(Number(text));
-    return { number: valid ? Number(text) : 0, valid };
-  }
-  if (type === 'data_to_text') {
-    const value = inputs.value;
-    if (value == null) return { text: '', valid: true };
-    if (typeof value === 'string') return { text: value.slice(0, 10000), valid: true };
-    try {
-      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
-      return { text: String(text ?? '').slice(0, 10000), valid: text !== undefined };
-    } catch { return { text: '', valid: false }; }
-  }
-  if (type === 'data_to_boolean') {
-    const value = inputs.value;
-    if (typeof value === 'boolean') return { boolean: value, valid: true };
-    if (typeof value === 'number') return { boolean: Number.isFinite(value) && value !== 0, valid: Number.isFinite(value) };
-    if (value == null) return { boolean: false, valid: true };
-    const normalized = String(value).trim().toLowerCase();
-    if (['true', 'yes', '1', 'on'].includes(normalized)) return { boolean: true, valid: true };
-    if (['false', 'no', '0', 'off', ''].includes(normalized)) return { boolean: false, valid: true };
-    return { boolean: false, valid: false };
-  }
-  if (type === 'data_regex') {
-    const text = String(inputs.text ?? '');
-    const pattern = String(inputs.pattern ?? '');
-    const flags = String(inputs.flags ?? '');
-    const mode = ['test', 'match', 'replace'].includes(data.mode) ? data.mode : 'test';
-    const invalid = (error) => ({ text, matched: false, match: '', matches: [], captures: [], index: -1, valid: false, error });
-    if (text.length > 8192) return invalid('Regex input is limited to 8,192 characters.');
-    if (pattern.length > 256) return invalid('Regex pattern is limited to 256 characters.');
-    if (flags.length > 6 || !/^[gimsuy]*$/.test(flags)) return invalid('Use the supported JavaScript regex flags: g, i, m, s, u, y.');
-    const safetyError = regexSafetyError(pattern);
-    if (safetyError) return invalid(safetyError);
-    try {
-      const expression = new RegExp(pattern, flags);
-      const results = [];
-      if (expression.global) {
-        let result;
-        while ((result = expression.exec(text)) && results.length < 1000) {
-          results.push(result);
-          if (result[0] === '') expression.lastIndex += 1;
-        }
-      } else {
-        const result = expression.exec(text);
-        if (result) results.push(result);
-      }
-      const first = results[0];
-      let outputText = text;
-      if (mode === 'replace') {
-        const replacement = String(inputs.replacement ?? '').slice(0, 2000);
-        outputText = text.replace(expression, replacement);
-        if (outputText.length > 10000) return invalid('Regex output is limited to 10,000 characters.');
-      }
-      return {
-        text: outputText,
-        matched: Boolean(first),
-        match: first?.[0] ?? '',
-        matches: results.map((result) => result[0]).slice(0, 1000),
-        captures: first ? first.slice(1).map((value) => value ?? '') : [],
-        index: first?.index ?? -1,
-        valid: true,
-        error: ''
-      };
-    } catch (error) { return invalid(error?.message || 'Invalid regular expression.'); }
-  }
-  if (type === 'data_array_create') {
-    const array = Array.from({ length: 50 }, (_, index) => inputs[`item_${index + 1}`]).filter((value) => value !== undefined && value !== null);
-    return { array, length: array.length };
-  }
-  if (type === 'data_array_concat') {
-    const numberedArrays = Object.keys(inputs)
-      .map((key) => ({ index: Number(/^array_(\d+)$/.exec(key)?.[1]), value: inputs[key] }))
-      .filter(({ index }) => Number.isInteger(index) && index > 0)
-      .sort((a, b) => a.index - b.index)
-      .map(({ value }) => Array.isArray(value) ? value : []);
-    const legacyArrays = [inputs.array_a, inputs.array_b].filter(Array.isArray);
-    const array = [...numberedArrays.flat(), ...legacyArrays.flat()].slice(0, 10000);
-    return { array, length: array.length };
-  }
-  if (type === 'data_text_uppercase') return { text: String(inputs.text ?? '').toUpperCase() };
-  if (type === 'data_text_lowercase') return { text: String(inputs.text ?? '').toLowerCase() };
-  if (type === 'data_text_titlecase') return { text: String(inputs.text ?? '').toLocaleLowerCase().replace(/(^|[\s\p{P}\p{S}])([\p{L}\p{N}])/gu, (_match, prefix, letter) => `${prefix}${letter.toLocaleUpperCase()}`) };
-  if (type === 'data_text_trim') return { text: String(inputs.text ?? '').trim() };
-  if (type === 'data_array_length') {
-    const length = Array.isArray(inputs.array) ? inputs.array.length : 0;
-    return { length, empty: length === 0 };
-  }
-  if (type === 'data_array_get') {
-    const array = Array.isArray(inputs.array) ? inputs.array : [];
-    const index = Math.trunc(Number(inputs.index));
-    const found = Number.isInteger(index) && index >= 0 && index < array.length;
-    return { value: found ? array[index] : null, found };
-  }
-  if (type === 'data_array_set') {
-    const array = Array.isArray(inputs.array) ? inputs.array.slice(0, 10000) : [];
-    const index = Math.trunc(Number(inputs.index));
-    const updated = Number.isInteger(index) && index >= 0 && index < array.length;
-    if (updated) array[index] = inputs.value;
-    return { array, updated };
-  }
-  if (type === 'data_array_append') {
-    const result = Array.isArray(inputs.array) ? inputs.array.slice(0, 10000) : [];
-    const items = Object.keys(inputs)
-      .map((key) => ({ index: Number(/^item_(\d+)$/.exec(key)?.[1]), value: inputs[key] }))
-      .filter(({ index, value }) => Number.isInteger(index) && index > 0 && value !== undefined)
-      .sort((a, b) => a.index - b.index)
-      .map(({ value }) => value);
-    if (inputs.value !== undefined) items.push(inputs.value);
-    for (const item of items) {
-      if (result.length >= 10000) break;
-      result.push(item);
-    }
-    return { array: result, length: result.length };
-  }
-  if (type === 'data_object_get') {
-    const object = inputs.object && typeof inputs.object === 'object' && !Array.isArray(inputs.object) ? inputs.object : {};
-    const key = String(inputs.key ?? '');
-    return { value: Object.hasOwn(object, key) ? object[key] : null, exists: Object.hasOwn(object, key) };
-  }
-  if (type === 'data_object_set') {
-    const object = inputs.object && typeof inputs.object === 'object' && !Array.isArray(inputs.object) ? inputs.object : {};
-    const key = String(inputs.key ?? '').slice(0, 256);
-    return { object: key ? { ...object, [key]: inputs.value } : { ...object } };
-  }
-  if (type === 'data_object_keys') {
-    const object = inputs.object && typeof inputs.object === 'object' && !Array.isArray(inputs.object) ? inputs.object : {};
-    const keys = Object.keys(object);
-    return { keys, length: keys.length };
-  }
-  if (type === 'data_string_split') {
-    const text = String(inputs.text ?? '');
-    const separator = String(inputs.separator ?? ',');
-    const array = (separator ? text.split(separator) : Array.from(text)).slice(0, 10000);
-    return { array, length: array.length, ...Object.fromEntries(array.slice(0, 50).map((value, index) => [`part_${index + 1}`, value])) };
-  }
-  if (type === 'data_parse_prefix_command') {
-    const prefix = String(inputs.prefix ?? '!');
-    const source = String(inputs.content ?? '').trimStart();
-    if (!prefix || !source.startsWith(prefix)) return { recognized: false, command: '', arguments: [], argument_count: 0 };
-    const raw = source.slice(prefix.length);
-    const tokens = [];
-    let current = '';
-    let quote = '';
-    let escaped = false;
-    let started = false;
-    for (const char of raw) {
-      if (escaped) { current += char; escaped = false; started = true; continue; }
-      if (char === '\\') { escaped = true; started = true; continue; }
-      if (quote) {
-        if (char === quote) quote = '';
-        else current += char;
-        started = true;
-        continue;
-      }
-      if (char === '"' || char === "'") { quote = char; started = true; continue; }
-      if (/\s/.test(char)) {
-        if (started) { tokens.push(current); current = ''; started = false; }
-        continue;
-      }
-      current += char;
-      started = true;
-    }
-    if (escaped) current += '\\';
-    if (started) tokens.push(current);
-    const [command = '', ...args] = tokens;
-    const boundedArgs = args.slice(0, 10000);
-    return {
-      recognized: Boolean(command), command, arguments: boundedArgs, argument_count: boundedArgs.length,
-      ...Object.fromEntries(boundedArgs.slice(0, 50).map((value, index) => [`argument_${index + 1}`, value]))
-    };
-  }
-  if (type === 'data_string_join') {
-    const array = Array.isArray(inputs.array) ? inputs.array : [];
-    return { text: array.map((value) => value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value)).join(String(inputs.separator ?? ', ')) };
-  }
-  if (type === 'data_text_replace') {
-    const text = String(inputs.text ?? '');
-    const search = String(inputs.search ?? '');
-    if (!search) return { text, replacements: 0 };
-    const parts = text.split(search);
-    return { text: parts.join(String(inputs.replacement ?? '')), replacements: parts.length - 1 };
-  }
-  if (type === 'data_format_time' || type === 'data_to_iso_time') {
-    const raw = inputs.value;
-    const date = typeof raw === 'number' || (typeof raw === 'string' && /^-?\d+(?:\.\d+)?$/.test(raw.trim()))
-      ? new Date(Number(raw)) : new Date(raw);
-    if (!Number.isFinite(date.getTime())) return { text: '', valid: false };
-    if (type === 'data_to_iso_time') return { text: date.toISOString(), valid: true };
-    try {
-      const options = { timeZone: String(inputs.timeZone || 'UTC') };
-      const dateStyle = String(inputs.dateStyle || 'medium');
-      const timeStyle = String(inputs.timeStyle || 'short');
-      if (dateStyle !== 'none') options.dateStyle = dateStyle;
-      if (timeStyle !== 'none') options.timeStyle = timeStyle;
-      if (!options.dateStyle && !options.timeStyle) options.dateStyle = 'medium';
-      return { text: new Intl.DateTimeFormat(String(inputs.locale || 'en-US'), options).format(date), valid: true };
-    } catch { return { text: '', valid: false }; }
-  }
-  return {};
-}
-import { downloadSafeHttpFile, performSafeHttpRequest } from './SafeHttpRequest.js';
+import { evaluateDataNode } from './nodes/runtime/data.js';
+import { evaluateLogicNode } from './nodes/runtime/logic.js';
+import { buildDiscordComponents, buildDiscordModal } from './nodes/runtime/builders.js';
+import {
+  executeCountedLoop, executeParallelBranches, executeRepeatWhile, parseWaitUntilTime,
+  selectIfBranch, selectSwitchBranch, validateDelayDuration, validateLoopCount,
+  validateRepeatInterval, validateWaitConditionSettings, waitFor
+} from './nodes/runtime/control_flow.js';
 import { PluginStore } from './PluginStore.js';
-
-function buildDiscordComponents(rows = [], renderText = (value) => value) {
-  const styles = { primary: 1, secondary: 2, success: 3, danger: 4, link: 5 };
-  const selectTypes = { string_select: 3, user_select: 5, role_select: 6, mentionable_select: 7, channel_select: 8 };
-  return (Array.isArray(rows) ? rows : []).filter((row) => Array.isArray(row.components) && row.components.length).slice(0, 5).map((row) => ({
-    type: 1,
-    components: row.components.slice(0, 5).map((component) => selectTypes[component.type] ? {
-      type: selectTypes[component.type],
-      custom_id: String(renderText(String(component.customId || ''))).slice(0, 100),
-      ...(component.placeholder ? { placeholder: String(renderText(String(component.placeholder))).slice(0, 150) } : {}),
-      min_values: Math.max(0, Math.min(25, Number(component.minValues) || 0)),
-      max_values: Math.max(1, Math.min(25, Number(component.maxValues) || 1)),
-      ...(component.type === 'string_select' ? { options: (Array.isArray(component.options) ? component.options : []).slice(0, 25).map((option) => ({
-        label: String(renderText(String(option.label || ''))).slice(0, 100), value: String(renderText(String(option.value || ''))).slice(0, 100),
-        ...(option.description ? { description: String(renderText(String(option.description))).slice(0, 100) } : {}),
-        ...(option.emoji ? { emoji: parseEmoji(option.emoji) } : {})
-      })) } : {}),
-      ...(component.type === 'channel_select' && Array.isArray(component.channelTypes) && component.channelTypes.length ? { channel_types: component.channelTypes.slice(0, 8).map(Number).filter(Number.isInteger) } : {})
-    } : {
-      type: 2, style: styles[component.style] || 1,
-      label: String(renderText(String(component.label || ''))).slice(0, 80),
-      ...(component.emoji ? { emoji: parseEmoji(component.emoji) } : {}),
-      ...(component.style === 'link' ? { url: String(renderText(String(component.url || ''))).slice(0, 512) } : { custom_id: String(renderText(String(component.customId || ''))).slice(0, 100) }),
-      disabled: component.style === 'link' ? false : Boolean(component.disabled)
-    })
-  }));
-}
-
-function buildDiscordModal(config, renderText = (value) => value) {
-  const modal = config && typeof config === 'object' ? config : {};
-  const customId = String(renderText(String(modal.customId || ''))).trim();
-  const title = String(renderText(String(modal.title || ''))).trim();
-  const fields = Array.isArray(modal.components) ? modal.components : [];
-  if (!customId || customId.length > 100) throw new Error('Popup Modal needs a custom ID from 1 to 100 characters.');
-  if (!title || title.length > 45) throw new Error('Popup Modal title must be from 1 to 45 characters.');
-  if (fields.length < 1 || fields.length > 5) throw new Error('Popup Modal must have 1–5 fields.');
-  const ids = new Set();
-  const optionsFor = (field, max) => {
-    const options = Array.isArray(field.options) ? field.options : [];
-    if (options.length < 1 || options.length > max) throw new Error(`${field.type === 'string_select' ? 'String select' : 'Checkbox or radio group'} needs 1–${max} options.`);
-    const values = new Set();
-    return options.map((option) => {
-      const label = String(renderText(String(option.label || ''))).trim();
-      const value = String(renderText(String(option.value || ''))).trim();
-      if (!label || label.length > 100 || !value || value.length > 100 || values.has(value)) throw new Error('Modal option labels and values must be unique, non-empty, and at most 100 characters.');
-      values.add(value);
-      return { label, value, ...(option.description ? { description: String(renderText(String(option.description))).slice(0, 100) } : {}) };
-    });
-  };
-  const components = fields.map((field) => {
-    const fieldId = String(renderText(String(field.customId || ''))).trim();
-    const label = String(renderText(String(field.label || ''))).trim();
-    const description = field.description ? String(renderText(String(field.description))).trim() : '';
-    if (!fieldId || fieldId.length > 100 || ids.has(fieldId)) throw new Error('Each modal field needs a unique custom ID from 1 to 100 characters.');
-    ids.add(fieldId);
-    if (!label || label.length > 45) throw new Error('Modal field labels must be from 1 to 45 characters.');
-    if (description.length > 100) throw new Error('Modal field descriptions can be at most 100 characters.');
-    const type = field.type || 'text';
-    let component;
-    if (type === 'text') {
-      const maxLength = Number(field.maxLength ?? 4000);
-      const minLength = Number(field.minLength ?? 0);
-      if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 4000 || !Number.isInteger(minLength) || minLength < 0 || minLength > maxLength) throw new Error('Text input length must be between 0 and 4,000 characters.');
-      component = { type: 4, custom_id: fieldId, style: Number(field.style) === 2 ? 2 : 1, min_length: minLength, max_length: maxLength, required: field.required !== false,
-        ...(field.placeholder ? { placeholder: String(renderText(String(field.placeholder))).slice(0, 100) } : {}),
-        ...(field.value != null && field.value !== '' ? { value: String(renderText(String(field.value))).slice(0, maxLength) } : {}) };
-    } else if (type === 'string_select') {
-      const options = optionsFor(field, 25);
-      const maxValues = Math.max(1, Math.min(options.length, Number(field.maxValues) || 1));
-      const requestedMin = Number(field.minValues ?? (field.required === false ? 0 : 1)) || 0;
-      component = { type: 3, custom_id: fieldId, options, min_values: Math.min(maxValues, field.required === false ? Math.max(0, requestedMin) : Math.max(1, requestedMin)), max_values: maxValues, required: field.required !== false,
-        ...(field.placeholder ? { placeholder: String(renderText(String(field.placeholder))).slice(0, 150) } : {}) };
-    } else if (['user_select', 'role_select', 'mentionable_select', 'channel_select'].includes(type)) {
-      const componentType = { user_select: 5, role_select: 6, mentionable_select: 7, channel_select: 8 }[type];
-      const maxValues = Math.max(1, Math.min(25, Number(field.maxValues) || 1));
-      const requestedMin = Number(field.minValues ?? (field.required === false ? 0 : 1)) || 0;
-      component = { type: componentType, custom_id: fieldId, min_values: Math.min(maxValues, field.required === false ? Math.max(0, requestedMin) : Math.max(1, requestedMin)), max_values: maxValues, required: field.required !== false,
-        ...(field.placeholder ? { placeholder: String(renderText(String(field.placeholder))).slice(0, 150) } : {}),
-        ...(type === 'channel_select' && Array.isArray(field.channelTypes) ? { channel_types: field.channelTypes.slice(0, 8).map(Number).filter(Number.isInteger) } : {}) };
-    } else if (type === 'checkbox') {
-      component = { type: 23, custom_id: fieldId, ...(field.defaultChecked ? { default: true } : {}) };
-    } else if (type === 'file_upload') {
-      const maxValues = Math.max(1, Math.min(10, Number(field.maxValues) || 1));
-      const requestedFileTypes = Array.isArray(field.fileTypes) ? [...new Set(field.fileTypes.map((item) => String(item).trim().toLowerCase()).filter(Boolean))] : [];
-      if (requestedFileTypes.length > 10 || requestedFileTypes.some((item) => !/^(image|video|audio|\.[a-z0-9]{1,16})$/.test(item))) throw new Error('File type filters must be image, video, audio, or a file extension such as .pdf (up to 10).');
-      const fileTypes = requestedFileTypes;
-      const requestedMin = Number(field.minValues ?? (field.required === false ? 0 : 1)) || 0;
-      component = { type: 19, custom_id: fieldId, min_values: Math.min(maxValues, field.required === false ? Math.max(0, requestedMin) : Math.max(1, requestedMin)), max_values: maxValues, required: field.required !== false, ...(fileTypes.length ? { file_types: fileTypes } : {}) };
-    } else if (type === 'checkbox_group' || type === 'radio_group') {
-      const options = optionsFor(field, 10);
-      if (type === 'radio_group' && options.length < 2) throw new Error('Radio groups need at least two options.');
-      const maxValues = Math.max(1, Math.min(options.length, Number(field.maxValues) || options.length));
-      component = { type: type === 'checkbox_group' ? 22 : 21, custom_id: fieldId, options, required: field.required !== false,
-        ...(type === 'checkbox_group' ? { min_values: Math.min(maxValues, field.required === false ? Math.max(0, Number(field.minValues) || 0) : Math.max(1, Number(field.minValues) || 0)), max_values: maxValues } : {}) };
-    } else throw new Error(`Unsupported modal field type: ${type}`);
-    return { type: 18, label, ...(description ? { description } : {}), component };
-  });
-  return { custom_id: customId, title, components };
-}
+import { EmbedBuilder, parseEmoji } from 'chezcord';
+import { evaluateMathNode } from './MathOperations.js';
+import { getTemplateReferences, renderTextTemplate } from './TemplateExpressions.js';
+//
+const DISCORD_GUILD_NODE_TYPES = new Set([
+  'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+  'action_create_thread', 'action_start_thread_from_message',
+  'action_create_channel', 'action_edit_channel', 'action_delete_channel',
+  'action_create_role', 'action_member_role', 'action_moderate_member',
+  'action_voice_channel_status', 'action_voice_state'
+]);
+const DISCORD_INTERACTION_NODE_TYPES = new Set([
+  'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
+  'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
+]);
+const NETWORK_NODE_TYPES = new Set(['action_http_download', 'action_web_fetch', 'action_web_retry']);
+const CRYPTO_NODE_TYPES = new Set([
+  'action_crypto_hash', 'action_crypto_hmac', 'action_crypto_verify_hmac',
+  'action_crypto_encrypt', 'action_crypto_decrypt', 'action_crypto_random'
+]);
 
 function findModalSubmittedValue(components, customId) {
   const visit = (items) => {
@@ -558,7 +67,26 @@ function getPermissionOverwritePins(node, connections = []) {
   return Array.from({ length: count }, (_, index) => ({ id: `target_id_${index + 1}`, label: `Target ID ${index + 1}`, type: 'string', defaultValue: '' }));
 }
 
-function getNodeInputs(node, connections = []) {
+function getNodeInputs(node, connections = [], variables = []) {
+  const inputs = getNodeBaseInputs(node, connections);
+  const knownVariables = new Set(variables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
+  const connectedInputs = new Set(connections.filter((wire) => wire.targetNodeId === node?.id).map((wire) => wire.targetPinId));
+  const slots = new Set();
+  for (const pin of inputs) {
+    if (!['string', 'number', 'arg'].includes(pin.type) || pin.id.startsWith('arg_') || pin.id.startsWith('slot_') || connectedInputs.has(pin.id)) continue;
+    const value = node?.data?.[pin.id];
+    if (typeof value !== 'string') continue;
+    for (const match of value.matchAll(/(\\)?\{\{\s*([^{}]+?)\s*\}\}/g)) {
+      if (match[1]) continue;
+      for (const name of getTemplateReferences(match[2])) {
+        if (!knownVariables.has(name.toLowerCase()) && !/^arg\d+$/i.test(name)) slots.add(name);
+      }
+    }
+  }
+  return [...inputs, ...[...slots].map((name) => ({ id: `slot_${name}`, label: name, type: 'arg', defaultValue: '' }))];
+}
+
+function getNodeBaseInputs(node, connections = []) {
   if (node?.type === 'math_sum' || node?.type === 'math_average') {
     const pinIds = ['a', 'b', 'c', 'd'];
     const highest = connections.reduce((value, wire) => {
@@ -666,6 +194,7 @@ export class GraphRunner {
     const traces = [];
     const debugSteps = [];
     const repeatLoopStack = [];
+    let functionReturnValue;
     const recordExecutedNode = (nodeId) => {
       executedNodeIds.push(nodeId);
       if (executedNodeIds.length > 500) executedNodeIds.shift();
@@ -838,7 +367,7 @@ export class GraphRunner {
         if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         if (seen.has(cacheKey)) return undefined;
         seen.add(cacheKey);
-        const value = resolveDataInput(sourceNode, slot === '1' && getNodeInputs(sourceNode, connections).some((pin) => pin.id === 'value_in') ? 'value_in' : `value_in_${slot}`, undefined, seen);
+        const value = resolveDataInput(sourceNode, slot === '1' && getNodeInputs(sourceNode, connections, [...graphVariables, ...projectVariables]).some((pin) => pin.id === 'value_in') ? 'value_in' : `value_in_${slot}`, undefined, seen);
         dataCache.set(cacheKey, value);
         return value;
       }
@@ -856,6 +385,8 @@ export class GraphRunner {
       }
       if (sourceNode.type === 'variable_set' && pinId === 'variable') return resolveVariableReference(sourceNode, seen);
       if (sourceNode.type === 'function_input') {
+        const cacheKey = `${sourceNode.id}:value`;
+        if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         return sourceNode.data?.defaultValue ?? defaultValueForType(sourceNode.data?.valueType);
       }
       if (sourceNode.type === 'build_modal' && pinId === 'modal') {
@@ -878,7 +409,7 @@ export class GraphRunner {
 
       if (sourceNode.type.startsWith('data_')) {
         const definition = NodeDefinitions[sourceNode.type];
-        const inputs = Object.fromEntries(getNodeInputs(sourceNode, connections).map((pin) => [pin.id, resolveDataInput(sourceNode, pin.id, pin.defaultValue, seen)]));
+        const inputs = Object.fromEntries(getNodeInputs(sourceNode, connections, [...graphVariables, ...projectVariables]).map((pin) => [pin.id, resolveDataInput(sourceNode, pin.id, pin.defaultValue, seen)]));
         const result = evaluateDataNode(sourceNode.type, inputs, sourceNode.data || {});
         for (const [id, value] of Object.entries(result)) dataCache.set(`${sourceNode.id}:${id}`, value);
         return result[pinId];
@@ -919,10 +450,7 @@ export class GraphRunner {
       if (sourceNode.type.startsWith('logic_')) {
         const definition = NodeDefinitions[sourceNode.type];
         const values = Object.fromEntries((definition?.inputs || []).map((pin) => [pin.id, Boolean(resolveDataInput(sourceNode, pin.id, pin.defaultValue, seen))]));
-        const result = sourceNode.type === 'logic_xor_many' ? Object.entries(values).filter(([id, value]) => /^input_\d+$/.test(id) && value).length % 2 === 1
-          : sourceNode.type === 'logic_and' ? values.a && values.b
-          : sourceNode.type === 'logic_or' ? values.a || values.b
-            : sourceNode.type === 'logic_xor' ? values.a !== values.b : !values.value;
+        const result = evaluateLogicNode(sourceNode.type, values);
         dataCache.set(cacheKey, result);
         return result;
       }
@@ -936,6 +464,7 @@ export class GraphRunner {
         return result;
       }
       if (sourceNode.type === 'function_call') {
+        if (dataCache.has(cacheKey)) return dataCache.get(cacheKey);
         const targetGraph = context.resolveFunctionGraph?.(sourceNode.data?.graphId);
         if (!targetGraph) return undefined;
         const parameters = targetGraph.nodes.filter((node) => node.type === 'function_input');
@@ -1108,7 +637,10 @@ export class GraphRunner {
           if (seen.has(key)) return undefined;
           return resolveDataInput(node, `arg_${argumentIndex}`, undefined, new Set(seen).add(key));
         }
-        return undefined;
+        const slotId = `slot_${name}`;
+        const key = `${node.id}:${slotId}`;
+        if (seen.has(key)) return undefined;
+        return resolveDataInput(node, slotId, undefined, new Set(seen).add(key));
       }, context.appEmojis);
     }
 
@@ -1209,7 +741,11 @@ export class GraphRunner {
     }
 
     const normalizedEvent = ['SLASH_COMMAND', 'BUTTON_CLICK', 'SELECT_MENU', 'MODAL_SUBMIT'].includes(eventName) ? 'INTERACTION_CREATE' : eventName;
-    const startNode = nodes.find((node) => {
+    const startNode = eventName === 'FUNCTION_CALL'
+      ? (nodes.find((node) => node.type === 'function_input' && findExecOutputs(node.id, 'exec').length > 0)
+         || nodes.find((node) => node.type === 'function_input')
+         || nodes.find((node) => node.type === 'function_return'))
+      : nodes.find((node) => {
       const definition = NodeDefinitions[node.type];
       if (definition?.gatewayEvent !== normalizedEvent) return false;
       if (node.type === 'event_message_create' && typeof node.data?.prefix === 'string' && node.data.prefix
@@ -1233,9 +769,34 @@ export class GraphRunner {
         return { executedNodeIds, traces, error: null };
       }
     }
+    if (eventNodeType === 'event_bot_startup') {
+      const waitForGateway = Boolean(resolveDataInput(startNode, 'wait_for_gateway', startNode.data?.wait_for_gateway ?? false));
+      let gatewayConnected = Boolean(eventPayload?.gatewayConnected);
+      if (waitForGateway) {
+        const requestedTimeout = Number(resolveDataInput(startNode, 'timeout_seconds', startNode.data?.timeout_seconds ?? 30));
+        const timeoutSeconds = Number.isFinite(requestedTimeout) ? Math.max(0, Math.min(86400, Math.trunc(requestedTimeout))) : 30;
+        if (typeof context.waitForGateway !== 'function') throw new Error('Gateway readiness waiting is unavailable in this workspace.');
+        gatewayConnected = await context.waitForGateway(timeoutSeconds * 1000, context.signal);
+        if (context.signal?.aborted) return { executedNodeIds, traces, error: 'Graph execution cancelled.' };
+      }
+      eventPayload = { ...eventPayload, gatewayConnected };
+    }
 
     recordExecutedNode(startNode.id);
     log(`[Graph] Triggered event node: ${startNode.label || startNode.type} (${startNode.id})`);
+
+    if (eventName === 'FUNCTION_CALL') {
+      const argumentValues = eventPayload?.argumentValues instanceof Map
+        ? eventPayload.argumentValues
+        : new Map(Object.entries(eventPayload?.argumentValues || {}));
+      for (const inputNode of nodes.filter((n) => n.type === 'function_input')) {
+        const paramId = inputNode.data?.paramId || inputNode.id;
+        const value = argumentValues.has(paramId)
+          ? argumentValues.get(paramId)
+          : (inputNode.data?.defaultValue ?? defaultValueForType(inputNode.data?.valueType));
+        dataCache.set(`${inputNode.id}:value`, value);
+      }
+    }
 
     if (eventNodeType === 'event_message_create') {
       dataCache.set(`${startNode.id}:content`, eventPayload.content || '');
@@ -1342,7 +903,7 @@ export class GraphRunner {
       log(`[Graph] Executing node: ${targetNode.label || targetNode.type} (${targetNode.id})`);
 
       try {
-        const debugInputs = context.debug ? [...getNodeInputs(targetNode, connections), ...getNodeArgumentPins(targetNode, connections)].filter((pin) => pin.type !== 'exec').map((pin) => ({
+        const debugInputs = context.debug ? [...getNodeInputs(targetNode, connections, [...graphVariables, ...projectVariables]), ...getNodeArgumentPins(targetNode, connections)].filter((pin) => pin.type !== 'exec').map((pin) => ({
           pinId: pin.id,
           label: pin.label || pin.id,
           value: debugValue(resolveDataInput(targetNode, pin.id, targetNode.data?.[pin.id] ?? pin.defaultValue), pin.id)
@@ -1382,20 +943,14 @@ export class GraphRunner {
           }
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'branch_if') {
-          const conditionVal = resolveDataInput(targetNode, 'condition', false);
-          log(`[Branch] Condition evaluated to: ${Boolean(conditionVal)}`);
-          const branchPin = conditionVal ? 'true_exec' : 'false_exec';
-          const nextWires = findExecOutputs(targetNode.id, branchPin);
-          currentExecWires.push(...nextWires);
+          const decision = selectIfBranch(resolveDataInput(targetNode, 'condition', false));
+          log(decision.logMessage);
+          currentExecWires.push(...findExecOutputs(targetNode.id, decision.branchPin));
         } else if (targetNode.type === 'branch_switch') {
           const value = resolveDataInput(targetNode, 'value', '');
-          const selected = Array.from({ length: 50 }, (_, index) => index + 1).find((index) => {
-            const caseValue = resolveDataInput(targetNode, `case_${index}`, '');
-            return caseValue !== '' && String(value ?? '') === String(caseValue ?? '');
-          });
-          const branchPin = selected ? `case_${selected}_exec` : 'default_exec';
-          log(`[Switch] Value matched ${selected ? `Case ${selected}` : 'Default'}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, branchPin));
+          const decision = selectSwitchBranch(value, (index) => resolveDataInput(targetNode, `case_${index}`, ''));
+          log(decision.logMessage);
+          currentExecWires.push(...findExecOutputs(targetNode.id, decision.branchPin));
         } else if (targetNode.type === 'compare_text') {
           const textA = String(resolveDataInput(targetNode, 'text_a', targetNode.data?.text_a || ''));
           const textB = String(resolveDataInput(targetNode, 'text_b', targetNode.data?.text_b || ''));
@@ -1410,69 +965,53 @@ export class GraphRunner {
           dataCache.set(`${targetNode.id}:result`, result);
           log(`[Compare Text] Compared text values using ${op}; result: ${result}.`);
         } else if (targetNode.type === 'delay') {
-          const ms = Number(resolveDataInput(targetNode, 'ms', targetNode.data?.ms ?? 1000));
-          if (!Number.isFinite(ms) || ms < 0 || ms > 604_800_000) throw new Error('Wait duration must be between 0 ms and 7 days.');
+          const ms = validateDelayDuration(resolveDataInput(targetNode, 'ms', targetNode.data?.ms ?? 1000));
           log(`[Delay] Sleeping for ${ms}ms...`);
           await waitFor(ms, context.signal);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'loop_count') {
-          const rawCount = Number(resolveDataInput(targetNode, 'count', targetNode.data?.count ?? 1));
-          if (!Number.isFinite(rawCount) || rawCount < 0) throw new Error('For Count needs a finite count of zero or more.');
-          const count = Math.trunc(rawCount);
-          if (count > 1000) throw new Error('For Count is limited to 1,000 iterations per run.');
+          const count = validateLoopCount(resolveDataInput(targetNode, 'count', targetNode.data?.count ?? 1));
           const bodyWires = findExecOutputs(targetNode.id, 'body_exec');
           const completedWires = findExecOutputs(targetNode.id, 'completed_exec');
-          if (count > 0 && bodyWires.length === 0) throw new Error('For Count needs at least one wire connected to its Body output.');
-          if (bodyWires.length && count > 0) {
-            for (let index = 0; index < count; index += 1) {
-              dataCache.set(`${targetNode.id}:index`, index);
-              log(`[For Count] Iteration ${index + 1} of ${count}.`);
-              for (const wire of bodyWires) invalidateDataDependencies(wire.targetNodeId, wire.targetPinId);
-              const result = await runExecWires([...bodyWires], inParallelBranch, parallelDepth);
-              if (result?.error) throw Object.assign(new Error(result.error), context.signal?.aborted ? { name: 'AbortError' } : {});
-              if (result?.joinId) throw new Error('For Count cannot cross a Parallel Join boundary. Put the loop inside the parallel branch instead.');
-            }
-          }
-          currentExecWires.push(...completedWires);
+          currentExecWires.push(...await executeCountedLoop({
+            count,
+            bodyWires,
+            completedWires,
+            setIndex: (index) => dataCache.set(`${targetNode.id}:index`, index),
+            invalidateBody: (wires) => wires.forEach((wire) => invalidateDataDependencies(wire.targetNodeId, wire.targetPinId)),
+            runBody: (wires) => runExecWires([...wires], inParallelBranch, parallelDepth),
+            createExecutionError: (message) => Object.assign(new Error(message), context.signal?.aborted ? { name: 'AbortError' } : {}),
+            log
+          }));
         } else if (targetNode.type === 'repeat_while') {
-          const intervalMs = Number(resolveDataInput(targetNode, 'interval_ms', targetNode.data?.interval_ms ?? 500));
-          if (!Number.isFinite(intervalMs) || intervalMs < 100 || intervalMs > 604_800_000) throw new Error('Repeat While interval must be between 100 ms and 7 days.');
+          const intervalMs = validateRepeatInterval(resolveDataInput(targetNode, 'interval_ms', targetNode.data?.interval_ms ?? 500));
           const bodyWires = findExecOutputs(targetNode.id, 'body_exec');
           const completedWires = findExecOutputs(targetNode.id, 'completed_exec');
           const conditionWire = findInputConnection(targetNode.id, 'condition');
-          const loopState = { iteration: 0, lastLogAt: 0 };
-          const currentStepBaseline = flowStepCount;
-          const getCondition = () => {
-            if (conditionWire) invalidateDataDependencies(conditionWire.sourceNodeId, conditionWire.sourcePinId);
-            return Boolean(resolveDataInput(targetNode, 'condition', true));
-          };
-          if (getCondition() && !bodyWires.length) throw new Error('Repeat While needs at least one wire connected to its Body output.');
-          repeatLoopStack.push(loopState);
-          try {
-            while (getCondition()) {
-              if (loopState.iteration === 0 || Date.now() - loopState.lastLogAt >= 30_000) {
-                log(`[Repeat While] Waiting ${intervalMs} ms before iteration ${loopState.iteration + 1}.`);
-              }
-              await waitFor(intervalMs, context.signal);
-              if (!getCondition()) break;
-              loopState.iteration += 1;
-              dataCache.set(`${targetNode.id}:iteration`, loopState.iteration);
-              for (const wire of bodyWires) invalidateDataDependencies(wire.targetNodeId, wire.targetPinId);
-              const bodyResult = await runExecWires([...bodyWires], inParallelBranch, parallelDepth);
-              if (bodyResult?.error) throw Object.assign(new Error(bodyResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
-              if (bodyResult?.joinId) throw new Error('Repeat While cannot cross a Parallel Join boundary. Put the loop inside the parallel branch instead.');
-              flowStepCount = currentStepBaseline;
-            }
-          } finally {
-            repeatLoopStack.pop();
-            flowStepCount = currentStepBaseline;
-          }
-          currentExecWires.push(...completedWires);
+          currentExecWires.push(...await executeRepeatWhile({
+            intervalMs,
+            bodyWires,
+            completedWires,
+            getCondition: () => {
+              if (conditionWire) invalidateDataDependencies(conditionWire.sourceNodeId, conditionWire.sourcePinId);
+              return Boolean(resolveDataInput(targetNode, 'condition', true));
+            },
+            wait: (duration) => waitFor(duration, context.signal),
+            setIteration: (iteration) => dataCache.set(`${targetNode.id}:iteration`, iteration),
+            invalidateBody: (wires) => wires.forEach((wire) => invalidateDataDependencies(wire.targetNodeId, wire.targetPinId)),
+            runBody: (wires) => runExecWires([...wires], inParallelBranch, parallelDepth),
+            beginLoop: (state) => repeatLoopStack.push(state),
+            endLoop: () => repeatLoopStack.pop(),
+            getFlowStepCount: () => flowStepCount,
+            setFlowStepCount: (count) => { flowStepCount = count; },
+            createExecutionError: (message) => Object.assign(new Error(message), context.signal?.aborted ? { name: 'AbortError' } : {}),
+            log
+          }));
         } else if (targetNode.type === 'wait_until_condition') {
-          const timeoutMs = Number(resolveDataInput(targetNode, 'timeout_ms', targetNode.data?.timeout_ms ?? 30000));
-          const intervalMs = Number(resolveDataInput(targetNode, 'interval_ms', targetNode.data?.interval_ms ?? 250));
-          if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 86_400_000) throw new Error('Wait Until Condition timeout must be between 1 ms and 24 hours.');
-          if (!Number.isFinite(intervalMs) || intervalMs < 50 || intervalMs > 10_000) throw new Error('Wait Until Condition check interval must be between 50 and 10,000 ms.');
+          const { timeoutMs, intervalMs } = validateWaitConditionSettings(
+            resolveDataInput(targetNode, 'timeout_ms', targetNode.data?.timeout_ms ?? 30000),
+            resolveDataInput(targetNode, 'interval_ms', targetNode.data?.interval_ms ?? 250)
+          );
           const conditionWire = findInputConnection(targetNode.id, 'condition');
           const deadline = Date.now() + timeoutMs;
           let ready = Boolean(resolveDataInput(targetNode, 'condition', false));
@@ -1485,17 +1024,47 @@ export class GraphRunner {
           log(ready ? '[Wait Until Condition] Condition became true.' : '[Wait Until Condition] Timed out.');
           currentExecWires.push(...findExecOutputs(targetNode.id, branch));
         } else if (targetNode.type === 'wait_until_time') {
-          const rawTime = String(resolveDataInput(targetNode, 'time', targetNode.data?.time || '')).trim();
-          const targetTime = /^-?\d+(?:\.\d+)?$/.test(rawTime) ? Number(rawTime) : Date.parse(rawTime);
-          if (!rawTime || !Number.isFinite(targetTime)) throw new Error('Wait Until Time needs a valid ISO date/time or Unix timestamp in milliseconds.');
-          const waitMs = targetTime - Date.now();
-          if (waitMs > 7 * 24 * 60 * 60 * 1000) throw new Error('Wait Until Time cannot wait more than 7 days.');
+          const { targetTime, waitMs } = parseWaitUntilTime(resolveDataInput(targetNode, 'time', targetNode.data?.time || ''));
           if (waitMs > 0) {
             log(`[Wait Until Time] Waiting until ${new Date(targetTime).toISOString()}.`);
             await waitFor(waitMs, context.signal);
           } else {
             log('[Wait Until Time] The specified time has already passed, continuing now.');
           }
+          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
+        } else if (targetNode.type === 'function_return') {
+          const returnValue = resolveDataInput(targetNode, 'value', defaultValueForType(targetNode.data?.valueType));
+          functionReturnValue = returnValue;
+          dataCache.set(`${targetNode.id}:value`, returnValue);
+          log('[Function Return] Returned value.');
+        } else if (targetNode.type === 'function_call') {
+          const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
+          if (!targetGraph) throw new Error('Call Function node requires a valid function graph selected.');
+          const callStack = Array.isArray(context.graphCallStack) ? context.graphCallStack : [graph.id];
+          if (callStack.includes(targetGraph.id)) throw new Error('Function call cycle detected. Graphs cannot call themselves or call each other in a loop.');
+          if (callStack.length >= 24) throw new Error('Function call nesting exceeded 24 levels.');
+          const parameters = (targetGraph.nodes || []).filter((node) => node.type === 'function_input');
+          const missingParameter = parameters.find((parameter) => parameter.data?.optional === false
+            && !connections.some((wire) => wire.targetNodeId === targetNode.id && wire.targetPinId === `arg_${parameter.data?.paramId || parameter.id}`));
+          if (missingParameter) throw new Error(`${targetGraph.name || 'Function'} requires an input for “${missingParameter.data?.name || 'Input'}”.`);
+          const argumentValues = new Map(parameters.map((parameter) => {
+            const parameterId = parameter.data?.paramId || parameter.id;
+            const value = resolveDataInput(targetNode, `arg_${parameterId}`, parameter.data?.defaultValue ?? defaultValueForType(parameter.data?.valueType));
+            return [parameterId, value];
+          }));
+          log(`[Call Function] Invoking ${targetGraph.name || targetGraph.id}.`);
+          const nestedResult = await GraphRunner.execute(targetGraph, 'FUNCTION_CALL', {
+            ...eventPayload,
+            argumentValues
+          }, {
+            ...context,
+            graphCallStack: [...callStack, targetGraph.id],
+            variablesState: context.getGraphVariableState?.(targetGraph) || (targetGraph.id === graph.id ? persistentVariableValues : new Map()),
+            interactionState
+          });
+          if (nestedResult.error) throw Object.assign(new Error(nestedResult.error), context.signal?.aborted ? { name: 'AbortError' } : {});
+          if (Array.isArray(nestedResult.executedNodeIds)) executedNodeIds.push(...nestedResult.executedNodeIds);
+          dataCache.set(`${targetNode.id}:result`, nestedResult.result);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'execute_graph') {
           const targetGraph = context.resolveFunctionGraph?.(targetNode.data?.graphId);
@@ -1513,17 +1082,13 @@ export class GraphRunner {
           if (!nestedResult.executedNodeIds.length) throw new Error(`“${targetGraph.name || 'Target graph'}” has no trigger matching ${eventName}.`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'parallel') {
-          const branchPins = ['branch_a_exec', 'branch_b_exec'];
-          const branches = branchPins.map((pinId) => findExecOutputs(targetNode.id, pinId));
-          if (branches.some((branch) => branch.length !== 1)) throw new Error('Parallel needs exactly one wire connected to each branch output.');
-          log('[Parallel] Running both branches concurrently. Connect both branches to the same Join node.');
-          const results = await Promise.all(branches.map((branch) => runExecWires(branch, true, parallelDepth + 1)));
-          const failed = results.find((result) => result?.error);
-          if (failed) throw Object.assign(new Error(failed.error), context.signal?.aborted ? { name: 'AbortError' } : {});
-          const joinIds = new Set(results.map((result) => result?.joinId).filter(Boolean));
-          if (joinIds.size !== 1 || results.some((result) => !result?.joinId)) throw new Error('Both Parallel branches must reach the same Join node.');
-          const joinId = [...joinIds][0];
-          log('[Parallel] Both branches completed. Continuing after Join.');
+          const branches = ['branch_a_exec', 'branch_b_exec'].map((pinId) => findExecOutputs(targetNode.id, pinId));
+          const joinId = await executeParallelBranches(
+            branches,
+            (branch) => runExecWires(branch, true, parallelDepth + 1),
+            log,
+            (message) => Object.assign(new Error(message), context.signal?.aborted ? { name: 'AbortError' } : {})
+          );
           currentExecWires.push({ sourceNodeId: targetNode.id, sourcePinId: 'exec', targetNodeId: joinId, __releasedJoin: true });
         } else if (targetNode.type === 'parallel_join') {
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
@@ -1538,106 +1103,28 @@ export class GraphRunner {
           for (const [pinId, value] of Object.entries(outputs)) dataCache.set(`${targetNode.id}:${pinId}`, value);
           log(`[Plugin Adapter] ${definition.label} completed in its isolated WebAssembly worker.`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_fetch_user') {
-          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
-          if (!userId) throw new TypeError('Get User Info needs a User ID.');
-          if (typeof context.rest?.getUser !== 'function') throw new Error('Get User Info requires a connected Discord REST client.');
-          const user = await context.rest.getUser(userId);
-          if (!user || typeof user !== 'object' || Array.isArray(user)) throw new Error('Discord did not return a valid user object.');
-          for (const [pinId, value] of Object.entries({
-            user, user_id_out: user.id || userId, username: user.username || '', global_name: user.global_name || '',
-            discriminator: user.discriminator || '', avatar: user.avatar || '', bot: Boolean(user.bot), public_flags: Number(user.public_flags) || 0
-          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
-          log(`[Get User Info] Fetched user ${user.id || userId}.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_fetch_guild') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          if (!guildId) throw new TypeError('Get Server Info needs a Server ID.');
-          if (typeof context.rest?.getGuild !== 'function') throw new Error('Get Server Info requires a connected Discord REST client.');
-          const guild = await context.rest.getGuild(guildId, { withCounts: true });
-          if (!guild || typeof guild !== 'object' || Array.isArray(guild)) throw new Error('Discord did not return a valid server object.');
-          for (const [pinId, value] of Object.entries({
-            guild, guild_id_out: guild.id || guildId, name: guild.name || '', owner_id: guild.owner_id || '',
-            description: guild.description || '', icon: guild.icon || '',
-            member_count: Number(guild.approximate_member_count ?? guild.member_count) || 0,
-            features: Array.isArray(guild.features) ? guild.features : [], preferred_locale: guild.preferred_locale || '',
-            verification_level: Number(guild.verification_level) || 0
-          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
-          log(`[Get Server Info] Fetched server ${guild.id || guildId}.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_fetch_member') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
-          if (!guildId || !userId) throw new TypeError('Get Server Member needs a Server ID and User ID.');
-          if (typeof context.rest?.getGuildMember !== 'function') throw new Error('Get Server Member requires a connected Discord REST client.');
-          const member = await context.rest.getGuildMember(guildId, userId);
-          if (!member || typeof member !== 'object' || Array.isArray(member)) throw new Error('Discord did not return a valid member object.');
-          const user = member.user && typeof member.user === 'object' ? member.user : {};
-          for (const [pinId, value] of Object.entries({
-            member, user, user_id_out: user.id || userId, username: user.username || '', nickname: member.nick || '',
-            roles: Array.isArray(member.roles) ? member.roles : [], joined_at: member.joined_at || '',
-            premium_since: member.premium_since || '', deaf: Boolean(member.deaf), mute: Boolean(member.mute), pending: Boolean(member.pending)
-          })) dataCache.set(`${targetNode.id}:${pinId}`, value);
-          log(`[Get Server Member] Fetched member ${user.id || userId} in server ${guildId}.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_send_message') {
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || ''));
-          const content = String(resolveDataInput(targetNode, 'content', targetNode.data?.content || '')).slice(0, 2000);
-          const embed = resolveDataInput(targetNode, 'embed', null) || (Array.isArray(targetNode.data?.blocks) ? buildEmbedFromNode(targetNode) : null);
-          const components = resolveMessageComponents(targetNode);
-          const files = resolveMessageFiles(targetNode, resolveDataInput(targetNode, 'files', targetNode.data?.files || []));
-          const fileData = String(resolveDataInput(targetNode, 'file_data', targetNode.data?.file_data || ''));
-          const fileName = String(resolveDataInput(targetNode, 'file_name', targetNode.data?.file_name || 'image.png'));
-          const replyToMessageId = String(resolveDataInput(targetNode, 'reply_to_message_id', targetNode.data?.reply_to_message_id || '')).trim();
-          const mentionRepliedUser = Boolean(resolveDataInput(targetNode, 'mention_replied_user', targetNode.data?.mention_replied_user ?? Boolean(replyToMessageId)));
-
-          if (!channelId) {
-            log(`[Action Send Message] Error: Missing Channel ID`);
-          } else {
-            const payload = {};
-            if (content) payload.content = content;
-            if (embed) payload.embeds = [embed];
-            if (Array.isArray(components) && components.length) payload.components = components;
-            if (files?.length) payload.files = files;
-            if (replyToMessageId) {
-              payload.message_reference = { message_id: replyToMessageId };
-              payload.allowed_mentions = { replied_user: mentionRepliedUser };
-            }
-            if (fileData) {
-              payload.file_data = fileData;
-              payload.file_name = fileName || 'image.png';
-            }
-
-            log(`[Action Send Message] Sending message to channel ${channelId}.`);
-            const sentMsg = await context.rest.createMessage(channelId, payload);
-            if (sentMsg?.id) {
-              dataCache.set(`${targetNode.id}:message_id`, sentMsg.id);
-            }
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_edit_message') {
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || ''));
-          const messageId = String(resolveDataInput(targetNode, 'message_id', targetNode.data?.message_id || ''));
-          const content = resolveDataInput(targetNode, 'content', targetNode.data?.content);
-          const embed = resolveDataInput(targetNode, 'embed', null) || (Array.isArray(targetNode.data?.blocks) ? buildEmbedFromNode(targetNode) : null);
-          const components = resolveMessageComponents(targetNode);
-          const files = resolveMessageFiles(targetNode, resolveDataInput(targetNode, 'files', targetNode.data?.files || []));
-
-          if (!channelId || !messageId) {
-            log(`[Action Edit Message] Error: Missing Channel ID or Message ID`);
-          } else {
-            const payload = {};
-            if (content !== undefined && content !== null && String(content).length > 0) payload.content = String(content).slice(0, 2000);
-            if (embed) payload.embeds = [embed];
-            if (Array.isArray(components) && components.length) payload.components = components;
-            if (files?.length) payload.files = files;
-
-            log(`[Action Edit Message] Editing message ${messageId} in channel ${channelId}`);
-            const editedMsg = await context.rest.editMessage(channelId, messageId, payload);
-            if (editedMsg?.id) {
-              dataCache.set(`${targetNode.id}:message_id`, editedMsg.id);
-            }
-          }
+        } else if (DISCORD_GUILD_NODE_TYPES.has(targetNode.type)) {
+          const { executeDiscordGuildNode } = await import('./nodes/runtime/discord_guild.js');
+          const result = await executeDiscordGuildNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            isInputConnected: (pinId) => Boolean(findInputConnection(targetNode.id, pinId)),
+            rest: context.rest,
+            client: context.client,
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            log
+          });
+          if (result !== false) currentExecWires.push(...findExecOutputs(targetNode.id, result === 'failure' ? 'failure_exec' : 'exec'));
+        } else if (targetNode.type === 'action_send_message' || targetNode.type === 'action_edit_message') {
+          const { executeDiscordMessageNode } = await import('./nodes/runtime/discord_messages.js');
+          await executeDiscordMessageNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            resolveComponents: () => resolveMessageComponents(targetNode),
+            resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+            buildEmbed: () => buildEmbedFromNode(targetNode),
+            rest: context.rest,
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            log
+          });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         } else if (targetNode.type === 'action_deploy_slash_commands') {
           if (typeof context.deploySlashCommands !== 'function') throw new Error('Slash command deployment is available while the bot is connected, not in simulation or exported runtime.');
@@ -1680,499 +1167,45 @@ export class GraphRunner {
           if (deploymentError) log(`[Deploy Slash Commands] ${deploymentError}`);
           else log(`[Deploy Slash Commands] Deployed ${deployedCount} command(s).`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_show_modal') {
-          if (interactionState.pending) await interactionState.pending;
-          const interactionId = String(resolveDataInput(targetNode, 'interaction_id', targetNode.data?.interaction_id || ''));
-          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', targetNode.data?.interaction_token || ''));
-          const modal = resolveDataInput(targetNode, 'modal', targetNode.data?.modal || null);
-          if (!interactionToken) throw new Error('Show Popup Modal needs the Interaction Token from its event node.');
-          if (!modal || typeof modal !== 'object' || !modal.custom_id || !modal.title || !Array.isArray(modal.components) || modal.components.length < 1 || modal.components.length > 5 || modal.components.some((item) => item?.type !== 18 || !item.component?.custom_id)) throw new Error('Connect a valid Popup Modal Builder output (1–5 labeled fields).');
-          if (interactionState.acknowledged) throw new Error('This interaction has already been acknowledged. Show a modal as the initial response, before any reply or defer node.');
-          interactionState.acknowledged = true;
-          interactionState.deferred = false;
-          interactionState.pending = context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 9, data: modal });
-          try { await interactionState.pending; }
-          catch (error) { interactionState.acknowledged = false; throw error; }
-          finally { interactionState.pending = null; }
-          log('[Show Popup Modal] Modal opened.');
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_respond_autocomplete') {
-          if (Number(eventPayload?.type) !== 4) throw new Error('Respond to Autocomplete can only run for an autocomplete interaction.');
-          const interactionId = String(resolveDataInput(targetNode, 'interaction_id', eventPayload?.id || ''));
-          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', eventPayload?.token || ''));
-          const findFocusedOption = (options = []) => {
-            for (const option of options) {
-              if (option.focused) return option;
-              const nested = findFocusedOption(option.options || []);
-              if (nested) return nested;
-            }
-            return null;
-          };
-          const focused = findFocusedOption(eventPayload?.data?.options || []);
-          const slashCommandNode = nodes.find((node) => node.type === 'event_slash_command' && String(node.data?.commandName || '').toLowerCase() === String(eventPayload?.data?.name || '').toLowerCase());
-          const autocompleteOption = slashCommandNode?.data?.options?.find((option) => option.name === focused?.name);
-          if (!focused || !autocompleteOption?.autocomplete || !autocompleteOption.dynamicAutocomplete) throw new Error('This option is not configured for graph-generated autocomplete.');
-          const type = Number(focused?.type || 3);
-          const query = String(focused?.value ?? '').toLocaleLowerCase();
-          const rawChoices = resolveDataInput(targetNode, 'choices', targetNode.data?.choices || []);
-          const choices = (Array.isArray(rawChoices) ? rawChoices : []).slice(0, 500).flatMap((choice) => {
-            if (!choice || typeof choice !== 'object' || Array.isArray(choice)) return [];
-            const name = String(choice.name ?? '').trim().slice(0, 100);
-            const rawValue = choice.value;
-            if (!name || rawValue === undefined || rawValue === null || !['string', 'number'].includes(typeof rawValue) || typeof rawValue === 'string' && !rawValue.trim()) return [];
-            let value;
-            if (type === 4) {
-              value = Number(rawValue);
-              if (!Number.isSafeInteger(value)) return [];
-            } else if (type === 10) {
-              value = Number(rawValue);
-              if (!Number.isFinite(value)) return [];
-            } else {
-              value = String(rawValue).slice(0, 100);
-              if (!value) return [];
-            }
-            if (query && !name.toLocaleLowerCase().includes(query) && !String(value).toLocaleLowerCase().includes(query)) return [];
-            return [{ name, value }];
-          }).slice(0, 25);
-          if (!interactionToken) throw new Error('Autocomplete response is missing the interaction token.');
-          if (interactionState.acknowledged) throw new Error('This autocomplete interaction has already been answered.');
-          interactionState.acknowledged = true;
-          interactionState.pending = context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 8, data: { choices } });
-          try { await interactionState.pending; }
-          catch (error) { interactionState.acknowledged = false; throw error; }
-          finally { interactionState.pending = null; }
-          dataCache.set(`${targetNode.id}:choice_count`, choices.length);
-          log(`[Autocomplete] Sent ${choices.length} suggestion${choices.length === 1 ? '' : 's'}.`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_reply_interaction') {
-          if (interactionState.pending) await interactionState.pending;
-          const applicationId = String(resolveDataInput(targetNode, 'application_id', targetNode.data?.application_id || interactionState.applicationId || ''));
-          const interactionId = String(resolveDataInput(targetNode, 'interaction_id', targetNode.data?.interaction_id || ''));
-          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', targetNode.data?.interaction_token || ''));
-          const content = String(resolveDataInput(targetNode, 'content', targetNode.data?.content || '')).slice(0, 2000);
-          const embed = resolveDataInput(targetNode, 'embed', null) || (Array.isArray(targetNode.data?.blocks) ? buildEmbedFromNode(targetNode) : null);
-          const components = resolveMessageComponents(targetNode);
-          const files = resolveMessageFiles(targetNode, resolveDataInput(targetNode, 'files', targetNode.data?.files || []));
-          const ephemeral = Boolean(resolveDataInput(targetNode, 'ephemeral', targetNode.data?.ephemeral || false));
-
-          if (!interactionToken) {
-            log(`[Action Reply] Error: Missing interaction token`);
-          } else {
-            log(`[Action Reply] Sending interaction response (ephemeral: ${ephemeral}).`);
-            const responseData = {
-              ...(content ? { content } : {}),
-              ...(embed ? { embeds: [embed] } : {}),
-              ...(Array.isArray(components) && components.length ? { components } : {}),
-              ...(files?.length ? { files } : {}),
-              flags: ephemeral ? 64 : 0
-            };
-            if (interactionState.deferred) {
-              if (!applicationId) throw new Error('Replying after a defer needs the Application ID output from the event node.');
-              if (typeof context.rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit a deferred interaction response.');
-              await context.rest.editOriginalInteractionResponse(applicationId, interactionToken, responseData);
-            } else {
-              if (interactionState.acknowledged) throw new Error('This interaction has already been acknowledged. Use only one initial reply or defer node for each interaction.');
-              interactionState.acknowledged = true;
-              interactionState.deferred = false;
-              interactionState.pending = context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, {
-                type: 4,
-                data: responseData
-              });
-              try { await interactionState.pending; }
-              catch (error) {
-                interactionState.acknowledged = false;
-                throw error;
-              } finally { interactionState.pending = null; }
-            }
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_defer_reply' || targetNode.type === 'action_defer_update') {
-          if (interactionState.pending) await interactionState.pending;
-          const interactionId = String(resolveDataInput(targetNode, 'interaction_id', targetNode.data?.interaction_id || ''));
-          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', targetNode.data?.interaction_token || ''));
-          const isUpdate = targetNode.type === 'action_defer_update';
-          const ephemeral = Boolean(resolveDataInput(targetNode, 'ephemeral', targetNode.data?.ephemeral || false));
-          if (!interactionToken) throw new Error(`${isUpdate ? 'Defer Update' : 'Defer Reply'} needs an interaction token.`);
-          if (interactionState.acknowledged) throw new Error('This interaction has already been acknowledged. Use only one initial reply or defer node for each interaction.');
-          interactionState.acknowledged = true;
-          interactionState.deferred = true;
-          interactionState.pending = isUpdate
-            ? (context.rest.deferInteractionUpdate?.(interactionId || 'mock', interactionToken)
-              || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 6 }))
-            : (context.rest.deferInteractionReply?.(interactionId || 'mock', interactionToken, { ephemeral })
-              || context.rest.createInteractionResponse(interactionId || 'mock', interactionToken, { type: 5, ...(ephemeral ? { data: { flags: 64 } } : {}) }));
-          try {
-            await interactionState.pending;
-            dataCache.set(`${targetNode.id}:interaction_token`, interactionToken);
-            log(`[${isUpdate ? 'Defer Update' : 'Defer Reply'}] Interaction acknowledged; continue with Reply to Interaction when ready.`);
-          } catch (error) {
-            interactionState.acknowledged = false;
-            interactionState.deferred = false;
-            throw error;
-          } finally { interactionState.pending = null; }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_edit_interaction_reply') {
-          if (interactionState.pending) await interactionState.pending;
-          const applicationId = String(resolveDataInput(targetNode, 'application_id', targetNode.data?.application_id || interactionState.applicationId || '')).trim();
-          const interactionToken = String(resolveDataInput(targetNode, 'interaction_token', targetNode.data?.interaction_token || '')).trim();
-          const content = String(resolveDataInput(targetNode, 'content', targetNode.data?.content || '')).slice(0, 2000);
-          const embed = resolveDataInput(targetNode, 'embed', null) || (Array.isArray(targetNode.data?.blocks) ? buildEmbedFromNode(targetNode) : null);
-          const components = resolveMessageComponents(targetNode);
-          const files = resolveMessageFiles(targetNode, resolveDataInput(targetNode, 'files', targetNode.data?.files || []));
-
-          if (!applicationId) {
-            log(`[Edit Interaction Reply] Error: Missing Application ID`);
-          } else if (!interactionToken) {
-            log(`[Edit Interaction Reply] Error: Missing interaction token`);
-          } else {
-            log('[Edit Interaction Reply] Editing original interaction response.');
-            const payload = {
-              ...(content ? { content } : {}),
-              ...(embed ? { embeds: [embed] } : {}),
-              ...(Array.isArray(components) && components.length ? { components } : {}),
-              ...(files?.length ? { files } : {})
-            };
-            if (typeof context.rest.editOriginalInteractionResponse !== 'function') throw new Error('This REST connection cannot edit interaction responses.');
-            await context.rest.editOriginalInteractionResponse(applicationId, interactionToken, payload);
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_set_custom_status') {
-          const rawStatusText = String(resolveDataInput(targetNode, 'status_text', targetNode.data?.status_text ?? 'ARC Studio')).trim();
-          const customEmojiMatch = rawStatusText.match(/<(?<animated>a?):(?<name>[A-Za-z0-9_]{2,32}):(?<id>\d{17,20})>/);
-          const statusText = customEmojiMatch
-            ? rawStatusText.replace(customEmojiMatch[0], '').replace(/\s{2,}/g, ' ').trim().slice(0, 128)
-            : rawStatusText.slice(0, 128);
-          const emoji = customEmojiMatch ? {
-            name: customEmojiMatch.groups.name,
-            id: customEmojiMatch.groups.id,
-            ...(customEmojiMatch.groups.animated ? { animated: true } : {})
-          } : null;
-          log(`[Action Custom Status] Updating custom status: ${statusText || (emoji ? 'emoji only' : 'cleared')}`);
-          if (context.client && typeof context.client.setPresence === 'function') {
-            context.client.setPresence({
-              activities: statusText || emoji ? [{ name: 'Custom Status', type: 4, ...(statusText ? { state: statusText } : {}), ...(emoji ? { emoji } : {}) }] : []
-            });
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_set_presence') {
-          const requestedStatus = String(resolveDataInput(targetNode, 'status', targetNode.data?.status || 'online')).trim().toLowerCase();
-          const status = ['online', 'idle', 'dnd', 'invisible'].includes(requestedStatus) ? requestedStatus : 'online';
-          const activityText = String(resolveDataInput(targetNode, 'activity_text', targetNode.data?.activity_text || 'ARC Studio')).trim().slice(0, 128) || 'ARC Studio';
-          const requestedActivityType = Number(resolveDataInput(targetNode, 'activity_type', targetNode.data?.activity_type ?? 0));
-          const activityType = [0, 2, 3, 5].includes(requestedActivityType) ? requestedActivityType : 0;
-          log(`[Action Presence] Updating status: ${status}, Activity: ${activityText} (type ${activityType})`);
-          if (context.client && typeof context.client.setPresence === 'function') {
-            context.client.setPresence({
-              status,
-              activities: [{ name: activityText, type: activityType }]
-            });
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_create_channel') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const name = String(resolveDataInput(targetNode, 'name', targetNode.data?.name || '')).trim().slice(0, 100);
-          const channelType = String(resolveDataInput(targetNode, 'channel_type', targetNode.data?.channel_type || 'text')).toLowerCase();
-          const types = { text: 0, voice: 2, category: 4, announcement: 5, stage: 13 };
-          const body = { name, type: types[channelType] ?? 0 };
-          const parentId = String(resolveDataInput(targetNode, 'parent_id', targetNode.data?.parent_id || '')).trim();
-          const overwriteSource = resolveDataInput(targetNode, 'permission_overwrites', targetNode.data?.permission_overwrites || []);
-          const topic = String(resolveDataInput(targetNode, 'topic', targetNode.data?.topic || '')).slice(0, 1024);
-          if (parentId) body.parent_id = parentId;
-          if (overwriteSource?.length) {
-            let overwrites = overwriteSource;
-            if (typeof overwrites === 'string') {
-              try { overwrites = JSON.parse(overwrites); } catch { throw new Error('Permission overwrites must be an array.'); }
-            }
-            if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
-            body.permission_overwrites = overwrites;
-          }
-          if (topic && [0, 5].includes(body.type)) body.topic = topic;
-          if (!guildId || !name) throw new Error('Create Channel needs a server ID and channel name.');
-          const result = await context.rest.createGuildChannel(guildId, body, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
-          dataCache.set(`${targetNode.id}:channel_id`, result?.id || '');
-          log(`[Create Channel] Created #${name}${result?.id ? ` (${result.id})` : ''}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_edit_channel') {
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
-          const body = {};
-          const name = String(resolveDataInput(targetNode, 'name', targetNode.data?.name || '')).trim();
-          const topic = String(resolveDataInput(targetNode, 'topic', targetNode.data?.topic || ''));
-          const parentId = String(resolveDataInput(targetNode, 'parent_id', targetNode.data?.parent_id || '')).trim();
-          if (name) body.name = name.slice(0, 100);
-          if (topic) body.topic = topic.slice(0, 1024);
-          if (parentId) body.parent_id = parentId;
-          const overwriteSource = resolveDataInput(targetNode, 'permission_overwrites', targetNode.data?.permission_overwrites || []);
-          if (overwriteSource?.length) {
-            let overwrites = overwriteSource;
-            if (typeof overwrites === 'string') {
-              try { overwrites = JSON.parse(overwrites); } catch { throw new Error('Permission overwrites must be an array.'); }
-            }
-            if (!Array.isArray(overwrites) || overwrites.length > 100) throw new Error('Permission overwrites must be an array with at most 100 entries.');
-            body.permission_overwrites = overwrites;
-          } else if (Number(targetNode.data?.overwriteCount) > 0) {
-            const targetInputs = Object.fromEntries(Object.keys(targetNode.data || {}).filter((key) => /^target_id_\d+$/.test(key)).map((key) => [key, resolveDataInput(targetNode, key, targetNode.data[key])]));
-            body.permission_overwrites = evaluateDataNode('data_permission_overwrites', targetInputs, targetNode.data).overwrites;
-          }
-          const setOptionalChannelField = (key, transform = (value) => value, { skipEmpty = false } = {}) => {
-            const connection = findInputConnection(targetNode.id, key);
-            if (!Object.prototype.hasOwnProperty.call(targetNode.data || {}, key) && !connection) return;
-            const value = resolveDataInput(targetNode, key, targetNode.data?.[key]);
-            if (skipEmpty && !connection && (value == null || value === '')) return;
-            body[key] = transform(value);
-          };
-          setOptionalChannelField('rate_limit_per_user', (value) => Math.max(0, Math.min(21600, Math.trunc(Number(value) || 0))), { skipEmpty: true });
-          setOptionalChannelField('nsfw', Boolean);
-          setOptionalChannelField('bitrate', (value) => Math.max(8000, Math.min(384000, Math.trunc(Number(value) || 8000))), { skipEmpty: true });
-          setOptionalChannelField('user_limit', (value) => Math.max(0, Math.min(10000, Math.trunc(Number(value) || 0))), { skipEmpty: true });
-          setOptionalChannelField('rtc_region', (value) => value === '' ? null : String(value).slice(0, 100));
-          setOptionalChannelField('video_quality_mode', (value) => Number(value) === 2 ? 2 : 1, { skipEmpty: true });
-          setOptionalChannelField('default_auto_archive_duration', (value) => [60, 1440, 4320, 10080].includes(Number(value)) ? Number(value) : 1440, { skipEmpty: true });
-          if (!channelId) throw new Error('Edit Channel needs a channel ID.');
-          if (!Object.keys(body).length) throw new Error('Connect or enter at least one channel field to change.');
-          const result = await context.rest.modifyChannel(channelId, body, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
-          dataCache.set(`${targetNode.id}:channel_id_out`, result?.id || channelId);
-          log(`[Edit Channel] Updated channel ${channelId}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_delete_channel') {
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
-          if (!channelId) throw new Error('Delete Channel needs a channel ID.');
-          await context.rest.deleteChannel(channelId, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
-          dataCache.set(`${targetNode.id}:deleted_channel_id`, channelId);
-          log(`[Delete Channel] Deleted channel ${channelId}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_create_role') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const name = String(resolveDataInput(targetNode, 'name', targetNode.data?.name || 'new role')).trim().slice(0, 100);
-          const color = Math.max(0, Math.min(0xffffff, Math.trunc(Number(resolveDataInput(targetNode, 'color', targetNode.data?.color || 0)) || 0)));
-          const permissions = String(resolveDataInput(targetNode, 'permissions', targetNode.data?.permissions || '0')).trim();
-          if (!/^\d{1,20}$/.test(permissions)) throw new Error('Role permissions must be a decimal permission bitfield string.');
-          const hoist = Boolean(resolveDataInput(targetNode, 'hoist', targetNode.data?.hoist || false));
-          const mentionable = Boolean(resolveDataInput(targetNode, 'mentionable', targetNode.data?.mentionable || false));
-          if (!guildId || !name) throw new Error('Create Role needs a server ID and role name.');
-          const role = await context.rest.createGuildRole(guildId, { name, color, permissions, hoist, mentionable }, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
-          dataCache.set(`${targetNode.id}:role_id`, role?.id || '');
-          log(`[Create Role] Created ${name}${role?.id ? ` (${role.id})` : ''}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_member_role') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
-          const roleId = String(resolveDataInput(targetNode, 'role_id', targetNode.data?.role_id || '')).trim();
-          const operation = String(resolveDataInput(targetNode, 'operation', targetNode.data?.operation || 'add')).toLowerCase();
-          const reason = resolveDataInput(targetNode, 'reason', targetNode.data?.reason || '');
-          if (!guildId || !userId || !roleId) throw new Error('Set Member Role needs server, user, and role IDs.');
-          if (operation === 'remove') await context.rest.removeGuildMemberRole(guildId, userId, roleId, reason);
-          else await context.rest.addGuildMemberRole(guildId, userId, roleId, reason);
-          log(`[Member Role] ${operation === 'remove' ? 'Removed' : 'Added'} role ${roleId} for ${userId}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_moderate_member') {
-          let success = false;
-          let errorMessage = '';
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const userId = String(resolveDataInput(targetNode, 'user_id', targetNode.data?.user_id || '')).trim();
-          const operation = String(resolveDataInput(targetNode, 'operation', targetNode.data?.operation || 'timeout')).trim().toLowerCase();
-          const reason = String(resolveDataInput(targetNode, 'reason', targetNode.data?.reason || '')).trim().slice(0, 512);
-          try {
-            if (!guildId || !/^\d{15,22}$/.test(userId)) throw new TypeError('Choose a server and a valid member ID.');
-            if (operation === 'timeout') {
-              const durationMinutes = Math.trunc(Number(resolveDataInput(targetNode, 'duration_minutes', targetNode.data?.duration_minutes ?? 10)));
-              if (!Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 40320) throw new RangeError('Timeout duration must be from 1 minute to 28 days.');
-              const disabledUntil = new Date(Date.now() + durationMinutes * 60_000).toISOString();
-              await context.rest.modifyGuildMember(guildId, userId, { communication_disabled_until: disabledUntil }, reason);
-            } else if (operation === 'kick') {
-              await context.rest.removeGuildMember(guildId, userId, reason);
-            } else if (operation === 'ban') {
-              const deleteMessageSeconds = Math.trunc(Number(resolveDataInput(targetNode, 'delete_message_seconds', targetNode.data?.delete_message_seconds ?? 0)));
-              if (!Number.isInteger(deleteMessageSeconds) || deleteMessageSeconds < 0 || deleteMessageSeconds > 604800) throw new RangeError('Ban message deletion must be from 0 seconds to 7 days.');
-              await context.rest.banGuildMember(guildId, userId, { deleteMessageSeconds }, reason);
-            } else if (operation === 'unban') {
-              await context.rest.unbanGuildMember(guildId, userId, reason);
-            } else {
-              throw new TypeError('Choose timeout, kick, ban, or unban.');
-            }
-            success = true;
-          } catch (error) {
-            errorMessage = String(error?.message || 'Discord rejected the moderation request.').slice(0, 500);
-          }
-          dataCache.set(`${targetNode.id}:success`, success);
-          dataCache.set(`${targetNode.id}:error`, errorMessage);
-          log(success
-            ? `[Moderation] ${operation} succeeded for ${userId}`
-            : `[Moderation] ${operation} failed for ${userId}: ${errorMessage}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, success ? 'exec' : 'failure_exec'));
-        } else if (targetNode.type === 'action_voice_channel_status') {
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
-          const status = String(resolveDataInput(targetNode, 'status', targetNode.data?.status || '')).slice(0, 500);
-          if (!channelId) throw new Error('Set Voice Channel Status needs a channel ID.');
-          await context.rest.setVoiceChannelStatus(channelId, status || null, resolveDataInput(targetNode, 'reason', targetNode.data?.reason || ''));
-          log(`[Voice Channel Status] ${status ? `Set status to “${status}”` : 'Cleared status'} for ${channelId}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_voice_state') {
-          const guildId = String(resolveDataInput(targetNode, 'guild_id', targetNode.data?.guild_id || '')).trim();
-          const channelId = String(resolveDataInput(targetNode, 'channel_id', targetNode.data?.channel_id || '')).trim();
-          if (!guildId) throw new Error('Voice join or leave needs a server ID.');
-          if (!context.client || typeof context.client.setVoiceChannel !== 'function') throw new Error('Voice state changes require a live Gateway connection.');
-          context.client.setVoiceChannel(guildId, channelId || null, {
-            selfMute: resolveDataInput(targetNode, 'self_mute', targetNode.data?.self_mute || false),
-            selfDeaf: resolveDataInput(targetNode, 'self_deaf', targetNode.data?.self_deaf || false)
+        } else if (DISCORD_INTERACTION_NODE_TYPES.has(targetNode.type)) {
+          const { executeDiscordInteractionNode } = await import('./nodes/runtime/discord_interactions.js');
+          await executeDiscordInteractionNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            resolveComponents: () => resolveMessageComponents(targetNode),
+            resolveFiles: (files) => resolveMessageFiles(targetNode, files),
+            buildEmbed: () => buildEmbedFromNode(targetNode),
+            rest: context.rest,
+            log,
+            state: interactionState,
+            eventPayload,
+            nodes,
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value)
           });
-          log(channelId ? `[Voice] Requested join to channel ${channelId}. Audio transport is not enabled.` : `[Voice] Requested leave from server ${guildId}.`);
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_hash') {
-          const data = String(resolveDataInput(targetNode, 'data', targetNode.data?.data || ''));
-          const algorithm = String(resolveDataInput(targetNode, 'algorithm', targetNode.data?.algorithm || 'sha256')).toLowerCase();
-          const hash = CryptoEngine.hash(data, algorithm);
-          dataCache.set(`${targetNode.id}:hash`, hash);
-          log(`[Crypto Hash] Computed ${algorithm.toUpperCase()} hash for ${data.length} bytes: ${hash.slice(0, 16)}...`);
+        } else if (targetNode.type === 'action_set_custom_status' || targetNode.type === 'action_set_presence') {
+          const { executePresenceNode } = await import('./nodes/runtime/discord_presence.js');
+          executePresenceNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            context,
+            log
+          });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_hmac') {
-          const data = String(resolveDataInput(targetNode, 'data', targetNode.data?.data || ''));
-          const secret = String(resolveDataInput(targetNode, 'secret', targetNode.data?.secret || ''));
-          const algorithm = String(resolveDataInput(targetNode, 'algorithm', targetNode.data?.algorithm || 'sha256')).toLowerCase();
-          const signature = CryptoEngine.hmac(data, secret, algorithm);
-          dataCache.set(`${targetNode.id}:signature`, signature);
-          log(`[Crypto HMAC] Signed payload with ${algorithm.toUpperCase()}: ${signature.slice(0, 16)}...`);
+        } else if (NETWORK_NODE_TYPES.has(targetNode.type)) {
+          const { executeNetworkNode } = await import('./nodes/runtime/network.js');
+          await executeNetworkNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            context,
+            log
+          });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_verify_hmac') {
-          const data = String(resolveDataInput(targetNode, 'data', targetNode.data?.data || ''));
-          const secret = String(resolveDataInput(targetNode, 'secret', targetNode.data?.secret || ''));
-          const signature = String(resolveDataInput(targetNode, 'signature', targetNode.data?.signature || ''));
-          const isValid = CryptoEngine.verifyHmac(data, secret, signature);
-          dataCache.set(`${targetNode.id}:isValid`, isValid);
-          log(`[Crypto Verify HMAC] Verification: ${isValid ? 'VALID' : 'INVALID'}`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_encrypt') {
-          const plaintext = String(resolveDataInput(targetNode, 'plaintext', targetNode.data?.plaintext || ''));
-          const customPass = resolveDataInput(targetNode, 'passphrase', targetNode.data?.passphrase || '') || null;
-          const ciphertext = CryptoEngine.encrypt(plaintext, customPass);
-          dataCache.set(`${targetNode.id}:ciphertext`, ciphertext);
-          log(`[Crypto Encrypt] Encrypted ${plaintext.length} chars to AES-256-GCM envelope`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_decrypt') {
-          const ciphertext = String(resolveDataInput(targetNode, 'ciphertext', targetNode.data?.ciphertext || ''));
-          const customPass = resolveDataInput(targetNode, 'passphrase', targetNode.data?.passphrase || '') || null;
-          try {
-            const plaintext = CryptoEngine.decrypt(ciphertext, customPass);
-            dataCache.set(`${targetNode.id}:plaintext`, plaintext);
-            log(`[Crypto Decrypt] Successfully decrypted AES-256-GCM envelope`);
-          } catch (decErr) {
-            log(`[Crypto Decrypt] Failed: ${decErr.message}`);
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_crypto_random') {
-          const type = String(resolveDataInput(targetNode, 'type', targetNode.data?.type || 'hex')).toLowerCase();
-          let token = '';
-          if (type === 'pin') {
-            token = CryptoEngine.randomPin(6);
-          } else if (type === 'base64url') {
-            token = CryptoEngine.randomToken(32, 'base64url');
-          } else {
-            token = CryptoEngine.randomToken(32, 'hex');
-          }
-          dataCache.set(`${targetNode.id}:token`, token);
-          log(`[Crypto Random] Generated secure token (${type}): ${token.slice(0, 10)}...`);
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_http_download') {
-          const clearDownloadOutputs = (error = '') => {
-            dataCache.set(`${targetNode.id}:file`, null);
-            dataCache.set(`${targetNode.id}:filename`, '');
-            dataCache.set(`${targetNode.id}:content_type`, '');
-            dataCache.set(`${targetNode.id}:byte_size`, 0);
-            dataCache.set(`${targetNode.id}:error`, error);
-          };
-          if (context.mock) {
-            clearDownloadOutputs('HTTP downloads are disabled in the Offline Simulator.');
-            log('[HTTP Download File] Skipped in Offline Simulator.');
-          } else {
-            try {
-              const downloaded = await downloadSafeHttpFile(resolveDataInput(targetNode, 'url', ''), {
-                userAgent: resolveDataInput(targetNode, 'user_agent', ''),
-                timeoutMs: resolveDataInput(targetNode, 'timeout_ms', 20000),
-                maxBytes: resolveDataInput(targetNode, 'max_bytes', 20971520)
-              });
-              const file = { filename: downloaded.filename, contentType: downloaded.contentType, data: downloaded.bytes.toString('base64') };
-              dataCache.set(`${targetNode.id}:file`, file);
-              dataCache.set(`${targetNode.id}:filename`, downloaded.filename);
-              dataCache.set(`${targetNode.id}:content_type`, downloaded.contentType);
-              dataCache.set(`${targetNode.id}:byte_size`, downloaded.bytes.length);
-              dataCache.set(`${targetNode.id}:error`, '');
-              log(`[HTTP Download File] Downloaded ${downloaded.filename} (${downloaded.bytes.length.toLocaleString()} bytes, ${downloaded.contentType}).`);
-            } catch (error) {
-              clearDownloadOutputs(error.message || 'File download failed.');
-              log(`[HTTP Download File] Failed: ${error.message || 'File download failed.'}`);
-            }
-          }
-          currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-        } else if (targetNode.type === 'action_web_fetch' || targetNode.type === 'action_web_retry') {
-          const retryEnabled = targetNode.type === 'action_web_retry';
-          const method = String(resolveDataInput(targetNode, 'method', 'GET')).toUpperCase();
-          if (context.mock) {
-            dataCache.set(`${targetNode.id}:status`, 0);
-            dataCache.set(`${targetNode.id}:ok`, false);
-            dataCache.set(`${targetNode.id}:body`, '');
-            dataCache.set(`${targetNode.id}:headers`, '{}');
-            dataCache.set(`${targetNode.id}:json`, null);
-            if (retryEnabled) dataCache.set(`${targetNode.id}:attempts`, 0);
-            dataCache.set(`${targetNode.id}:error`, 'HTTP requests are disabled in the Offline Simulator.');
-            log('[HTTP Request] Skipped in Offline Simulator.');
-            currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
-            await recordDebugStep(targetNode, debugInputs);
-            continue;
-          }
-          let attempts = 0;
-          try {
-            const maxAttempts = retryEnabled ? Math.max(1, Math.min(5, Math.trunc(Number(resolveDataInput(targetNode, 'max_attempts', 3)) || 3))) : 1;
-            const retryUnsafeMethods = retryEnabled && Boolean(resolveDataInput(targetNode, 'retry_non_idempotent', false));
-            const mayRetry = ['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE'].includes(method) || retryUnsafeMethods;
-            const baseDelayMs = retryEnabled ? Math.max(100, Math.min(10000, Number(resolveDataInput(targetNode, 'retry_delay_ms', 500)) || 500)) : 0;
-            let response = null;
-            let requestError = null;
-            while (attempts < maxAttempts) {
-              attempts += 1;
-              requestError = null;
-              try {
-                response = await performSafeHttpRequest({
-                  url: resolveDataInput(targetNode, 'url', ''),
-                  method,
-                  headers: resolveDataInput(targetNode, 'headers', '{}'),
-                  userAgent: resolveDataInput(targetNode, 'user_agent', ''),
-                  body: resolveDataInput(targetNode, 'body', ''),
-                  timeoutMs: resolveDataInput(targetNode, 'timeout_ms', 10000),
-                  maxBytes: resolveDataInput(targetNode, 'max_bytes', 1048576)
-                });
-              } catch (error) { requestError = error; }
-              const retryableStatus = response && [408, 425, 429].includes(response.status) || response && response.status >= 500;
-              if (attempts >= maxAttempts || !mayRetry || !(requestError || retryableStatus)) break;
-              let waitMs = Math.min(30000, baseDelayMs * (2 ** (attempts - 1)));
-              const retryAfterHeader = String(response?.headers?.['retry-after'] || '').trim();
-              const retryAfterSeconds = Number(retryAfterHeader);
-              const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
-                ? retryAfterSeconds * 1000
-                : Number.isFinite(Date.parse(retryAfterHeader)) ? Date.parse(retryAfterHeader) - Date.now() : 0;
-              if (retryAfterMs > 0) waitMs = Math.min(30000, Math.max(waitMs, retryAfterMs));
-              log(`[HTTP Retry] Attempt ${attempts} failed${response ? ` with status ${response.status}` : ''}; retrying in ${waitMs}ms.`);
-              await new Promise((resolve) => setTimeout(resolve, waitMs));
-            }
-            if (requestError) throw requestError;
-            if (!response) throw new Error('HTTP request did not return a response.');
-            dataCache.set(`${targetNode.id}:status`, response.status);
-            dataCache.set(`${targetNode.id}:ok`, response.ok);
-            dataCache.set(`${targetNode.id}:body`, response.body);
-            dataCache.set(`${targetNode.id}:headers`, JSON.stringify(response.headers));
-            dataCache.set(`${targetNode.id}:json`, response.json);
-            if (retryEnabled) dataCache.set(`${targetNode.id}:attempts`, attempts);
-            const responseError = response.error || (!response.ok ? `HTTP ${response.status}` : '');
-            dataCache.set(`${targetNode.id}:error`, responseError);
-            log(`[HTTP Request] ${method} completed with status ${response.status}${responseError ? ` (${responseError})` : ''}${retryEnabled ? ` after ${attempts} attempt${attempts === 1 ? '' : 's'}` : ''}`);
-          } catch (requestError) {
-            dataCache.set(`${targetNode.id}:status`, 0);
-            dataCache.set(`${targetNode.id}:ok`, false);
-            dataCache.set(`${targetNode.id}:body`, '');
-            dataCache.set(`${targetNode.id}:headers`, '{}');
-            dataCache.set(`${targetNode.id}:json`, null);
-            if (retryEnabled) dataCache.set(`${targetNode.id}:attempts`, attempts || 1);
-            dataCache.set(`${targetNode.id}:error`, requestError.message || 'HTTP request failed.');
-            log(`[HTTP Request] ${method} failed: ${requestError.message || 'HTTP request failed.'}`);
-          }
+        } else if (CRYPTO_NODE_TYPES.has(targetNode.type)) {
+          const { executeCryptoNode } = await import('./nodes/runtime/crypto.js');
+          executeCryptoNode(targetNode, {
+            resolveInput: (pinId, fallback) => resolveDataInput(targetNode, pinId, fallback),
+            setOutput: (pinId, value) => dataCache.set(`${targetNode.id}:${pinId}`, value),
+            log
+          });
           currentExecWires.push(...findExecOutputs(targetNode.id, 'exec'));
         }
         await recordDebugStep(targetNode, debugInputs);
@@ -2191,7 +1224,15 @@ export class GraphRunner {
 
     const executionError = await runExecWires(findExecOutputs(startNode.id, 'exec'));
 
-    return { executedNodeIds, traces, debugSteps, error: executionError?.error || null };
+    if (eventName === 'FUNCTION_CALL' && functionReturnValue === undefined) {
+      const returnNode = nodes.find((node) => node.type === 'function_return');
+      if (returnNode) {
+        functionReturnValue = resolveDataInput(returnNode, 'value', defaultValueForType(returnNode.data?.valueType));
+        recordExecutedNode(returnNode.id);
+      }
+    }
+
+    return { executedNodeIds, traces, debugSteps, result: functionReturnValue, error: executionError?.error || null };
   }
 }
 
@@ -2224,7 +1265,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       const connected = wire ? resolveOutput(findNode(wire.sourceNodeId), wire.sourcePinId) : null;
       result = connected?.__arcVariableRef ? connected : { __arcVariableRef: true, variableId: node.data?.variableId, scope: node.data?.scope || 'graph' };
     } else if (node.type.startsWith('data_')) {
-      const inputs = Object.fromEntries(getNodeInputs(node, connections).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
+      const inputs = Object.fromEntries(getNodeInputs(node, connections, [...graphVariables, ...projectVariables]).map((pin) => [pin.id, resolveInput(node, pin.id, pin.defaultValue)]));
       const values = evaluateDataNode(node.type, inputs, node.data || {});
       for (const [id, value] of Object.entries(values)) cache.set(`${node.id}:${id}`, value);
       result = values[pinId];
@@ -2244,10 +1285,7 @@ function evaluateFunctionGraph(graph, argumentValues, context, callStack) {
       result = evaluateMathNode(node.type, inputs, node.data || {});
     } else if (node.type.startsWith('logic_')) {
       const inputs = Object.fromEntries((NodeDefinitions[node.type]?.inputs || []).map((pin) => [pin.id, Boolean(resolveInput(node, pin.id, pin.defaultValue))]));
-        result = node.type === 'logic_xor_many' ? Object.entries(inputs).filter(([id, value]) => /^input_\d+$/.test(id) && value).length % 2 === 1
-          : node.type === 'logic_and' ? inputs.a && inputs.b
-        : node.type === 'logic_or' ? inputs.a || inputs.b
-          : node.type === 'logic_xor' ? inputs.a !== inputs.b : !inputs.value;
+      result = evaluateLogicNode(node.type, inputs);
     } else if (node.type === 'compare_text') {
       const left = String(resolveInput(node, 'text_a', node.data?.text_a || ''));
       const right = String(resolveInput(node, 'text_b', node.data?.text_b || ''));
