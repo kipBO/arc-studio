@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, FileCode2, Plus, X } from 'lucide-react';
-import { PinColors } from './nodeDefinitions.js';
+import { getNodeTemplateInputPins, getTextTemplateSlots, PinColors } from './nodeDefinitions.js';
 import { bitfieldToPermissions, DISCORD_PERMISSIONS } from './permissionCatalog.js';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
 import { CharacterLimit } from '../ui/Inputs.jsx';
@@ -12,6 +12,7 @@ import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
 import { apiUrl } from '../../core/api.js';
 import { onPageBlur } from '../../core/pageFocus.js';
+import { resolveVariableReference } from '../../core/projectVariables.js';
 //
 const slashCommandNamePattern = /^[-_'\p{L}\p{N}\p{sc=Deva}\p{sc=Thai}]{1,32}$/u;
 const defaultValueForType = (type) => type === 'number' ? 0 : type === 'boolean' ? false : type === 'array' ? [] : type === 'object' ? {} : '';
@@ -85,17 +86,22 @@ function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', 
   const [draft, setDraft] = React.useState(value == null ? '' : String(value));
   React.useEffect(() => setDraft(value == null ? '' : String(value)), [value]);
   const emptyIsInvalid = draft === '' && !allowEmpty;
-  return <input {...inputProps} type="number" value={draft} className={`${className} ${emptyIsInvalid ? 'is-empty-number' : ''}`.trim()} aria-invalid={emptyIsInvalid || props['aria-invalid'] || undefined} onChange={(event) => {
+  return <input {...inputProps} type="text" inputMode="decimal" value={draft} className={`${className} ${emptyIsInvalid ? 'is-empty-number' : ''}`.trim()} aria-invalid={emptyIsInvalid || props['aria-invalid'] || undefined} onChange={(event) => {
     let next = event.target.value;
     const maximum = Number(props.max);
-    if (next !== '' && Number.isFinite(maximum) && Number(next) > maximum) {
+    const isTemplate = getTextTemplateSlots(next).length > 0;
+    if (!isTemplate && next !== '' && Number.isFinite(maximum) && Number(next) > maximum) {
       next = String(maximum);
       event.target.value = next;
     }
     setDraft(next);
-    if (next !== '' || allowEmpty) onChange?.(event);
+    if (next === '' || allowEmpty || Number.isFinite(Number(next)) || isTemplate) onChange?.(event);
   }} onBlur={(event) => {
-    if (draft !== '') {
+    if (getTextTemplateSlots(draft).length) {
+      onBlur?.(event);
+      return;
+    }
+    if (draft !== '' && Number.isFinite(Number(draft))) {
       const minimum = Number(props.min);
       const maximum = Number(props.max);
       const number = Number(draft);
@@ -105,13 +111,23 @@ function NodeNumberInput({ value, onChange, allowEmpty = false, className = '', 
         setDraft(normalized);
         onChange?.({ target: { value: normalized } });
       }
-    }
+    } else if (draft !== '' && !Number.isFinite(Number(draft))) setDraft(value == null ? '' : String(value));
     onBlur?.(event);
   }} />;
 }
 
+function numericNodeInputValue(value, { min = -Infinity, max = Infinity, fallback = 0, integer = false, allowEmpty = false } = {}) {
+  const text = String(value ?? '');
+  if (getTextTemplateSlots(text).length) return text;
+  if (text === '' && allowEmpty) return '';
+  const number = Number(text);
+  if (!Number.isFinite(number)) return fallback;
+  const bounded = Math.max(min, Math.min(max, integer ? Math.trunc(number) : number));
+  return Number.isFinite(bounded) ? bounded : fallback;
+}
+
 function CanvasNodeView({
-  node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false,
+  node, definition, authToken = '', connectedInputIds = new Set(), graphVariables = [], templatePreviewValues = {}, callableGraphs = [], selected = false, illuminated = false, isLocked = false, findOptions = null, isFindCurrent = false,
   snappedPin = null, appEmojis = [], modalFieldOptions = [], onSelect, onDelete, onNodeDataChange, onPinStartConnect, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph
 }) {
   const nodeDef = definition || { label: node.label || node.type, color: '#778196', category: 'Node', inputs: [], outputs: [] };
@@ -120,7 +136,7 @@ function CanvasNodeView({
   const outputs = execFirst(nodeDef.outputs);
   const rows = Math.max(inputs.length, outputs.length);
   const update = (key, value, label) => onNodeDataChange?.(node.id, typeof key === 'object' ? key : { [key]: value }, label);
-  const selectedVariable = graphVariables.find((variable) => variable.id === node.data?.variableId && (variable.scope || 'graph') === (node.data?.scope || 'graph'));
+  const selectedVariable = resolveVariableReference(graphVariables, node.data?.variableId, node.data?.scope || 'graph');
   const configureTextFields = (element) => {
     if (!element) return;
     element.querySelectorAll('input:not([type="number"]):not([type="checkbox"]):not([type="radio"]):not([type="color"]), textarea').forEach((field) => {
@@ -161,7 +177,7 @@ function CanvasNodeView({
         }}
       >
         {direction === 'input' && <span className="pin-socket" style={{ '--pin-color': pinColor }} />}
-        <span className="pin-label">{pin.label}</span>
+        <span className="pin-label">{renderCanvasFindText(pin.label, findOptions, isFindCurrent)}</span>
         {direction === 'output' && <span className="pin-socket" style={{ '--pin-color': pinColor }} />}
       </div>
     );
@@ -186,15 +202,28 @@ function CanvasNodeView({
     >
       <header className="node-header">
         <span className="node-type-mark"><span /></span>
-        <span className="node-category">{nodeDef.category}</span>
+        <span className="node-category">{renderCanvasFindText(nodeDef.category, findOptions, isFindCurrent)}</span>
         {!isLocked && <button className="node-delete" onClick={(event) => { event.stopPropagation(); onDelete?.(node.id); }} title="Delete node" aria-label="Delete node" tabIndex={selected ? 0 : -1}><X size={13} /></button>}
       </header>
-      <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{node.label || nodeDef.label}</div>
+      <div className="node-title" data-tooltip={node.label && node.label !== nodeDef.label ? `Node type: ${nodeDef.label}` : undefined}>{renderCanvasFindText(node.label || nodeDef.label, findOptions, isFindCurrent)}</div>
       <div className="node-pins">
         <div className="node-pin-column node-pin-inputs">{inputs.map((pin, index) => renderPin(pin, 'input', index))}</div>
         <div className="node-pin-column node-pin-outputs">{outputs.map((pin, index) => renderPin(pin, 'output', index))}</div>
       </div>
-      {renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues)}
+      {!nodeDef.requiresGenericEditor && renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues)}
+      {(nodeDef.requiresGenericEditor || nodeDef.editorOnlyInputs?.length > 0) && <div className="node-config node-config-stack node-schema-fallback">
+        {nodeDef.requiresGenericEditor && <span className="node-config-hint">This workspace schema differs from this client’s editor. These values are used by the workspace server.</span>}
+        {nodeDef.editorOnlyInputs.filter((pin) => pin.type !== 'exec' && !connectedInputIds.has(pin.id)).map((pin) => {
+          const value = node.data?.[pin.id] ?? pin.defaultValue;
+          if (pin.type === 'boolean') return <FallbackCheckbox key={pin.id} label={pin.label} checked={Boolean(value)} onChange={(next) => update(pin.id, next)} />;
+          if (pin.type === 'number') return <FallbackField key={pin.id} label={pin.label}><NodeNumberInput value={value ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>;
+          if (['object', 'array', 'embed', 'any', 'variable'].includes(pin.type)) return <FallbackField key={pin.id} label={pin.label}><GenericJsonInput type={pin.type} value={value} onChange={(next) => update(pin.id, next)} /></FallbackField>;
+          return <FallbackField key={pin.id} label={pin.label}><input value={typeof value === 'string' || typeof value === 'number' ? value : JSON.stringify(value ?? '')} onChange={(event) => update(pin.id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label={pin.label} /></FallbackField>;
+        })}
+      </div>}
+      {!['build_embed', 'format_text'].includes(node.type) && nodeDef.inputs
+        .filter((pin) => ['string', 'number', 'arg'].includes(pin.type) && !pin.id.startsWith('arg_') && !pin.id.startsWith('slot_') && !connectedInputIds.has(pin.id) && typeof node.data?.[pin.id] === 'string' && getTextTemplateSlots(node.data[pin.id]).length)
+        .map((pin) => <TemplateVariableHints key={`template-hints-${pin.id}`} value={node.data[pin.id]} graphVariables={graphVariables} inputSlots={getNodeTemplateInputPins(node, nodeDef.inputs, graphVariables).filter((slot) => getTextTemplateSlots(node.data[pin.id]).some((name) => slot.id === `slot_${name}`))} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} />)}
     </article>
   );
 }
@@ -215,6 +244,33 @@ function areCanvasNodePropsEqual(previous, next) {
 }
 
 export const CanvasNode = React.memo(CanvasNodeView, areCanvasNodePropsEqual);
+
+function GenericJsonInput({ type, value, onChange }) {
+  const expectedType = ['array', 'any', 'variable'].includes(type) ? type : 'object';
+  const fallback = expectedType === 'array' ? [] : expectedType === 'object' ? {} : null;
+  const serialized = JSON.stringify(value ?? fallback, null, 2);
+  const [draft, setDraft] = React.useState(serialized);
+  const [error, setError] = React.useState('');
+  React.useEffect(() => {
+    setDraft(JSON.stringify(value ?? fallback, null, 2));
+    setError('');
+  }, [expectedType, value]);
+  return <>
+    <textarea rows={3} value={draft} onChange={(event) => setDraft(event.target.value)} onBlur={() => {
+      try {
+        const parsed = JSON.parse(draft);
+        if (expectedType === 'array' && !Array.isArray(parsed)) throw new TypeError('Enter a JSON array.');
+        if (expectedType === 'object' && (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))) throw new TypeError('Enter a JSON object.');
+        onChange(parsed);
+        setError('');
+      } catch (parseError) {
+        setError(parseError.message || 'Enter valid JSON.');
+      }
+    }} onPointerDown={(event) => event.stopPropagation()} aria-label={`${type} value`} aria-invalid={Boolean(error) || undefined} />
+    <small className="node-config-hint">Valid JSON is applied when you leave the field.</small>
+    {error && <small className="node-config-warning" role="alert">{error}</small>}
+  </>;
+}
 
 function equalCanvasNodeData(left, right) {
   if (left === right) return true;
@@ -265,6 +321,101 @@ function equalDefinitionValue(left, right) {
   const rightKeys = Object.keys(right);
   return leftKeys.length === rightKeys.length
     && leftKeys.every((key) => Object.hasOwn(right, key) && equalDefinitionValue(left[key], right[key]));
+}
+
+function renderCanvasFindText(value, findOptions, currentNode = false) {
+  const text = String(value ?? '');
+  const query = findOptions?.query?.trim();
+  if (!query) return text;
+  let expression;
+  try {
+    const source = findOptions.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expression = new RegExp(source, `gu${findOptions.matchCase ? '' : 'i'}`);
+  } catch {
+    return text;
+  }
+  const parts = [];
+  let cursor = 0;
+  let match;
+  let index = 0;
+  while ((match = expression.exec(text))) {
+    const start = match.index;
+    const end = start + match[0].length;
+    const isWord = (character) => Boolean(character && /[\p{L}\p{N}_]/u.test(character));
+    if (!match[0].length) {
+      expression.lastIndex += 1;
+      continue;
+    }
+    if (findOptions.wholeWord && (isWord(text[start - 1]) || isWord(text[end]))) continue;
+    if (start > cursor) parts.push(text.slice(cursor, start));
+    parts.push(<mark key={`${start}-${index}`} className={`canvas-find-text-hit ${currentNode ? 'is-current' : ''}`}>{match[0]}</mark>);
+    cursor = end;
+    index += 1;
+  }
+  if (!index) return text;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
+
+function renderSchemaControls(node, controls, update, connectedInputIds) {
+  if (!Array.isArray(controls) || controls.length === 0) return null;
+  const visibleControls = controls.filter((control) => {
+    if (control.hideWhenConnected && connectedInputIds.has(control.inputId || control.key)) return false;
+    if (!control.visibleWhen) return true;
+    const { key, equals, orUnset } = control.visibleWhen;
+    const value = node.data?.[key];
+    return value === equals || (orUnset && (value === undefined || value === ''));
+  });
+  if (!visibleControls.length) return null;
+
+  return <div className="node-config node-config-stack">
+    {visibleControls.map((control, index) => {
+      if (control.type === 'hint') return <span key={`hint-${index}`} className="node-config-hint">{control.text}</span>;
+      const value = node.data?.[control.key] ?? control.defaultValue;
+      const label = control.label || control.key;
+      if (control.type === 'checkbox') {
+        return <FallbackCheckbox key={control.key} label={label} checked={Boolean(value)} onChange={(next) => update(control.key, next)} />;
+      }
+      if (control.type === 'number') {
+        return <FallbackField key={control.key} label={label}><NodeNumberInput
+          min={control.min}
+          max={control.max}
+          step={control.step}
+          value={value ?? 0}
+          onChange={(event) => update(control.key, numericNodeInputValue(event.target.value, {
+            min: control.min ?? -Infinity,
+            max: control.max ?? Infinity,
+            integer: control.integer
+          }))}
+          onPointerDown={(event) => event.stopPropagation()}
+          aria-label={label}
+        /></FallbackField>;
+      }
+      if (control.type === 'select') {
+        const options = (control.options || []).map((option) => ({ ...option, value: String(option.value) }));
+        const selectedValue = value === '' ? control.defaultValue : value;
+        return <FallbackField key={control.key} label={label}><AnimatedDropdown
+          value={String(selectedValue ?? '')}
+          options={options}
+          onChange={(next) => update(control.key, control.valueType === 'boolean' ? next === 'true' : control.valueType === 'number' ? Number(next) : next)}
+          onPointerDown={(event) => event.stopPropagation()}
+          ariaLabel={label}
+          className="node-select"
+        /></FallbackField>;
+      }
+      if (control.type === 'text') {
+        return <FallbackField key={control.key} label={label}><input
+          value={String(value ?? '')}
+          maxLength={control.maxLength}
+          onChange={(event) => update(control.key, event.target.value)}
+          onPointerDown={(event) => event.stopPropagation()}
+          placeholder={control.placeholder}
+          aria-label={label}
+        /></FallbackField>;
+      }
+      return null;
+    })}
+  </div>;
 }
 
 function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs, selectedVariable, onOpenVariables, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, connectedInputIds, appEmojis, authToken, modalFieldOptions, templatePreviewValues) {
@@ -372,19 +523,13 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </details>
     </div>;
   }
-  if (node.type === 'event_cron') {
-    return <div className="node-config node-config-stack function-node-config">
-      <FallbackField label="Cron (min hour day month weekday)"><input value={node.data?.cronExpression ?? '*/5 * * * *'} onChange={(event) => update('cronExpression', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="*/5 * * * *" aria-label="Cron schedule expression" /></FallbackField>
-      <FallbackField label="Time zone"><input value={node.data?.timeZone ?? 'UTC'} onChange={(event) => update('timeZone', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="UTC or Asia/Tokyo" aria-label="Cron time zone" /></FallbackField>
-      <span className="node-config-hint">Five-field cron. Runs once per matching minute; use an IANA time zone.</span>
-    </div>;
-  }
   if (node.type === 'action_set_presence') {
-    const activityTypes = [{ value: '0', label: 'Playing' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
+    const activityTypes = [{ value: '0', label: 'Playing' }, { value: '1', label: 'Streaming' }, { value: '2', label: 'Listening' }, { value: '3', label: 'Watching' }, { value: '5', label: 'Competing' }];
     const statuses = [{ value: 'online', label: 'Online' }, { value: 'idle', label: 'Idle' }, { value: 'dnd', label: 'Do not disturb' }, { value: 'invisible', label: 'Invisible' }];
     return <div className="node-config node-config-stack">
       {!isConnected('activity_text') && <FallbackField label="Activity text"><input value={node.data?.activity_text ?? 'ARC Studio'} maxLength={128} onChange={(event) => update('activity_text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="ARC Studio" aria-label="Presence activity text" /></FallbackField>}
       {!isConnected('activity_type') && <FallbackField label="Activity type"><AnimatedDropdown value={String(node.data?.activity_type ?? 0)} options={activityTypes} onChange={(value) => update('activity_type', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Presence activity type" className="node-select" /></FallbackField>}
+      {Number(node.data?.activity_type) === 1 && !isConnected('stream_url') && <FallbackField label="Stream URL"><input type="url" value={node.data?.stream_url ?? ''} maxLength={2048} onChange={(event) => update('stream_url', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="https://twitch.tv/your-channel" aria-label="Streaming activity URL" /></FallbackField>}
       {!isConnected('status') && <FallbackField label="Status"><AnimatedDropdown value={node.data?.status ?? 'online'} options={statuses} onChange={(value) => update('status', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Bot presence status" className="node-select" /></FallbackField>}
     </div>;
   }
@@ -449,7 +594,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'data_array_get' && !isConnected('index')) {
-    return <div className="node-config node-config-stack"><FallbackField label="Index"><NodeNumberInput min="0" step="1" value={node.data?.index ?? 0} onChange={(event) => update('index', Math.max(0, Math.trunc(Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} placeholder="0" aria-label="Array item index" /></FallbackField><span className="node-config-hint">Zero-based index</span></div>;
+    return <div className="node-config node-config-stack"><FallbackField label="Index"><NodeNumberInput min="0" step="1" value={node.data?.index ?? 0} onChange={(event) => update('index', numericNodeInputValue(event.target.value, { min: 0, integer: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="0" aria-label="Array item index" /></FallbackField><span className="node-config-hint">Zero-based index</span></div>;
   }
   if (node.type === 'data_regex') {
     const mode = ['test', 'match', 'replace'].includes(node.data?.mode) ? node.data.mode : 'test';
@@ -461,15 +606,6 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {mode === 'replace' && !isConnected('replacement') && <FallbackField label="Replacement"><textarea rows={2} maxLength={2000} value={node.data?.replacement ?? ''} onChange={(event) => update('replacement', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Replacement text" aria-label="Regex replacement text" /></FallbackField>}
       <span className="node-config-hint">Limits: 256-character pattern, 8,192-character input. Use Valid and Error to handle invalid patterns safely.</span>
     </div>;
-  }
-  if (node.type === 'data_to_number' && !isConnected('text')) {
-    return <div className="node-config node-config-stack"><FallbackField label="Text"><input value={node.data?.text ?? ''} onChange={(event) => update('text', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="e.g. 42.5" aria-label="Text to convert to a number" /></FallbackField></div>;
-  }
-  if (node.type === 'data_to_text' && !isConnected('value')) {
-    return <div className="node-config node-config-stack"><FallbackField label="Value"><input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Value to convert to text" /></FallbackField></div>;
-  }
-  if (node.type === 'data_to_boolean' && !isConnected('value')) {
-    return <div className="node-config node-config-stack"><FallbackField label="Value"><AnimatedDropdown value={String(node.data?.value ?? false)} options={[{ value: 'false', label: 'False' }, { value: 'true', label: 'True' }]} onChange={(value) => update('value', value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Value to convert to a boolean" className="node-select" /></FallbackField></div>;
   }
   if (node.type === 'data_check_value') {
     return <div className="node-config node-config-stack">
@@ -495,24 +631,19 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'data_format_number') {
     const style = ['decimal', 'percent', 'currency'].includes(node.data?.style) ? node.data.style : 'decimal';
     return <div className="node-config node-config-stack">
-      {!isConnected('value') && <FallbackField label="Value"><NodeNumberInput allowEmpty step="any" value={node.data?.value ?? 0} onChange={(event) => update('value', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number to format" /></FallbackField>}
+      {!isConnected('value') && <FallbackField label="Value"><NodeNumberInput allowEmpty step="any" value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number to format" /></FallbackField>}
       {!isConnected('locale') && <FallbackField label="Locale"><input value={node.data?.locale ?? 'en-US'} onChange={(event) => update('locale', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="en-US" aria-label="Number format locale" /></FallbackField>}
       {!isConnected('style') && <FallbackField label="Style"><AnimatedDropdown value={style} options={[{ value: 'decimal', label: 'Number' }, { value: 'percent', label: 'Percent' }, { value: 'currency', label: 'Currency' }]} onChange={(value) => update('style', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Number format style" className="node-select" /></FallbackField>}
       {style === 'currency' && !isConnected('currency') && <FallbackField label="Currency code"><input maxLength={3} value={node.data?.currency ?? 'USD'} onChange={(event) => update('currency', event.target.value.toUpperCase())} onPointerDown={(event) => event.stopPropagation()} placeholder="USD" aria-label="Currency code" /></FallbackField>}
-      <div className="node-config"><FallbackField label="Minimum decimals">{isConnected('minimum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.minimum_fraction_digits ?? 0} onChange={(event) => update('minimum_fraction_digits', Math.max(0, Math.min(20, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Minimum fraction digits" />}</FallbackField><FallbackField label="Maximum decimals">{isConnected('maximum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.maximum_fraction_digits ?? 2} onChange={(event) => update('maximum_fraction_digits', Math.max(0, Math.min(20, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum fraction digits" />}</FallbackField></div>
+      <div className="node-config"><FallbackField label="Minimum decimals">{isConnected('minimum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.minimum_fraction_digits ?? 0} onChange={(event) => update('minimum_fraction_digits', numericNodeInputValue(event.target.value, { min: 0, max: 20, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Minimum fraction digits" />}</FallbackField><FallbackField label="Maximum decimals">{isConnected('maximum_fraction_digits') ? <span>Connected</span> : <NodeNumberInput min="0" max="20" step="1" value={node.data?.maximum_fraction_digits ?? 2} onChange={(event) => update('maximum_fraction_digits', numericNodeInputValue(event.target.value, { min: 0, max: 20, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum fraction digits" />}</FallbackField></div>
     </div>;
   }
   if (node.type.startsWith('math_')) {
     if (node.type === 'math_random') return <div className="node-config node-config-stack">
-      {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
+      {!isConnected('min') && <FallbackField label="Minimum"><NodeNumberInput allowEmpty step="any" value={node.data?.min ?? 0} onChange={(event) => update('min', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number minimum" />
       </FallbackField>}
-      {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', event.target.value === '' ? '' : Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
+      {!isConnected('max') && <FallbackField label="Maximum"><NodeNumberInput allowEmpty step="any" value={node.data?.max ?? 1} onChange={(event) => update('max', numericNodeInputValue(event.target.value, { allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Random number maximum" /></FallbackField>}
     </div>;
-    if (node.type === 'math_compare') {
-      return <div className="node-config"><AnimatedDropdown value={node.data?.operation || 'less_than'} options={[{ value: 'less_than', label: 'A < B' }, { value: 'less_or_equal', label: 'A ≤ B' }, { value: 'equal', label: 'A = B' }, { value: 'not_equal', label: 'A ≠ B' }, { value: 'greater_or_equal', label: 'A ≥ B' }, { value: 'greater_than', label: 'A > B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Number comparison" className="node-select" />{node.data?.operation === 'equal' || !node.data?.operation ? <span className="node-config-hint">Exact equality</span> : null}</div>;
-    }
-    if (node.type === 'math_round') return <div className="node-config node-config-stack"><label className="math-precision"><span>Decimal places</span><NodeNumberInput min="0" max="12" step="1" value={node.data?.precision ?? 0} onChange={(event) => update('precision', Math.max(0, Math.min(12, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} /></label></div>;
-    if (node.type === 'math_constant') return <div className="node-config"><AnimatedDropdown value={node.data?.constant || 'pi'} options={[{ value: 'pi', label: 'π · Pi' }, { value: 'tau', label: 'τ · Tau' }, { value: 'e', label: 'e · Euler' }, { value: 'golden_ratio', label: 'φ · Golden ratio' }, { value: 'sqrt_two', label: '√2' }]} onChange={(value) => update('constant', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Mathematical constant" className="node-select" /></div>;
   }
   if (node.type === 'function_math') {
     return <div className="node-config"><AnimatedDropdown value={node.data?.operation || 'add'} options={[{ value: 'add', label: 'A + B' }, { value: 'subtract', label: 'A − B' }, { value: 'multiply', label: 'A × B' }, { value: 'divide', label: 'A ÷ B' }, { value: 'modulo', label: 'A mod B' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Arithmetic operation" className="node-select" /></div>;
@@ -520,7 +651,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'value_text') {
     const value = String(node.data?.value ?? 'Hello World');
     const openTextEditor = () => onOpenTextStudio?.(node, 'value', 'Text value', value);
-    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text value" /> : <DiscordTextField onOpenTextEditor={openTextEditor} value={value} appEmojis={appEmojis} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} aria-label="Text value" />}<TemplateVariableHints value={node.data?.value} graphVariables={graphVariables}  templatePreviewValues={templatePreviewValues}/></div>;
+    return <div className="node-config node-config-stack">{value.length > LONG_TEXT_THRESHOLD ? <DiscordLongTextField value={value} onOpenEditor={openTextEditor} label="Text value" /> : <DiscordTextField onOpenTextEditor={openTextEditor} value={value} appEmojis={appEmojis} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} aria-label="Text value" />}</div>;
   }
   if (node.type === 'data_format_time') {
     const styleOptions = [{ value: 'none', label: 'None' }, { value: 'short', label: 'Short' }, { value: 'medium', label: 'Medium' }, { value: 'long', label: 'Long' }, { value: 'full', label: 'Full' }];
@@ -531,7 +662,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     </div>;
   }
   if (node.type === 'value_number') {
-    return <div className="node-config"><NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', Number(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number value" /></div>;
+    return <div className="node-config"><NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Number value" /></div>;
   }
   if (node.type === 'value_boolean') {
     return <div className="node-config node-config-inline"><div className="node-checkbox-label"><AnimatedCheckbox checked={node.data?.value ?? true} onChange={(checked) => update('value', checked)} onPointerDown={(event) => event.stopPropagation()} label="Boolean value" /> <span>True</span></div></div>;
@@ -552,7 +683,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
             : ['array', 'object'].includes(type)
               ? <FallbackField label={`Fallback ${type === 'array' ? 'array' : 'JSON object'}`}><VariableJSONFallback key={type} type={type} value={node.data?.value} onChange={(value) => update('value', value)} /></FallbackField>
               : <FallbackField label="Fallback value">{type === 'number'
-                ? <NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable fallback number" />
+                ? <NodeNumberInput value={node.data?.value ?? 0} onChange={(event) => update('value', numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label="Variable fallback number" />
                 : <input value={node.data?.value ?? ''} onChange={(event) => update('value', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Variable fallback text" />}</FallbackField>}
         </>}
       <FallbackCheckbox label="Persist between runs" checked={node.data?.persist !== false} onChange={(persist) => update('persist', persist)} />
@@ -562,8 +693,9 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   if (node.type === 'variable_get' || node.type === 'variable_set') {
     const currentScope = node.data?.scope || 'graph';
     const variableOptions = graphVariables.map((variable) => ({ value: `${variable.scope || 'graph'}:${variable.id}`, label: `${variable.scope === 'project' ? 'Project' : 'Graph'} · ${variable.name} · ${variable.type}` }));
+    const selectedScope = selectedVariable?.scope || currentScope;
     return <div className="node-config node-config-stack">
-      {graphVariables.length ? <AnimatedDropdown value={`${currentScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
+      {graphVariables.length ? <AnimatedDropdown value={`${selectedScope}:${node.data?.variableId || ''}`} onChange={(value) => { const separator = value.indexOf(':'); update({ scope: value.slice(0, separator), variableId: value.slice(separator + 1) }); }} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Project or graph variable" placeholder="Select variable" options={variableOptions} className="node-select" /> : <button className="node-config-action" onClick={(event) => { event.stopPropagation(); onOpenVariables?.(); }}><Plus size={12} /> Create variable</button>}
       {selectedVariable && <span className="node-config-hint">{selectedVariable.name} · {selectedVariable.type}</span>}
     </div>;
   }
@@ -589,7 +721,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     const componentsConnected = isConnected('components');
     return <div className="node-config node-config-stack">
       {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
-      {!isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}<TemplateVariableHints value={node.data?.content} graphVariables={graphVariables}  templatePreviewValues={templatePreviewValues}/></label>}
+      {!isConnected('thread_id') && <label className="node-config-fallback"><span>Thread ID (Optional)</span><input value={node.data?.thread_id ?? ''} onChange={(event) => update('thread_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Overrides Channel ID when set" aria-label="Thread ID" /></label>}
+      {!isConnected('content') && <label className="node-config-fallback"><span>Message content</span>{textEditor('content', 'Message content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('mention_replied_user') && <FallbackCheckbox label="Mention Replied User" checked={node.data?.mention_replied_user ?? (isConnected('reply_to_message_id') || Boolean(node.data?.reply_to_message_id))} onChange={(value) => update('mention_replied_user', value)} />}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
@@ -600,7 +733,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {!isConnected('channel_id') && <label className="node-config-fallback"><span>Channel ID</span><input value={node.data?.channel_id ?? ''} onChange={(event) => update('channel_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Channel ID" /></label>}
       {!isConnected('message_id') && <label className="node-config-fallback"><span>Message ID</span><input value={node.data?.message_id ?? ''} onChange={(event) => update('message_id', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="Used when unconnected" aria-label="Message ID" /></label>}
-      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}<TemplateVariableHints value={node.data?.content} graphVariables={graphVariables}  templatePreviewValues={templatePreviewValues}/></label>}
+      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
@@ -624,7 +757,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('interaction_token') && !node.data?.interaction_token && (
         <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to reply</span>
       )}
-      {!isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}<TemplateVariableHints value={node.data?.content} graphVariables={graphVariables}  templatePreviewValues={templatePreviewValues}/></label>}
+      {!isConnected('content') && <label className="node-config-fallback"><span>Reply content</span>{textEditor('content', 'Reply content', 2000, 'Used when unconnected')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
@@ -635,7 +768,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('interaction_token') && !node.data?.interaction_token && (
         <span className="node-config-warning" role="status"><AlertTriangle size={12} /> Connect an interaction token to edit</span>
       )}
-      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}<TemplateVariableHints value={node.data?.content} graphVariables={graphVariables}  templatePreviewValues={templatePreviewValues}/></label>}
+      {!isConnected('content') && <label className="node-config-fallback"><span>New content (Optional)</span>{textEditor('content', 'New content', 2000, 'Leave empty to keep existing')}</label>}
       {!isConnected('files') && <AttachmentPicker files={node.data?.files || []} authToken={authToken} onChange={(files) => update('files', files)} />}
       <button type="button" className={`node-config-action ${componentsConnected ? 'is-disabled' : ''}`} disabled={componentsConnected} title={componentsConnected ? 'Components input is connected. Edit the source node on the canvas instead.' : undefined} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (componentsConnected) return; event.stopPropagation(); onOpenEmbedStudio?.(node); }}><Plus size={12} /> {componentsConnected ? 'Components wired (edit source node)' : `Edit message components${node.data?.components?.length ? ` · ${node.data.components.length} rows` : ''}`}</button>
     </div>;
@@ -650,7 +783,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       </div>;
     }
   }
-  if (node.type.startsWith('action_') && ['action_create_channel', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
+  if (node.type.startsWith('action_') && ['action_create_channel', 'action_create_thread', 'action_start_thread_from_message', 'action_edit_channel', 'action_delete_channel', 'action_create_role', 'action_member_role', 'action_moderate_member', 'action_voice_channel_status', 'action_voice_state'].includes(node.type)) {
     const textField = (id, label, placeholder = 'Used when unconnected') => isConnected(id) ? null : <FallbackField key={id} label={label}><input value={node.data?.[id] ?? ''} onChange={(event) => update(id, event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder={placeholder} aria-label={label} /></FallbackField>;
     const reason = textField('reason', 'Audit Log Reason');
     return <div className="node-config node-config-stack">
@@ -659,22 +792,47 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
         {!isConnected('channel_type') && <FallbackField label="Channel type"><AnimatedDropdown value={node.data?.channel_type || 'text'} options={['text', 'voice', 'category', 'announcement', 'stage'].map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={(value) => update('channel_type', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Channel type" className="node-select" /></FallbackField>}
         {textField('parent_id', 'Category ID')}{['text', 'announcement'].includes(node.data?.channel_type || 'text') && textField('topic', 'Topic')}{reason}
       </>}
+      {node.type === 'action_create_thread' && <>
+        {textField('channel_id', 'Parent Channel ID')}{textField('name', 'Thread name')}
+        {textField('message_id', 'Message ID (optional)')}
+        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && !isConnected('thread_type') && <FallbackField label="Thread type"><AnimatedDropdown value={node.data?.thread_type || 'public'} options={[{ value: 'public', label: 'Public thread' }, { value: 'private', label: 'Private thread' }]} onChange={(value) => update('thread_type', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread type" className="node-select" /></FallbackField>}
+        {!isConnected('auto_archive_duration') && <FallbackField label="Auto archive"><AnimatedDropdown value={String(node.data?.auto_archive_duration ?? 1440)} options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))} onChange={(value) => update('auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread auto archive duration" className="node-select" /></FallbackField>}
+        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput min="0" max="21600" value={node.data?.rate_limit_per_user ?? 0} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">0 disables slowmode.</small></FallbackField>}
+        {!(isConnected('message_id') || String(node.data?.message_id || '').trim()) && (node.data?.thread_type || 'public') === 'private' && !isConnected('invitable') && <FallbackCheckbox label="Members can invite" checked={node.data?.invitable ?? true} onChange={(value) => update('invitable', value)} />}
+        {reason}
+      </>}
+      {node.type === 'action_start_thread_from_message' && <>
+        {textField('channel_id', 'Parent Channel ID')}{textField('message_id', 'Message ID')}{textField('name', 'Thread name')}
+        {!isConnected('auto_archive_duration') && <FallbackField label="Auto archive"><AnimatedDropdown value={String(node.data?.auto_archive_duration ?? 1440)} options={[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))} onChange={(value) => update('auto_archive_duration', Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread auto archive duration" className="node-select" /></FallbackField>}
+        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput min="0" max="21600" value={node.data?.rate_limit_per_user ?? 0} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600 }))} onPointerDown={(event) => event.stopPropagation()} /><small className="node-config-hint">0 disables slowmode.</small></FallbackField>}
+        {reason}
+      </>}
       {node.type === 'action_edit_channel' && <>
-        {textField('channel_id', 'Channel ID')}{textField('name', 'New name')}{textField('topic', 'Description / topic')}{textField('parent_id', 'New category ID')}
-        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', event.target.value === '' ? '' : Math.max(0, Math.min(21600, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
+        {textField('thread_id', 'Thread ID (optional)')}
+        {isConnected('thread_id') || String(node.data?.thread_id || '').trim() ? <>
+          {textField('name', 'New name')}
+          {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
+          {!isConnected('archived') && <FallbackField label="Archive state"><AnimatedDropdown value={node.data?.archived === true ? 'true' : node.data?.archived === false ? 'false' : ''} onChange={(value) => update('archived', value === '' ? '' : value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread archive state" options={[{ value: '', label: 'Leave unchanged' }, { value: 'true', label: 'Archive thread' }, { value: 'false', label: 'Unarchive thread' }]} className="node-select" /></FallbackField>}
+          {!isConnected('locked') && <FallbackField label="Lock state"><AnimatedDropdown value={node.data?.locked === true ? 'true' : node.data?.locked === false ? 'false' : ''} onChange={(value) => update('locked', value === '' ? '' : value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread lock state" options={[{ value: '', label: 'Leave unchanged' }, { value: 'true', label: 'Lock thread' }, { value: 'false', label: 'Unlock thread' }]} className="node-select" /></FallbackField>}
+          {!isConnected('invitable') && <FallbackField label="Invites (private threads only)"><AnimatedDropdown value={node.data?.invitable === true ? 'true' : node.data?.invitable === false ? 'false' : ''} onChange={(value) => update('invitable', value === '' ? '' : value === 'true')} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread invitations" options={[{ value: '', label: 'Leave unchanged' }, { value: 'true', label: 'Allow invites' }, { value: 'false', label: 'Disallow invites' }]} className="node-select" /></FallbackField>}
+          {!isConnected('auto_archive_duration') && <FallbackField label="Auto archive"><AnimatedDropdown value={String(node.data?.auto_archive_duration ?? '')} onChange={(value) => update('auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Thread auto archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? `${value / 1440} day${value > 1440 ? 's' : ''}` : `${value} minutes`}` }))]} className="node-select" /></FallbackField>}
+        </> : <>
+          {textField('channel_id', 'Channel ID')}{textField('name', 'New name')}{textField('topic', 'Description / topic')}{textField('parent_id', 'New category ID')}
+        {!isConnected('rate_limit_per_user') && <FallbackField label="Slowmode (seconds)"><NodeNumberInput allowEmpty min="0" max="21600" value={node.data?.rate_limit_per_user ?? ''} onChange={(event) => update('rate_limit_per_user', numericNodeInputValue(event.target.value, { min: 0, max: 21600, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">0–21,600 seconds · blank keeps the current value</small></FallbackField>}
         {!isConnected('nsfw') && <FallbackCheckbox label="Age restricted" checked={Boolean(node.data?.nsfw)} onChange={(value) => update('nsfw', value)} />}
         {!isConnected('permission_overwrites') && <button type="button" className="node-config-action node-config-studio-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.({ ...node, type: 'data_permission_overwrites', label: 'Channel Permission Overwrites' }); }}><Plus size={12} /> Edit channel permissions</button>}
-        {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" step="1" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Custom values: 8,000–384,000. The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
-        {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', event.target.value === '' ? '' : Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
+        {!isConnected('bitrate') && <FallbackField label="Voice bitrate (bits/sec)"><NodeNumberInput allowEmpty min="8000" max="384000" step="1" value={node.data?.bitrate ?? ''} onChange={(event) => update('bitrate', numericNodeInputValue(event.target.value, { min: 8000, max: 384000, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Custom values: 8,000–384,000. The server tier sets the actual cap; Stage channels cap at 64,000.</small></FallbackField>}
+        {!isConnected('user_limit') && <FallbackField label="User limit (0 = unlimited)"><NodeNumberInput allowEmpty min="0" max="10000" step="1" value={node.data?.user_limit ?? ''} onChange={(event) => update('user_limit', numericNodeInputValue(event.target.value, { min: 0, max: 10000, integer: true, allowEmpty: true }))} onPointerDown={(event) => event.stopPropagation()} placeholder="Leave unchanged" /><small className="node-config-hint">Voice channels: 0–99 · Stage channels: up to 10,000</small></FallbackField>}
         {textField('rtc_region', 'Voice region (blank = automatic)')}
         {!isConnected('video_quality_mode') && <FallbackField label="Voice video quality"><AnimatedDropdown value={String(node.data?.video_quality_mode ?? '')} onChange={(value) => update('video_quality_mode', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Voice video quality" options={[{ value: '', label: 'Leave unchanged' }, { value: '1', label: 'Automatic' }, { value: '2', label: '720p' }]} className="node-select" /></FallbackField>}
         {!isConnected('default_auto_archive_duration') && <FallbackField label="Default thread archive"><AnimatedDropdown value={String(node.data?.default_auto_archive_duration ?? '')} onChange={(value) => update('default_auto_archive_duration', value === '' ? '' : Number(value))} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Default thread archive duration" options={[{ value: '', label: 'Leave unchanged' }, ...[60, 1440, 4320, 10080].map((value) => ({ value: String(value), label: `${value >= 1440 ? value / 1440 + ' day' + (value > 1440 ? 's' : '') : value + ' minutes'}` }))]} className="node-select" /></FallbackField>}
+        </>}
         {reason}
       </>}
       {node.type === 'action_delete_channel' && <>{textField('channel_id', 'Channel ID')}{reason}<span className="node-config-warning"><AlertTriangle size={12} /> Deleting a channel cannot be undone.</span></>}
       {node.type === 'action_create_role' && <>
         {textField('guild_id', 'Server ID')}{textField('name', 'Role name')}
-        {!isConnected('color') && <FallbackField label="Color (RGB number)"><NodeNumberInput min="0" max="16777215" value={node.data?.color ?? 0} onChange={(event) => update('color', Math.max(0, Math.min(16777215, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Role RGB color number" /></FallbackField>}
+        {!isConnected('color') && <FallbackField label="Color (RGB number)"><NodeNumberInput min="0" max="16777215" value={node.data?.color ?? 0} onChange={(event) => update('color', numericNodeInputValue(event.target.value, { min: 0, max: 16777215, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Role RGB color number" /></FallbackField>}
         {!isConnected('permissions') && <button type="button" className="node-config-action" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onOpenPermissionStudio?.(node); }}><Plus size={12} /> Edit role permissions</button>}
         {isConnected('permissions') && <span className="node-config-hint">Role permissions come from the connected input.</span>}
         {!isConnected('hoist') && <FallbackCheckbox label="Show separately" checked={node.data?.hoist ?? false} onChange={(value) => update('hoist', value)} />}
@@ -687,8 +845,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {node.type === 'action_moderate_member' && <>
         {textField('guild_id', 'Server ID')}{textField('user_id', 'Member ID')}
         {!isConnected('operation') && <FallbackField label="Action"><AnimatedDropdown value={node.data?.operation || 'timeout'} options={[{ value: 'timeout', label: 'Timeout' }, { value: 'kick', label: 'Kick' }, { value: 'ban', label: 'Ban' }, { value: 'unban', label: 'Unban' }]} onChange={(value) => update('operation', value)} onPointerDown={(event) => event.stopPropagation()} ariaLabel="Moderation action" className="node-select" /></FallbackField>}
-        {node.data?.operation === 'timeout' && !isConnected('duration_minutes') && <FallbackField label="Timeout (minutes)"><NodeNumberInput min="1" max="40320" value={node.data?.duration_minutes ?? 10} onChange={(event) => update('duration_minutes', Math.max(1, Math.min(40320, Number(event.target.value) || 1)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Timeout duration in minutes" /></FallbackField>}
-        {node.data?.operation === 'ban' && !isConnected('delete_message_seconds') && <FallbackField label="Delete recent messages (seconds)"><NodeNumberInput min="0" max="604800" value={node.data?.delete_message_seconds ?? 0} onChange={(event) => update('delete_message_seconds', Math.max(0, Math.min(604800, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Ban message deletion period" /></FallbackField>}
+        {node.data?.operation === 'timeout' && !isConnected('duration_minutes') && <FallbackField label="Timeout (minutes)"><NodeNumberInput min="1" max="40320" value={node.data?.duration_minutes ?? 10} onChange={(event) => update('duration_minutes', numericNodeInputValue(event.target.value, { min: 1, max: 40320, integer: true, fallback: 1 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Timeout duration in minutes" /></FallbackField>}
+        {node.data?.operation === 'ban' && !isConnected('delete_message_seconds') && <FallbackField label="Delete recent messages (seconds)"><NodeNumberInput min="0" max="604800" value={node.data?.delete_message_seconds ?? 0} onChange={(event) => update('delete_message_seconds', numericNodeInputValue(event.target.value, { min: 0, max: 604800, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Ban message deletion period" /></FallbackField>}
         {textField('reason', 'Audit Log Reason')}
         <span className="node-config-warning"><AlertTriangle size={12} /> Discord checks the bot’s role position and server permissions.</span>
       </>}
@@ -710,10 +868,10 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {templateInput('headers', 'Headers (JSON)', { multiline: true, maxLength: 16384, placeholder: '{}' })}
       {templateInput('user_agent', 'User-Agent', { maxLength: 512, placeholder: 'Optional' })}
       {templateInput('body', 'Body', { multiline: true, maxLength: 8192 })}
-      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 10000} onChange={(event) => update('timeout_ms', Math.max(1000, Math.min(30000, Number(event.target.value) || 1000)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Request timeout in milliseconds" /></FallbackField>}
-      {!isConnected('max_bytes') && <FallbackField label="Max response bytes"><NodeNumberInput min="1024" max="1048576" value={node.data?.max_bytes ?? 1048576} onChange={(event) => update('max_bytes', Math.max(1024, Math.min(1048576, Number(event.target.value) || 1024)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum response bytes" /></FallbackField>}
-      {canRetry && !isConnected('max_attempts') && <FallbackField label="Max attempts"><NodeNumberInput min="1" max="5" value={node.data?.max_attempts ?? 3} onChange={(event) => update('max_attempts', Math.max(1, Math.min(5, Number(event.target.value) || 1)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum request attempts" /></FallbackField>}
-      {canRetry && !isConnected('retry_delay_ms') && <FallbackField label="Base retry delay (ms)"><NodeNumberInput min="100" max="10000" value={node.data?.retry_delay_ms ?? 500} onChange={(event) => update('retry_delay_ms', Math.max(100, Math.min(10000, Number(event.target.value) || 100)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Base retry delay in milliseconds" /></FallbackField>}
+      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 10000} onChange={(event) => update('timeout_ms', numericNodeInputValue(event.target.value, { min: 1000, max: 30000, fallback: 1000 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Request timeout in milliseconds" /></FallbackField>}
+      {!isConnected('max_bytes') && <FallbackField label="Max response bytes"><NodeNumberInput min="1024" max="1048576" value={node.data?.max_bytes ?? 1048576} onChange={(event) => update('max_bytes', numericNodeInputValue(event.target.value, { min: 1024, max: 1048576, integer: true, fallback: 1024 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum response bytes" /></FallbackField>}
+      {canRetry && !isConnected('max_attempts') && <FallbackField label="Max attempts"><NodeNumberInput min="1" max="5" value={node.data?.max_attempts ?? 3} onChange={(event) => update('max_attempts', numericNodeInputValue(event.target.value, { min: 1, max: 5, integer: true, fallback: 1 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum request attempts" /></FallbackField>}
+      {canRetry && !isConnected('retry_delay_ms') && <FallbackField label="Base retry delay (ms)"><NodeNumberInput min="100" max="10000" value={node.data?.retry_delay_ms ?? 500} onChange={(event) => update('retry_delay_ms', numericNodeInputValue(event.target.value, { min: 100, max: 10000, integer: true, fallback: 100 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Base retry delay in milliseconds" /></FallbackField>}
       {canRetry && !isConnected('retry_non_idempotent') && <FallbackCheckbox label="Retry POST and other non-idempotent methods" checked={node.data?.retry_non_idempotent ?? false} onChange={(value) => update('retry_non_idempotent', value)} />}
     </div>;
   }
@@ -721,8 +879,8 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
     return <div className="node-config node-config-stack">
       {templateInput('url', 'URL', { inputMode: 'url', maxLength: 4096, placeholder: 'Direct public file URL' })}
       {templateInput('user_agent', 'User-Agent', { maxLength: 512, placeholder: 'Optional' })}
-      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 20000} onChange={(event) => update('timeout_ms', Math.max(1000, Math.min(30000, Number(event.target.value) || 1000)))} onPointerDown={(event) => event.stopPropagation()} aria-label="File download timeout in milliseconds" /></FallbackField>}
-      {!isConnected('max_bytes') && <FallbackField label="Max file bytes"><NodeNumberInput min="1024" max="20971520" value={node.data?.max_bytes ?? 20971520} onChange={(event) => update('max_bytes', Math.max(1024, Math.min(20971520, Number(event.target.value) || 1024)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum file size in bytes" /></FallbackField>}
+      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1000" max="30000" value={node.data?.timeout_ms ?? 20000} onChange={(event) => update('timeout_ms', numericNodeInputValue(event.target.value, { min: 1000, max: 30000, fallback: 1000 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="File download timeout in milliseconds" /></FallbackField>}
+      {!isConnected('max_bytes') && <FallbackField label="Max file bytes"><NodeNumberInput min="1024" max="20971520" value={node.data?.max_bytes ?? 20971520} onChange={(event) => update('max_bytes', numericNodeInputValue(event.target.value, { min: 1024, max: 20971520, integer: true, fallback: 1024 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Maximum file size in bytes" /></FallbackField>}
       <span className="node-config-hint">Connect File to a message or interaction reply Files input. Maximum file size is 20 MiB.</span>
     </div>;
   }
@@ -731,7 +889,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {nodeDef.description && <span className="node-config-hint">{nodeDef.description}</span>}
       {nodeDef.inputs.filter((pin) => pin.type !== 'exec' && !isConnected(pin.id)).map((pin) => {
         if (pin.type === 'boolean') return <FallbackCheckbox key={pin.id} label={pin.label} checked={node.data?.[pin.id] ?? pin.defaultValue ?? false} onChange={(value) => update(pin.id, value)} />;
-        if (pin.type === 'number') return <FallbackField key={pin.id} label={pin.label}><NodeNumberInput value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, Number(event.target.value) || 0)} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>;
+        if (pin.type === 'number') return <FallbackField key={pin.id} label={pin.label}><NodeNumberInput value={node.data?.[pin.id] ?? pin.defaultValue ?? 0} onChange={(event) => update(pin.id, numericNodeInputValue(event.target.value))} onPointerDown={(event) => event.stopPropagation()} aria-label={pin.label} /></FallbackField>;
         const input = pin.editor === 'json-schema'
           ? <JsonSchemaEditor value={node.data?.[pin.id] ?? pin.defaultValue ?? '{}'} onChange={(value) => update(pin.id, value)} onOpenTextEditor={() => onOpenTextStudio?.(node, pin.id, pin.label, String(node.data?.[pin.id] ?? pin.defaultValue ?? '{}'), 12000)} label={pin.label} />
           : pin.editor === 'json'
@@ -752,25 +910,25 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
   }
   if (node.type === 'loop_count') {
     return <div className="node-config node-config-stack">
-      {!isConnected('count') && <FallbackField label="Iterations"><NodeNumberInput min="0" max="1000" step="1" value={node.data?.count ?? 1} onChange={(event) => update('count', Math.max(0, Math.min(1000, Math.trunc(Number(event.target.value) || 0))))} onPointerDown={(event) => event.stopPropagation()} aria-label="Loop iteration count" /></FallbackField>}
+      {!isConnected('count') && <FallbackField label="Iterations"><NodeNumberInput min="0" max="1000" step="1" value={node.data?.count ?? 1} onChange={(event) => update('count', numericNodeInputValue(event.target.value, { min: 0, max: 1000, integer: true }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Loop iteration count" /></FallbackField>}
     </div>;
   }
   if (node.type === 'repeat_while') {
     return <div className="node-config node-config-stack">
-      {!isConnected('interval_ms') && <FallbackField label="Wait between passes (ms)"><NodeNumberInput min="100" max="604800000" step="100" value={node.data?.interval_ms ?? 500} onChange={(event) => update('interval_ms', Math.max(100, Math.min(604800000, Number(event.target.value) || 500)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Repeat interval in milliseconds" /></FallbackField>}
+      {!isConnected('interval_ms') && <FallbackField label="Wait between passes (ms)"><NodeNumberInput min="100" max="604800000" step="100" value={node.data?.interval_ms ?? 500} onChange={(event) => update('interval_ms', numericNodeInputValue(event.target.value, { min: 100, max: 604800000, fallback: 500 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Repeat interval in milliseconds" /></FallbackField>}
       <span className="node-config-hint">At least 100 ms. Set Condition false to stop; an always-true condition keeps the task running.</span>
     </div>;
   }
   if (node.type === 'delay') {
     return <div className="node-config node-config-stack">
-      {!isConnected('ms') && <FallbackField label="Wait (ms)"><NodeNumberInput min="0" max="604800000" step="1000" value={node.data?.ms ?? 1000} onChange={(event) => update('ms', Math.max(0, Math.min(604800000, Number(event.target.value) || 0)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Wait duration in milliseconds" /></FallbackField>}
+      {!isConnected('ms') && <FallbackField label="Wait (ms)"><NodeNumberInput min="0" max="604800000" step="1000" value={node.data?.ms ?? 1000} onChange={(event) => update('ms', numericNodeInputValue(event.target.value, { min: 0, max: 604800000 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Wait duration in milliseconds" /></FallbackField>}
       <span className="node-config-hint">Maximum wait: 7 days per run.</span>
     </div>;
   }
   if (node.type === 'wait_until_condition') {
     return <div className="node-config node-config-stack">
-      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1" max="86400000" value={node.data?.timeout_ms ?? 30000} onChange={(event) => update('timeout_ms', Math.max(1, Math.min(86400000, Number(event.target.value) || 1)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Condition wait timeout in milliseconds" /></FallbackField>}
-      {!isConnected('interval_ms') && <FallbackField label="Check every (ms)"><NodeNumberInput min="50" max="10000" value={node.data?.interval_ms ?? 250} onChange={(event) => update('interval_ms', Math.max(50, Math.min(10000, Number(event.target.value) || 50)))} onPointerDown={(event) => event.stopPropagation()} aria-label="Condition check interval in milliseconds" /></FallbackField>}
+      {!isConnected('timeout_ms') && <FallbackField label="Timeout (ms)"><NodeNumberInput min="1" max="86400000" value={node.data?.timeout_ms ?? 30000} onChange={(event) => update('timeout_ms', numericNodeInputValue(event.target.value, { min: 1, max: 86400000, fallback: 1 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Condition wait timeout in milliseconds" /></FallbackField>}
+      {!isConnected('interval_ms') && <FallbackField label="Check every (ms)"><NodeNumberInput min="50" max="10000" value={node.data?.interval_ms ?? 250} onChange={(event) => update('interval_ms', numericNodeInputValue(event.target.value, { min: 50, max: 10000, fallback: 50 }))} onPointerDown={(event) => event.stopPropagation()} aria-label="Condition check interval in milliseconds" /></FallbackField>}
     </div>;
   }
   if (node.type === 'wait_until_time') {
@@ -778,7 +936,7 @@ function renderNodeConfig(node, nodeDef, update, graphVariables, callableGraphs,
       {!isConnected('time') && <FallbackField label="Time (ISO or timestamp)"><input value={node.data?.time ?? ''} onChange={(event) => update('time', event.target.value)} onPointerDown={(event) => event.stopPropagation()} placeholder="2026-10-17T12:00:00Z" aria-label="Time to continue" /></FallbackField>}
     </div>;
   }
-  return null;
+  return renderSchemaControls(node, nodeDef.editorControls, update, connectedInputIds);
 }
 
 function FallbackField({ label, children }) {
