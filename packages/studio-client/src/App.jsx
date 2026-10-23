@@ -399,7 +399,8 @@ function exportGraphPayload(graph) {
     nodes: graph?.nodes || [],
     connections: graph?.connections || [],
     tagGroups: graph?.tagGroups || [],
-    notes: graph?.notes || []
+    notes: graph?.notes || [],
+    arrows: (graph?.arrows || []).filter((arrow) => arrow?.locked)
   });
 }
 
@@ -583,6 +584,7 @@ export function App() {
   const [projectCollaboration, setProjectCollaboration] = useState({ projectId: '', graphIds: [], tabsInitialized: false, users: [] });
   const [remoteCollaborationActions, setRemoteCollaborationActions] = useState([]);
   const [graphChatBubbles, setGraphChatBubbles] = useState([]);
+  const [transientCanvasArrows, setTransientCanvasArrows] = useState([]);
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
@@ -1137,7 +1139,7 @@ export function App() {
       window.clearTimeout(collaborationActionTimerRef.current);
       flush();
     } else if (!collaborationActionTimerRef.current) {
-      const motionAction = ['node-drag', 'note-drag', 'wire-drag'].includes(action.kind);
+      const motionAction = ['node-drag', 'note-drag', 'wire-drag', 'arrow-drag'].includes(action.kind);
       collaborationActionTimerRef.current = window.setTimeout(flush, motionAction ? collaborationMotionSendIntervalRef.current : 16);
     }
   }, [activeProjectId, activeTabId, transientCanvasMotionSupported]);
@@ -1148,6 +1150,13 @@ export function App() {
     socket.send(JSON.stringify({ type: 'GRAPH_CHAT_SEND', projectId: activeProjectId, graphId: activeTabId, payload: { content, position } }));
     return true;
   }, [activeProjectId, activeTabId, localDesktopWorkspace]);
+  const sendCanvasArrowAction = useCallback((operation, payload) => {
+    const socket = wsRef.current;
+    if (!activeProjectId || !activeTabId || !liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)
+      || !socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: 'CANVAS_ARROW_ACTION', projectId: activeProjectId, graphId: activeTabId, payload: { operation, ...payload } }));
+    return true;
+  }, [activeProjectId, activeTabId]);
   const moveGraphChatBubble = useCallback((id, position) => {
     const socket = wsRef.current;
     if (localDesktopWorkspace || !id || !activeProjectId || !activeTabId || !socket || socket.readyState !== WebSocket.OPEN) return;
@@ -1166,6 +1175,7 @@ export function App() {
   }, [activeProjectId, activeTabId]);
   useEffect(() => {
     setRemoteCollaborationActions([]);
+    setTransientCanvasArrows([]);
     return () => sendCollaborationAction({ kind: 'idle' }, true);
   }, [activeProjectId, activeTabId, sendCollaborationAction]);
   const loadingBarTimerRef = useRef(null);
@@ -2190,6 +2200,10 @@ export function App() {
             if (!payload.graph?.id) return;
             const incoming = payload.graph;
             if (payload.graphId !== incoming.id) return;
+            if (Array.isArray(incoming.arrows)) {
+              const lockedArrowIds = new Set(incoming.arrows.filter((arrow) => arrow?.locked).map((arrow) => arrow.id));
+              if (lockedArrowIds.size) setTransientCanvasArrows((previous) => previous.filter((arrow) => !lockedArrowIds.has(arrow.id)));
+            }
             const previousRevision = liveGraphRevisionRef.current.get(incoming.id) || 0;
             const reconnectBase = reconnectGraphBaseRef.current.get(incoming.id);
             const pending = pendingLiveGraphRef.current.get(incoming.id);
@@ -2434,6 +2448,22 @@ export function App() {
             }
           } else if (msg.type === 'GRAPH_CHAT_REJECTED') {
             arcEvents.emit('toast:notify', { title: 'Canvas message not sent', message: msg.payload?.message || 'Please try again in a moment.', type: 'warning' });
+          } else if (msg.type === 'CANVAS_ARROWS_SYNC') {
+            const arrows = Array.isArray(msg.payload?.arrows) ? msg.payload.arrows.filter((arrow) => arrow?.projectId === activeProjectIdRef.current
+              && arrow?.graphId === activeTabIdRef.current && Number.isFinite(arrow.expiresAt) && arrow.expiresAt > Date.now()) : [];
+            setTransientCanvasArrows(arrows);
+          } else if (msg.type === 'CANVAS_ARROW_UPDATED') {
+            const arrow = msg.payload;
+            if (!arrow?.id || arrow.projectId !== activeProjectIdRef.current || arrow.graphId !== activeTabIdRef.current
+              || !Number.isFinite(arrow.expiresAt) || arrow.expiresAt <= Date.now()) return;
+            setTransientCanvasArrows((previous) => [...previous.filter((item) => item.id !== arrow.id && item.expiresAt > Date.now()), arrow]);
+          } else if (msg.type === 'CANVAS_ARROW_EXPIRED' || msg.type === 'CANVAS_ARROW_DELETED') {
+            const payload = msg.payload || {};
+            if (payload.projectId === activeProjectIdRef.current && payload.graphId === activeTabIdRef.current && payload.id) {
+              setTransientCanvasArrows((previous) => previous.filter((arrow) => arrow.id !== payload.id));
+            }
+          } else if (msg.type === 'CANVAS_ARROW_REJECTED') {
+            arcEvents.emit('toast:notify', { title: 'Arrow change not shared', message: msg.payload?.message || 'This arrow could not be changed.', type: 'warning' });
           } else if (msg.type === 'COLLAB_ACTION_UPDATED') {
             const action = msg.payload;
             if (action?.projectId !== activeProjectIdRef.current || action?.graphId !== activeTabIdRef.current || action.userId === currentUser?.id) return;
@@ -2835,6 +2865,12 @@ export function App() {
     if (!graph) return;
     recordHistory(activeTabId, { force: true, graph });
     setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, tagGroups: nextGroups, isDirty: true } : tab));
+  }, [tabs, activeTabId, recordHistory]);
+  const handleGraphArrowsChange = useCallback((nextArrows) => {
+    const graph = tabs.find((tab) => tab.id === activeTabId);
+    if (!graph) return;
+    recordHistory(activeTabId, { graph });
+    setTabs((previous) => previous.map((tab) => tab.id === activeTabId ? { ...tab, arrows: nextArrows, isDirty: true } : tab));
   }, [tabs, activeTabId, recordHistory]);
 
   const handleGraphNotesChange = useCallback((nextNotes) => {
@@ -5929,13 +5965,20 @@ export function App() {
             nodeDefinitions={availableNodeDefinitions}
             settings={settings}
             isLocked={isLocked || !canWriteGraphs}
+            canvasLocked={isLocked}
+            canWriteGraphs={canWriteGraphs}
             desktopMode={desktopMode}
             shortcutPlatform={shortcutPlatform}
             onNodesChange={handleNodesChange}
             tagGroups={activeGraph?.tagGroups || []}
             notes={activeGraph?.notes || []}
+            arrows={activeGraph?.arrows || []}
+            transientArrows={transientCanvasArrows.filter((arrow) => arrow.projectId === activeProjectId && arrow.graphId === activeTabId)}
             currentUser={currentUser}
+            projectOwnerId={projects.find((project) => project.id === activeProjectId)?.ownerId || ''}
             onNotesChange={handleGraphNotesChange}
+            onArrowsChange={handleGraphArrowsChange}
+            onCanvasArrowAction={sendCanvasArrowAction}
             noteEditLocks={noteEditLockState.roomKey === `${activeProjectId}:${activeTabId}` ? noteEditLockState.locks : {}}
             collaborationOnline={Boolean(authToken)}
             collaborationReady={collaborationSocketStatus === 'connected' && liveGraphReadyRef.current.has(`${activeProjectId}:${activeTabId}`)}
@@ -6155,6 +6198,10 @@ export function App() {
             ['Next / previous graph tab', `${formatShortcut((desktopMode ? settings.shortcuts?.switchTabNext : null) || DEFAULT_SHORTCUTS.switchTabNext, shortcutPlatform)} / ${formatShortcut((desktopMode ? settings.shortcuts?.switchTabPrevious : null) || DEFAULT_SHORTCUTS.switchTabPrevious, shortcutPlatform)}`],
             ['Close active graph tab', formatShortcut((desktopMode ? settings.shortcuts?.closeTab : null) || DEFAULT_SHORTCUTS.closeTab, shortcutPlatform)],
             ['Add node', formatShortcut((desktopMode ? settings.shortcuts?.addNode : null) || DEFAULT_SHORTCUTS.addNode, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
+            ['Add note', formatShortcut((desktopMode ? settings.shortcuts?.addNote : null) || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)],
+            ['Find in sidebar or canvas', shortcutModifier === '⌘' ? '⌘F' : 'Ctrl+F'],
+            ['Next / previous find result', shortcutModifier === '⌘' ? '⌘G / ⌘⇧G' : 'Ctrl+G / Ctrl+Shift+G'],
+            ['Draw arrow', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + Shift + drag`],
             ...(localDesktopWorkspace ? [['Arrange nodes', formatShortcut(settings.shortcuts?.arrangeNodes || DEFAULT_SHORTCUTS.arrangeNodes, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')]] : []),
             ['Move nodes between colored sections', `${shortcutPlatform === 'macos' ? '⌥ Option' : 'Alt'} + drag`],
             ['Toggle Library', formatShortcut((desktopMode ? settings.shortcuts?.toggleLibrary : null) || DEFAULT_SHORTCUTS.toggleLibrary, window.__ARC_STUDIO_CONFIG__?.platform || 'browser')],
@@ -6424,7 +6471,8 @@ function sameGraphContent(left, right) {
     nodes: graph.nodes || [],
     connections: graph.connections || [],
     tagGroups: graph.tagGroups || [],
-    notes: graph.notes || []
+    notes: graph.notes || [],
+    arrows: (graph.arrows || []).filter((arrow) => arrow.locked)
   });
   return serialize(left) === serialize(right);
 }
