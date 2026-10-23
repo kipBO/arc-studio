@@ -46,7 +46,29 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
   const logRetentionDays = ['1', '7', '14', '30', '90', '365', '0', 'forever'].includes(requestedLogRetention) ? requestedLogRetention : '7';
   const projectName = String(exportOptions.projectName || 'Untitled Project').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64) || 'Untitled Project';
   const projectAuthor = String(exportOptions.projectAuthor || 'Unknown').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32) || 'Unknown';
+  const statisticsSettings = exportOptions.statisticsSettings || { enabled: true, retentionDays: 30, commandUsage: true, uniqueUsers: true, returningUsers: true };
   const usedTypes = new Set(safeGraphs.flatMap((graph) => graph.nodes.map((node) => node?.type).filter((type) => typeof type === 'string')));
+  const requiredRuntimeModules = new Set(['builders.js', 'control_flow.js', 'data.js', 'logic.js']);
+  const runtimeTypeGroups = [
+    [['action_http_download', 'action_web_fetch', 'action_web_retry'], 'network.js'],
+    [['action_set_custom_status', 'action_set_presence'], 'discord_presence.js'],
+    [['action_send_message', 'action_edit_message'], 'discord_messages.js'],
+    [[
+      'action_reply_interaction', 'action_defer_reply', 'action_defer_update',
+      'action_edit_interaction_reply', 'action_show_modal', 'action_respond_autocomplete'
+    ], 'discord_interactions.js'],
+    [[
+      'action_fetch_user', 'action_fetch_guild', 'action_fetch_member',
+      'action_create_thread', 'action_start_thread_from_message',
+      'action_create_channel', 'action_edit_channel', 'action_delete_channel',
+      'action_create_role', 'action_member_role', 'action_moderate_member',
+      'action_voice_channel_status', 'action_voice_state'
+    ], 'discord_guild.js']
+  ];
+  for (const [types, module] of runtimeTypeGroups) {
+    if (types.some((type) => usedTypes.has(type))) requiredRuntimeModules.add(module);
+  }
+  if ([...usedTypes].some((type) => type.startsWith('action_crypto_'))) requiredRuntimeModules.add('crypto.js');
   const exports = normalizePluginExports(pluginAdapters, usedTypes);
   const dependencies = { chezcord: 'file:./chezcord' };
   const environment = [];
@@ -103,17 +125,29 @@ export function buildBotArchive(graphs = [], projectVariables = [], pluginAdapte
     { name: 'src/env.js', data: runtimeEnv },
     { name: 'src/index.js', data: runtimeIndex
       .replace('__ARC_PROJECT_NAME__', JSON.stringify(projectName))
-      .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor)) },
+      .replace('__ARC_PROJECT_AUTHOR__', JSON.stringify(projectAuthor))
+      .replace('__ARC_STATISTICS_SETTINGS__', JSON.stringify(statisticsSettings)) },
     { name: 'src/engine/GraphRunner.js', data: readText('src/engine/GraphRunner.js') },
     { name: 'src/engine/TemplateExpressions.js', data: readText('src/engine/TemplateExpressions.js') },
     { name: 'src/engine/MathOperations.js', data: readText('src/engine/MathOperations.js') },
     { name: 'src/engine/CronSchedule.js', data: readText('src/engine/CronSchedule.js') },
-    { name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') },
     { name: 'src/engine/PluginStore.js', data: pluginStoreSource },
     { name: 'src/engine/NodeRegistry.js', data: readText('src/engine/NodeRegistry.js') },
-    { name: 'src/security/CryptoEngine.js', data: standaloneCryptoSource() },
     { name: 'LICENSE', data: readText('LICENSE', repoRoot) }
   ];
+  if (requiredRuntimeModules.has('network.js')) {
+    entries.push({ name: 'src/engine/SafeHttpRequest.js', data: readText('src/engine/SafeHttpRequest.js') });
+  }
+  if (requiredRuntimeModules.has('crypto.js')) {
+    entries.push({ name: 'src/security/CryptoEngine.js', data: standaloneCryptoSource() });
+  }
+  const nodeSourceRoot = path.resolve(serverRoot, 'src/engine/nodes');
+  for (const file of walk(nodeSourceRoot)) {
+    if (!file.endsWith('.js')) continue;
+    const relative = path.relative(nodeSourceRoot, file).split(path.sep).join('/');
+    if (relative.startsWith('runtime/') && !requiredRuntimeModules.has(path.posix.basename(relative))) continue;
+    entries.push({ name: `src/engine/nodes/${relative}`, data: fs.readFileSync(file) });
+  }
   if (exports.some((plugin) => plugin.kind === 'wasm-adapter')) entries.push({ name: 'src/engine/WasmAdapterRuntime.js', data: readText('src/engine/WasmAdapterRuntime.js') });
   entries.push(...pluginFiles);
   if (permissionSections.length) entries.push({ name: 'PLUGIN-PERMISSIONS.md', data: `# Plugin permissions\n\nThe exported process runs outside ARC Studio's per-project permission enforcement. Review each plugin's declared capabilities and restrict its external credentials accordingly.\n\n${permissionSections.join('\n\n')}\n` });
@@ -340,7 +374,7 @@ const runtimeIndex = `import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import './env.js';
-import { Client, GatewayIntents } from 'chezcord';
+import { Client, GatewayIntents, CommandStatistics } from 'chezcord';
 import { GraphRunner } from './engine/GraphRunner.js';
 import { NodeDefinitions } from './engine/NodeRegistry.js';
 import { startCronScheduler } from './engine/CronSchedule.js';
@@ -451,11 +485,66 @@ for (const graph of graphs) for (const node of graph.nodes || []) {
 }
 const intents = [...requiredIntentNames].reduce((mask, name) => mask | (GatewayIntents[name] || 0), 0);
 const client = new Client({ token, intents });
+const appProbeStartedAt = performance.now();
 const app = await client.rest.getCurrentApplication().catch(() => null);
+let appLatency = app ? Math.round(performance.now() - appProbeStartedAt) : 0;
 const appEmojis = app?.id ? ((await client.rest.getApplicationEmojis(app.id).catch(() => null))?.items || []) : [];
 const variables = new Map();
 const projectVariables = JSON.parse(fs.readFileSync(new URL('../project-variables.json', import.meta.url), 'utf8'));
 const projectVariableValues = new Map();
+const appLatencyVariable = projectVariables.find((variable) => variable.id === 'project_var_app_latency');
+if (appLatencyVariable) projectVariableValues.set(appLatencyVariable.id, appLatency);
+const gatewayLatencyVariable = projectVariables.find((variable) => variable.id === 'project_var_gateway_latency');
+if (gatewayLatencyVariable) projectVariableValues.set(gatewayLatencyVariable.id, 0);
+const botUptimeVariable = projectVariables.find((variable) => variable.id === 'project_var_bot_uptime');
+if (botUptimeVariable) projectVariableValues.set(botUptimeVariable.id, 0);
+const botStatisticsVariable = projectVariables.find((variable) => variable.id === 'project_var_bot_statistics');
+const commandStatistics = new CommandStatistics({ settings: __ARC_STATISTICS_SETTINGS__ });
+function getBotStatisticsSnapshot() {
+  const uptimeSeconds = botUptimeStartedAt === null
+    ? 0
+    : Math.floor((performance.now() - botUptimeStartedAt) / 1000);
+  const gatewayLatency = gatewayLatencyVariable ? (projectVariableValues.get(gatewayLatencyVariable.id) ?? 0) : 0;
+  return {
+    uptimeSeconds,
+    appLatencyMs: appLatency,
+    gatewayLatencyMs: gatewayLatency,
+    ...commandStatistics.getSummary()
+  };
+}
+function updateBotStatistics() {
+  if (botStatisticsVariable) {
+    projectVariableValues.set(botStatisticsVariable.id, getBotStatisticsSnapshot());
+  }
+}
+if (botStatisticsVariable) updateBotStatistics();
+let botUptimeStartedAt = null;
+let appLatencyProbeInFlight = false;
+const appLatencyInterval = setInterval(async () => {
+  if (appLatencyProbeInFlight) return;
+  appLatencyProbeInFlight = true;
+  const probeStartedAt = performance.now();
+  try {
+    await client.rest.getCurrentApplication();
+    appLatency = Math.round(performance.now() - probeStartedAt);
+  } catch {
+    appLatency = 0;
+  } finally {
+    appLatencyProbeInFlight = false;
+  }
+  if (appLatencyVariable) projectVariableValues.set(appLatencyVariable.id, appLatency);
+  updateBotStatistics();
+}, 30000);
+appLatencyInterval.unref?.();
+const botUptimeInterval = setInterval(() => {
+  if (botUptimeVariable) {
+    projectVariableValues.set(botUptimeVariable.id, botUptimeStartedAt === null
+      ? 0
+      : Math.floor((performance.now() - botUptimeStartedAt) / 1000));
+  }
+  updateBotStatistics();
+}, 1000);
+botUptimeInterval.unref?.();
 const resolveFunctionGraph = (graphId) => graphs.find((graph) => graph.id === graphId);
 let stopCronScheduler = null;
 let stopping = false;
@@ -510,6 +599,13 @@ client.on('ready', () => {
     },
     onError: ({ graph, node, error }) => writeLog('ERROR', '[Cron ' + (graph.name || graph.id) + '/' + (node.label || node.id) + '] ' + formatError(error))
   });
+  client.on('heartbeatLatency', (latencyMs) => {
+    if (gatewayLatencyVariable) {
+      const gatewayLatency = Number.isFinite(latencyMs) && latencyMs >= 0 ? Math.round(latencyMs) : 0;
+      projectVariableValues.set(gatewayLatencyVariable.id, gatewayLatency);
+    }
+    updateBotStatistics();
+  });
 });
 client.on('gatewayDiagnostics', (diagnostics) => {
   if (diagnostics.sessionResumed === true) writeLog('INFO', 'Gateway session resumed successfully.');
@@ -555,6 +651,12 @@ client.on('interactionCreate', async (interaction) => {
     try { await client.rest.createInteractionResponse(interaction.id, interaction.token, { type: 8, data: { choices } }); }
     catch (error) { writeLog('WARN', 'Autocomplete response failed for /' + commandName + ': ' + error.message); }
     return;
+  }
+  if (Number(interaction.type) === 2) {
+    const cmdName = String(interaction.data?.name || '').toLowerCase();
+    const userId = interaction.member?.user?.id || interaction.user?.id;
+    commandStatistics.recordCommand({ name: cmdName, userId });
+    updateBotStatistics();
   }
   const eventName = interaction.data?.component_type ? 'BUTTON_CLICK' : 'INTERACTION_CREATE';
   await dispatchGraphs(eventName, interaction);
@@ -603,6 +705,11 @@ async function shutdown(signal) {
   if (stopping) return;
   stopping = true;
   writeLog('INFO', 'Received ' + signal + '; shutting down.');
+  clearInterval(appLatencyInterval);
+  clearInterval(botUptimeInterval);
+  botUptimeStartedAt = null;
+  if (botUptimeVariable) projectVariableValues.set(botUptimeVariable.id, 0);
+  if (gatewayLatencyVariable) projectVariableValues.set(gatewayLatencyVariable.id, 0);
   stopCronScheduler?.();
   stopCronScheduler = null;
   graphRunAbortController.abort();
@@ -623,6 +730,7 @@ async function shutdown(signal) {
 }
 process.once('SIGINT', () => { shutdown('SIGINT'); });
 process.once('SIGTERM', () => { shutdown('SIGTERM'); });
+botUptimeStartedAt = performance.now();
 await client.login();
 `;
 
@@ -693,4 +801,3 @@ if (fs.existsSync(envPath)) {
   }
 }
 `;
-
