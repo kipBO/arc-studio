@@ -15,6 +15,7 @@ import { BotManager } from './engine/BotManager.js';
 import { createApiRouter } from './routes/api.js';
 import { createBotManagerProxy } from './engine/RequestBotManager.js';
 import { CollaborationLastSeen } from './storage/CollaborationLastSeen.js';
+import { isArcStudioClientVersionAllowed } from './versioning/arcProjectCompatibility.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -521,6 +522,16 @@ wss.on('connection', (ws) => {
     try {
       const msg = JSON.parse(data.toString());
       if (!ws.arcAuthenticated) {
+        if (msg.type === 'AUTH' && !isArcStudioClientVersionAllowed(msg.clientVersion, serverConfig.minimumClientVersion)) {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'CLIENT_VERSION_BLOCKED',
+              payload: { clientVersion: typeof msg.clientVersion === 'string' ? msg.clientVersion : null, minimumVersion: serverConfig.minimumClientVersion }
+            }));
+          }
+          ws.close(1008, 'Client update required.');
+          return;
+        }
         const user = msg.type === 'AUTH' ? userStore.validateSession(msg.token) : null;
         if (!user) {
           if (msg.type === 'AUTH' && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'SESSION_EXPIRED' }));
