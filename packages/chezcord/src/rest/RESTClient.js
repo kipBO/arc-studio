@@ -391,6 +391,44 @@ export class RESTClient {
     return this.request('POST', `/guilds/${guildId}/channels`, { body: channel, headers });
   }
 
+  createThread(channelId, { name, type = 'public', autoArchiveDuration = 1440, rateLimitPerUser, invitable = true, reason } = {}) {
+    const parentId = String(channelId || '').trim();
+    const threadName = String(name || '').trim();
+    const threadType = String(type || '').toLowerCase();
+    if (!parentId) throw new TypeError('A parent channel ID is required.');
+    if (!threadName || threadName.length > 100) throw new RangeError('A thread name must contain 1 to 100 characters.');
+    if (!['public', 'private'].includes(threadType)) throw new TypeError('Thread type must be public or private.');
+    const archiveDuration = Number(autoArchiveDuration);
+    if (![60, 1440, 4320, 10080].includes(archiveDuration)) throw new RangeError('Thread auto archive duration must be 60, 1440, 4320, or 10080 minutes.');
+    const body = { name: threadName, type: threadType === 'private' ? 12 : 11, auto_archive_duration: archiveDuration };
+    if (rateLimitPerUser !== undefined && rateLimitPerUser !== '') {
+      const slowmode = Number(rateLimitPerUser);
+      if (!Number.isInteger(slowmode) || slowmode < 0 || slowmode > 21600) throw new RangeError('Thread slowmode must be an integer from 0 to 21600 seconds.');
+      body.rate_limit_per_user = slowmode;
+    }
+    if (threadType === 'private') body.invitable = Boolean(invitable);
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('POST', `/channels/${encodeURIComponent(parentId)}/threads`, { body, headers });
+  }
+
+  createThreadFromMessage(channelId, messageId, { name, autoArchiveDuration = 1440, rateLimitPerUser, reason } = {}) {
+    const parentId = String(channelId || '').trim();
+    const targetMessageId = String(messageId || '').trim();
+    const threadName = String(name || '').trim();
+    if (!parentId || !targetMessageId) throw new TypeError('A parent channel ID and message ID are required.');
+    if (!threadName || threadName.length > 100) throw new RangeError('A thread name must contain 1 to 100 characters.');
+    const archiveDuration = Number(autoArchiveDuration);
+    if (![60, 1440, 4320, 10080].includes(archiveDuration)) throw new RangeError('Thread auto archive duration must be 60, 1440, 4320, or 10080 minutes.');
+    const body = { name: threadName, auto_archive_duration: archiveDuration };
+    if (rateLimitPerUser !== undefined && rateLimitPerUser !== '') {
+      const slowmode = Number(rateLimitPerUser);
+      if (!Number.isInteger(slowmode) || slowmode < 0 || slowmode > 21600) throw new RangeError('Thread slowmode must be an integer from 0 to 21600 seconds.');
+      body.rate_limit_per_user = slowmode;
+    }
+    const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
+    return this.request('POST', `/channels/${encodeURIComponent(parentId)}/messages/${encodeURIComponent(targetMessageId)}/threads`, { body, headers });
+  }
+
   modifyChannel(channelId, changes, reason) {
     if (!channelId) throw new TypeError('A channel ID is required.');
     const headers = reason ? { 'X-Audit-Log-Reason': encodeURIComponent(String(reason).slice(0, 512)) } : {};
