@@ -21,10 +21,9 @@ function pickOwnFields(source, fields) {
 function projectRuntimeGraph(graph) {
   return {
     id: graph.id,
-    name: typeof graph.name === 'string' ? graph.name : 'Untitled graph',
     ...(graph.graphType === 'function' ? { graphType: 'function' } : {}),
     variables: (Array.isArray(graph.variables) ? graph.variables : []).map((variable) => pickOwnFields(variable, ['id', 'name', 'type', 'valueType', 'initialValue', 'persist'])),
-    nodes: graph.nodes.map((node) => pickOwnFields(node, ['id', 'type', 'label', 'data', 'permission', 'requiredPermission'])),
+    nodes: graph.nodes.map((node) => pickOwnFields(node, ['id', 'type', 'data', 'permission', 'requiredPermission'])),
     connections: graph.connections.map((connection) => pickOwnFields(connection, ['sourceNodeId', 'sourcePinId', 'targetNodeId', 'targetPinId']))
   };
 }
@@ -595,9 +594,9 @@ client.on('ready', () => {
     getGraphs: () => graphs,
     dispatch: async (graph, _node, payload) => {
       const result = await trackGraphRun(GraphRunner.execute(graph, 'CRON_TICK', payload, graphContext(graph)));
-      if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + (graph.name || graph.id) + '] ' + result.error);
+      if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + graph.id + '] ' + result.error);
     },
-    onError: ({ graph, node, error }) => writeLog('ERROR', '[Cron ' + (graph.name || graph.id) + '/' + (node.label || node.id) + '] ' + formatError(error))
+    onError: ({ graph, node, error }) => writeLog('ERROR', '[Cron ' + graph.id + '/' + node.id + '] ' + formatError(error))
   });
   client.on('heartbeatLatency', (latencyMs) => {
     if (gatewayLatencyVariable) {
@@ -671,9 +670,9 @@ async function dispatchGraphs(eventName, payload, onlyGraphId = null, interactio
   const run = Promise.all(graphs.filter((graph) => !onlyGraphId || graph.id === onlyGraphId).map(async (graph) => {
     try {
       const result = await GraphRunner.execute(graph, eventName, payload, graphContext(graph, payload, interactionState));
-      if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + (graph.name || graph.id) + '] Event ' + eventName + ' failed: ' + result.error);
+      if (result.error && !graphRunAbortController.signal.aborted) writeLog('ERROR', '[Graph ' + graph.id + '] Event ' + eventName + ' failed: ' + result.error);
     } catch (error) {
-      writeLog('ERROR', '[Graph ' + (graph.name || graph.id) + '] Event ' + eventName + ' failed: ' + formatError(error));
+      writeLog('ERROR', '[Graph ' + graph.id + '] Event ' + eventName + ' failed: ' + formatError(error));
     }
   }));
   await trackGraphRun(run);
@@ -694,7 +693,7 @@ function graphContext(graph, eventPayload = null, interactionState = null) {
     },
     projectVariablesState: projectVariableValues, appEmojis, signal: graphRunAbortController.signal,
     log: () => {},
-    onNodeError: (failure) => writeLog('ERROR', '[' + failure.graphName + '] Node ' + failure.nodeLabel + ' (' + failure.nodeId + '): ' + failure.error)
+    onNodeError: (failure) => writeLog('ERROR', '[Graph ' + failure.graphId + '] Node ' + failure.nodeId + ': ' + failure.error)
   };
 }
 function variableState(graph) {
