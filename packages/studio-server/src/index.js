@@ -318,7 +318,7 @@ const managerForUser = (user) => {
       broadcastWS(message) {
         const json = JSON.stringify(message);
         for (const client of wss.clients) {
-          if (client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcPresence?.projectId === manager.project.id) client.send(json);
+          if (client.arcAuthenticated && client.readyState === WebSocket.OPEN && client.arcPresence?.projectId === requestedId) client.send(json);
         }
       }
     });
@@ -521,6 +521,7 @@ wss.on('connection', (ws) => {
             botStatus: ws.arcManager.status,
             botMetrics: ws.arcManager.gatewayMetrics,
             botProfile: ws.arcManager.botProfile ? { ...ws.arcManager.botProfile, intentSummary: ws.arcManager.getIntentPlan() } : null,
+            discordAuthWarning: ws.arcManager.discordAuthWarning || null,
             logs: ws.arcManager.getLogs().slice(-100),
             graphs: ws.arcManager.getGraphs(),
             graphLibrary: ws.arcManager.getGraphLibrary(),
