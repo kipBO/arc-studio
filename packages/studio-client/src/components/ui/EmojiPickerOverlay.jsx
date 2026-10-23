@@ -29,7 +29,7 @@ function customMarkup(emojiObject, appEmojis) {
   return custom ? `<${custom.animated ? 'a' : ''}:${custom.name}:${custom.id}>` : emojiObject.emoji || '';
 }
 
-export function EmojiPickerOverlay({ appEmojis = [], shortcut = DEFAULT_SHORTCUTS.emojiPicker }) {
+export function EmojiPickerOverlay({ appEmojis = [], shortcut = DEFAULT_SHORTCUTS.emojiPicker, desktopMode = false }) {
   const pickerRef = useRef(null);
   const targetRef = useRef(null);
   const selectionRef = useRef(null);
@@ -132,7 +132,9 @@ export function EmojiPickerOverlay({ appEmojis = [], shortcut = DEFAULT_SHORTCUT
 
   if (!isOpen || !position) return null;
   return createPortal(<div ref={pickerRef} className="discord-emoji-picker arc-full-emoji-picker" style={{ left: position.left, top: position.top, width: position.width }} onPointerDown={(event) => event.stopPropagation()}>
-    <Suspense fallback={<div className="emoji-picker-loading" role="status">Loading emoji picker…</div>}>
+    <Suspense fallback={desktopMode
+      ? <div className="emoji-picker-loading" role="status">Loading emoji picker…</div>
+      : <div className="emoji-picker-skeleton" role="status" aria-label="Loading emoji picker"><i /><i /><i /><i /><i /><i /><i /><i /><i /></div>}>
       <EmojiPicker onEmojiClick={insertEmoji} customEmojis={pickerEmojis} lazyLoadEmojis width="100%" height={position.height} searchPlaceHolder="Search all emojis" />
     </Suspense>
   </div>, document.body);
