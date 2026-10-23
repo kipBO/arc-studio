@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { applyTemplateTransforms, evaluateTemplateExpression, getTemplateReferences, renderTextTemplate, splitTemplatePipeline } from '../../../../studio-server/src/engine/TemplateExpressions.js';
+import { applyTemplateTransforms, evaluateTemplateExpression, getTemplateReferences, splitTemplatePipeline } from '../../../../studio-server/src/engine/TemplateExpressions.js';
 //
 export function TemplateVariableHints({ value, graphVariables = [], inputSlots = [], connectedInputIds = new Set(), templatePreviewValues = {} }) {
   const tokens = useMemo(() => Array.from(new Map(Array.from(
@@ -10,14 +10,6 @@ export function TemplateVariableHints({ value, graphVariables = [], inputSlots =
     }
   ).filter(Boolean)).values()).filter(({ name }) => !name.toLowerCase().startsWith('e_') && !/^arg\d+$/i.test(name)), [value]);
   if (!tokens.length && !/(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(String(value || ''))) return null;
-  const values = new Map(graphVariables.filter((item) => item?.name).map((item) => [item.name.toLowerCase(), item.initialValue]));
-  for (const [pinId, previewValue] of Object.entries(templatePreviewValues || {})) {
-    const slot = /^slot_(.+)$/.exec(pinId); const arg = /^arg_(\d+)$/.exec(pinId);
-    if (slot) values.set(slot[1].toLowerCase(), previewValue);
-    if (arg) values.set(`arg${arg[1]}`, previewValue);
-  }
-  const preview = renderTextTemplate(value, (name) => values.get(name.toLowerCase()));
-  const previewText = preview.length > 180 ? `${preview.slice(0, 177)}…` : preview;
   return <div className="template-token-hints" aria-label="Template values">
     {tokens.map(({ name, token, pipeline, expression }) => {
       const variable = graphVariables.find((item) => item.name?.toLowerCase() === name.toLowerCase());
@@ -40,7 +32,6 @@ export function TemplateVariableHints({ value, graphVariables = [], inputSlots =
       const expected = initial === undefined ? 'No default value' : `Initial value: ${valuePreview}`;
       return <span className="template-token-chip" key={token} data-tooltip={`${variable.name} · ${type} · ${expected}${pipeline ? ` · transforms: ${pipeline.replace(/\|/g, '').trim()}` : ''}`}>{label}</span>;
     })}
-    <span className="template-live-preview"><strong>Preview</strong><span>{previewText || '(empty)'}</span></span>
   </div>;
 }
 
