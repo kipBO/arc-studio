@@ -8,6 +8,7 @@ const TOOLTIP_ID = 'arc-hover-tooltip';
 export function TooltipLayer() {
   const [tooltip, setTooltip] = useState(null);
   const timerRef = useRef(null);
+  const railLeaveTimerRef = useRef(null);
   const targetRef = useRef(null);
   const targetModeRef = useRef(null);
   const tooltipRef = useRef(null);
@@ -44,7 +45,9 @@ export function TooltipLayer() {
 
     const clear = () => {
       window.clearTimeout(timerRef.current);
+      window.clearTimeout(railLeaveTimerRef.current);
       timerRef.current = null;
+      railLeaveTimerRef.current = null;
       targetRef.current = null;
       targetModeRef.current = null;
       setTooltip(null);
@@ -59,6 +62,10 @@ export function TooltipLayer() {
       const mode = showPinDescription ? 'description' : 'normal';
       const message = (isPin && showPinDescription ? anchor.getAttribute('data-pin-description') : anchor?.getAttribute('data-tooltip') || anchor?.getAttribute('data-pin-description'))?.trim();
       if (!anchor || !message) return;
+      if (anchor.matches('.workspace-rail .rail-button')) {
+        window.clearTimeout(railLeaveTimerRef.current);
+        railLeaveTimerRef.current = null;
+      }
       if (anchor === targetRef.current) {
         if (targetModeRef.current === mode) {
           if (pointer && isPin) setTooltip((current) => current?.anchor === anchor ? { ...current, pointer } : current);
@@ -76,9 +83,14 @@ export function TooltipLayer() {
         }, showPinDescription ? 0 : 900);
         return;
       }
+      const switchingRailButton = targetRef.current?.matches('.workspace-rail .rail-button') && anchor.matches('.workspace-rail .rail-button');
       window.clearTimeout(timerRef.current);
       targetRef.current = anchor;
       targetModeRef.current = mode;
+      if (switchingRailButton && tooltipRef.current) {
+        setTooltip({ message, anchor, placement: 'right' });
+        return;
+      }
       setTooltip(null);
       timerRef.current = window.setTimeout(() => {
         const bounds = anchor.getBoundingClientRect();
@@ -101,7 +113,21 @@ export function TooltipLayer() {
     };
     const onPointerOut = (event) => {
       const anchor = targetRef.current;
-      if (anchor && event.target instanceof Node && anchor.contains(event.target) && (!event.relatedTarget || !anchor.contains(event.relatedTarget))) clear();
+      if (anchor && event.target instanceof Node && anchor.contains(event.target) && (!event.relatedTarget || !anchor.contains(event.relatedTarget))) {
+        const nextAnchor = event.relatedTarget instanceof Element ? event.relatedTarget.closest('[data-tooltip], [data-pin-description]') : null;
+        if (anchor.matches('.workspace-rail .rail-button') && nextAnchor?.matches('.workspace-rail .rail-button')) {
+          showFor(nextAnchor, pointerPositionRef.current);
+          return;
+        }
+        if (anchor.matches('.workspace-rail .rail-button') && event.relatedTarget instanceof Element && event.relatedTarget.closest('.workspace-rail')) {
+          window.clearTimeout(railLeaveTimerRef.current);
+          railLeaveTimerRef.current = window.setTimeout(() => {
+            if (targetRef.current === anchor) clear();
+          }, 150);
+          return;
+        }
+        clear();
+      }
     };
     const onFocusIn = (event) => { if (!pointerPressed) showFor(event.target); };
     const onFocusOut = (event) => {
