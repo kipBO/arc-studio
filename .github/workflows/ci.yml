@@ -43,10 +43,29 @@ jobs:
       - name: Run Chezcord Unit & Integration Tests
         run: npm run test:chezcord
 
+  test-studio-server:
+    name: Test Studio Server (Node 22.x)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: 'npm'
+
+      - name: Install Workspace Dependencies
+        run: npm ci
+
+      - name: Run Studio Server Tests
+        run: npm run test:server
+
   build-client:
     name: Build Studio Client
     runs-on: ubuntu-24.04
-    needs: test-chezcord
+    needs: [test-chezcord, test-studio-server]
 
     steps:
       - name: Checkout Repository
