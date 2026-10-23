@@ -62,7 +62,7 @@ function parse(source) {
       else node = { kind: 'path', root: token.value, keys: [] };
     } else throw new Error('Expected a value.');
     while (true) {
-      if (peek().value === '.') { take(); const key = take(); if (key.type !== 'identifier') throw new Error('Expected property name.'); node = { kind: 'member', object: node, key: key.value }; continue; }
+      if (peek().value === '.') { take(); const key = take(); if (key.type !== 'identifier') throw new Error('Expected property name.'); node = { kind: 'member', object: node, key: { kind: 'literal', value: key.value } }; continue; }
       if (peek().value === '[') { take(); const key = expression(0, depth + 1); if (take().value !== ']') throw new Error('Expected closing bracket.'); node = { kind: 'member', object: node, key }; continue; }
       if (peek().value === '(') {
         if (node.kind !== 'path' || node.keys.length) throw new Error('Only built-in functions can be called.');
@@ -106,7 +106,14 @@ function evaluate(ast, resolveSlot) {
       for (const key of ast.keys) { if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || value == null || !Object.hasOwn(Object(value), key)) return { found: false, value: undefined }; value = value[key]; }
       return { found: true, value };
     }
-    case 'member': { const base = evaluate(ast.object, resolveSlot); const key = evaluate(ast.key, resolveSlot).value; if (!base.found || ['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) return { found: false, value: undefined }; return { found: true, value: base.value[key] }; }
+    case 'member': {
+      const base = evaluate(ast.object, resolveSlot);
+      const keyNode = typeof ast.key === 'object' && ast.key !== null && ast.key.kind ? evaluate(ast.key, resolveSlot) : { found: true, value: ast.key };
+      if (!base.found || !keyNode.found) return { found: false, value: undefined };
+      const key = keyNode.value;
+      if (['__proto__', 'prototype', 'constructor'].includes(String(key)) || base.value == null || !Object.hasOwn(Object(base.value), key)) return { found: false, value: undefined };
+      return { found: true, value: base.value[key] };
+    }
     case 'unary': { const v = evaluate(ast.value, resolveSlot); return { found: v.found, value: ast.op === '!' ? !v.value : safeResult(ast.op === '-' ? -number(v.value) : number(v.value)) }; }
     case 'conditional': { const test = evaluate(ast.test, resolveSlot); return evaluate(test.value ? ast.yes : ast.no, resolveSlot); }
     case 'call': {
@@ -175,7 +182,7 @@ export function applyTemplateTransforms(value, transforms = []) {
 
 export function getTemplateReferences(source) {
   const refs = new Set(); const parts = splitTemplatePipeline(source); const expr = parts[0] || '';
-  const matches = expr.matchAll(/(^|[^\w$.])([A-Za-z_$][A-Za-z0-9_$-]*)(?!\s*\()/g);
+  const matches = expr.matchAll(/(^|[^\w$.])([A-Za-z_$][A-Za-z0-9_$-]*)\b(?!\s*\()/g);
   for (const match of matches) if (!['true', 'false', 'null', 'undefined', 'pi', 'tau', 'e'].includes(match[2].toLowerCase())) refs.add(match[2]);
   return [...refs];
 }
