@@ -64,7 +64,11 @@ export function NodePalette({ isOpen, onClose, onSelectNode, pluginDefinitionsRe
           <input ref={inputRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} placeholder="Find a node…" aria-label="Search nodes" />
           <button className="icon-button compact" onClick={onClose} aria-label="Close node palette"><X size={16} /></button>
         </div>
-        <div className="palette-category-row" role="tablist" aria-label="Node categories">
+        <div className="palette-category-row" role="tablist" aria-label="Node categories" onWheel={(event) => {
+          if (!event.deltaY || event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
+          event.preventDefault();
+          event.currentTarget.scrollLeft += event.deltaY;
+        }}>
           {categories.map((category) => <button key={category} role="tab" aria-selected={selectedCategory === category} className={selectedCategory === category ? 'is-active' : ''} onClick={() => { setSelectedCategory(category); setActiveIndex(0); }}>{category}</button>)}
         </div>
       <div className="palette-results" role="listbox">
