@@ -67,6 +67,11 @@
         }
       }
     ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/arc-studio-desktop.desktop"
+      }
+    },
     "macOS": {
       "minimumSystemVersion": "14.0",
       "dmg": {
