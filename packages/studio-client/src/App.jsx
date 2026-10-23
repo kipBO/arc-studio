@@ -588,6 +588,7 @@ export function App() {
   const [followCollaboratorRequest, setFollowCollaboratorRequest] = useState(null);
   const [noteEditLockState, setNoteEditLockState] = useState({ roomKey: '', locks: {} });
   const [collaborationSocketStatus, setCollaborationSocketStatus] = useState('connecting');
+  const [minimumRequiredClientVersion, setMinimumRequiredClientVersion] = useState('');
   const [collaborationConnectionFlaky, setCollaborationConnectionFlaky] = useState(false);
   const [hasEstablishedCollaboration, setHasEstablishedCollaboration] = useState(false);
   const [transientCanvasMotionSupported, setTransientCanvasMotionSupported] = useState(false);
@@ -1929,7 +1930,7 @@ export function App() {
       currentSocket.onopen = () => {
         if (currentSocket.readyState === WebSocket.OPEN) {
           collaborationPresenceRef.current = { projectId: '', graphId: '' };
-          currentSocket.send(JSON.stringify({ type: 'AUTH', token: authToken }));
+          currentSocket.send(JSON.stringify({ type: 'AUTH', token: authToken, clientVersion: studioPackage.version }));
           heartbeatTimer = window.setInterval(() => {
             if (currentSocket.readyState !== WebSocket.OPEN) return;
             if (document.visibilityState !== 'visible') { pendingPing = null; return; }
@@ -1971,7 +1972,20 @@ export function App() {
       currentSocket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'PONG') {
+          if (msg.type === 'CLIENT_VERSION_BLOCKED') {
+            setMinimumRequiredClientVersion(String(msg.payload?.minimumVersion || 'a newer ARC Studio version'));
+            setCollaborationSocketStatus('incompatible');
+            arcEvents.emit('toast:notify', {
+              title: 'ARC Studio update required',
+              message: `This workspace requires version ${msg.payload?.minimumVersion || 'newer'} or newer.`,
+              type: 'error',
+              duration: 15000
+            });
+            active = false;
+            window.clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+            currentSocket.close(1008, 'Client update required.');
+          } else if (msg.type === 'PONG') {
             lastPongAt = Date.now();
             if (document.visibilityState !== 'visible') { pendingPing = null; return; }
             const sample = pendingPing;
@@ -2017,6 +2031,7 @@ export function App() {
             return;
           }
           if (msg.type === 'INIT_STATE') {
+            setMinimumRequiredClientVersion('');
             if (!desktopMode && typeof msg.payload.version === 'string' && msg.payload.version.trim()) setStudioVersion(msg.payload.version.trim());
             setCollaborationSocketStatus('connected');
             reconnectAttempts = 0;
@@ -6020,7 +6035,7 @@ export function App() {
                 ? <button type="button" className="canvas-context-validation" onClick={handleValidateGraph} aria-label={`Open graph review with ${graphValidation.errors.length ? `${graphValidation.errors.length} issues` : `${graphValidation.warnings.length} warnings`}`}>{graphValidation.errors.length ? `${graphValidation.errors.length} issues` : 'Review'}</button>
                 : 'Ready'}</>
               : 'Open a graph to run checks.'}
-            {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite">{collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
+            {(!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus !== 'connected' && <span className="collaboration-connection is-reconnecting" role="status" aria-live="polite">{collaborationSocketStatus === 'incompatible' ? `Update ARC Studio to ${minimumRequiredClientVersion} or newer to connect.` : collaborationSocketStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>}
             {activeGraph && (!desktopMode || !localDesktopWorkspace) && collaborationSocketStatus === 'connected' && collaborationConnectionFlaky && <span className="collaboration-connection is-flaky" role="status" aria-live="polite">Flaky connection</span>}
             {activeGraph && collaborators.length > 0 && <span className="canvas-collaborators" title={collaborators.slice(0, 8).map((person) => person.username).concat(collaborators.length > 8 ? [`…and ${collaborators.length - 8} more`] : []).join('\n')}><span className="context-separator">·</span> {collaborators.slice(0, 2).map((person) => person.username).join(', ')}{collaborators.length > 2 ? ` …and ${collaborators.length - 2} more` : ''}</span>}
           </div>
