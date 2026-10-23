@@ -23,7 +23,7 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 - Connect a Discord app and test your bot live, or use the offline simulator when you are offline
 - Make slash commands, messages, embeds, buttons, menus, and modals
 - Collaborate on projects and edit graphs live with your team
-- Export project as a standalone bot
+- Export project as a standalone bot that can run anywhere with node.js runtime
 
 ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
 
