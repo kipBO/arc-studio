@@ -484,8 +484,8 @@ export function NodeCanvas({
   useEffect(() => {
     setLocalTransientArrows([]);
     setSelectedArrowIds([]);
+    if (drawingArrow) onCollaborationAction?.({ kind: 'cursor', cursor: drawingArrow.end, mode: 'move', selectedNodeIds }, true);
     setDrawingArrow(null);
-    onCollaborationAction?.({ kind: 'cursor', cursor: end, mode: 'move', selectedNodeIds }, true);
     setDraggingArrows(null);
   }, [graphId, projectId]);
   useEffect(() => {
