@@ -31,6 +31,23 @@ fn build_release_channel() -> &'static str {
         })
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClientBuildInfo {
+    version: &'static str,
+    platform: &'static str,
+    architecture: &'static str,
+}
+
+#[tauri::command]
+fn get_client_build_info() -> ClientBuildInfo {
+    ClientBuildInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        platform: std::env::consts::OS,
+        architecture: std::env::consts::ARCH,
+    }
+}
+
 fn updater_endpoint(channel: &str) -> Result<url::Url, String> {
     if channel != build_release_channel() {
         return Err(format!("This ARC Studio build is locked to the {} update channel.", build_release_channel()));
@@ -877,6 +894,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            get_client_build_info,
             get_workspace_password,
             save_workspace_password,
             delete_workspace_password,
