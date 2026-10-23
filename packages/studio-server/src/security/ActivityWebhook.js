@@ -37,6 +37,13 @@ function embedForActivity(entry) {
   const changed = /\.(updated|changed|reset|permissions_updated|password_reset)$/.test(action);
   const color = removed ? 0xef4444 : created ? 0x10b981 : changed ? 0xf59e0b : 0x3b82f6;
   const details = entry?.details && typeof entry.details === 'object' ? entry.details : {};
+  const clientFields = action === 'account.signed_in'
+    ? [
+        ...(details.clientVersion ? [{ name: 'Version', value: cleanText(details.clientVersion, 64), inline: true }] : []),
+        ...(details.clientPlatform ? [{ name: 'Platform', value: cleanText(details.clientPlatform, 32), inline: true }] : []),
+        ...(details.clientArchitecture ? [{ name: 'Architecture', value: cleanText(details.clientArchitecture, 16), inline: true }] : [])
+      ]
+    : [];
   const location = [details.graphName, details.projectName || details.embedName || details.pluginName || details.projectId]
     .filter(Boolean).join(' · ') || 'Workspace';
   const timestamp = new Date(entry?.timestamp || Date.now());
@@ -46,7 +53,8 @@ function embedForActivity(entry) {
     color,
     fields: [
       { name: 'Who', value: cleanText(entry?.actor?.username, 128), inline: true },
-      { name: 'Where', value: cleanText(location, 128), inline: true }
+      { name: 'Where', value: cleanText(location, 128), inline: true },
+      ...clientFields
     ],
     footer: { text: 'ARC Studio' },
     timestamp: (Number.isNaN(timestamp.getTime()) ? new Date() : timestamp).toISOString()
