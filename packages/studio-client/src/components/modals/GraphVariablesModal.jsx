@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Braces, FileCode2, Plus, Search, Trash2, X } from 'lucide-react';
+import { Braces, Check, Cpu, FileCode2, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { SidebarResizeHandle } from '../ui/SidebarResizeHandle.jsx';
 import { AnimatedCheckbox, AnimatedDropdown } from '../ui/CustomControls.jsx';
-//
+
 const VARIABLE_TYPES = [
   { value: 'string', label: 'Text' },
   { value: 'number', label: 'Number' },
@@ -12,7 +12,23 @@ const VARIABLE_TYPES = [
   { value: 'object', label: 'Object' }
 ];
 
-export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
+const SYSTEM_VARIABLES = [
+  { name: 'DISCORD_APP_ID', type: 'number', label: 'Discord Application ID', description: 'Bot application ID from Discord' },
+  { name: 'APP_LATENCY', type: 'number', label: 'App Latency', description: 'Discord application REST API round trip in ms' },
+  { name: 'GATEWAY_LATENCY', type: 'number', label: 'Gateway Latency', description: 'Discord WebSocket ping round trip in ms' },
+  { name: 'BOT_UPTIME', type: 'number', label: 'Bot Uptime', description: 'Elapsed seconds since bot connected' },
+  { name: 'BOT_STATISTICS', type: 'object', label: 'Bot Statistics', description: 'Aggregated command and bot usage metrics' }
+];
+
+const SYSTEM_MANAGED_IDS = [
+  'project_var_discord_app_id',
+  'project_var_app_latency',
+  'project_var_gateway_latency',
+  'project_var_bot_uptime',
+  'project_var_bot_statistics'
+];
+
+export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVariables = [], onChange, onProjectChange, onSidebarResize, onOpenTextEditor, onRestoreSystemVariable, isSaving = false, presentation = 'modal', sidebarWidth = 320, canEdit = true, canEditProject = canEdit, canEditGraph = canEdit, activeScope: requestedScope = 'project', onScopeChange }) {
   const [activeScope, setActiveScope] = useState(requestedScope);
   const [name, setName] = useState('');
   const [type, setType] = useState('string');
@@ -23,9 +39,23 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
   const [numberDrafts, setNumberDrafts] = useState({});
   const [expandedValueIds, setExpandedValueIds] = useState(() => new Set());
   const [searchByScope, setSearchByScope] = useState({ project: '', graph: '' });
+  const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+  const [restoringName, setRestoringName] = useState(null);
   const createRowRef = useRef(null);
+  const systemMenuRef = useRef(null);
 
   useEffect(() => { setActiveScope(requestedScope === 'graph' ? 'graph' : 'project'); }, [requestedScope]);
+
+  useEffect(() => {
+    if (!systemMenuOpen) return undefined;
+    const handleOutsideClick = (event) => {
+      if (systemMenuRef.current && !systemMenuRef.current.contains(event.target)) {
+        setSystemMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', handleOutsideClick);
+    return () => window.removeEventListener('pointerdown', handleOutsideClick);
+  }, [systemMenuOpen]);
 
   const currentVariables = activeScope === 'project' ? projectVariables : variables;
   const currentSearch = searchByScope[activeScope];
@@ -58,7 +88,7 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
       window.setTimeout(() => row?.classList.remove('field-shake'), 360);
       return;
     }
-    if (!isValidVariableName(cleanName) && !(cleanName === 'DISCORD_APP_ID' && type === 'number')) {
+    if (!isValidVariableName(cleanName) && !(['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS'].includes(cleanName) && (cleanName === 'BOT_STATISTICS' ? type === 'object' : type === 'number'))) {
       setNameError('Use 1–64 letters or numbers, with single hyphens between them. No leading, trailing, or repeated hyphens.');
       return;
     }
@@ -82,11 +112,11 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
     {presentation === 'sidebar' && currentVariables.length > 15 && <label className="graph-variable-search"><Search size={13} /><input value={currentSearch} onChange={(event) => setSearchByScope((current) => ({ ...current, [activeScope]: event.target.value }))} placeholder={`Filter ${activeScope} variables`} aria-label={`Filter ${activeScope} variables`} /></label>}
     <div className="variable-list">
       {filteredVariables.length ? filteredVariables.map((variable) => {
-        const isSystemManaged = variable.id === 'project_var_discord_app_id' || variable.systemManaged === true;
+        const isSystemManaged = SYSTEM_MANAGED_IDS.includes(variable.id) || variable.systemManaged === true;
         const isNodeOwned = variable.nodeOwned === true;
         const isReadOnly = isSystemManaged || isNodeOwned;
         return <div className={`variable-row ${activeScope === 'graph' ? 'is-graph-variable' : ''} ${isSystemManaged ? 'is-system-variable' : ''} ${isNodeOwned ? 'is-node-owned-variable' : ''}`} key={variable.id}>
-        <input className={`variable-name ${nameDrafts[variable.id] !== undefined && !isValidVariableName(nameDrafts[variable.id], variable.type) ? 'is-invalid' : ''}`} value={nameDrafts[variable.id] ?? variable.name} maxLength={64} pattern="(?:[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|DISCORD_APP_ID)" disabled={!currentCanEdit || isReadOnly} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { const nextName = event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64); setNameDrafts((current) => ({ ...current, [variable.id]: nextName })); const duplicate = currentVariables.some((item) => item.id !== variable.id && item.name?.toLowerCase() === nextName.toLowerCase()); if (isValidVariableName(nextName, variable.type) && !duplicate) { updateVariable(variable.id, { name: nextName }); setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); } }} onBlur={() => setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; })} aria-label={`${variable.name} variable name`} title={isNodeOwned ? 'Defined by a Create Variable node. Edit it on the graph.' : isSystemManaged ? 'Set automatically from the connected Discord application.' : 'Use 1–64 letters or numbers, with single hyphens between them.'} />
+        <input className={`variable-name ${nameDrafts[variable.id] !== undefined && !isValidVariableName(nameDrafts[variable.id], variable.type) ? 'is-invalid' : ''}`} value={nameDrafts[variable.id] ?? variable.name} maxLength={64} pattern="(?:[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|DISCORD_APP_ID|APP_LATENCY|GATEWAY_LATENCY|BOT_UPTIME|BOT_STATISTICS)" disabled={!currentCanEdit || isReadOnly} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { const nextName = event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64); setNameDrafts((current) => ({ ...current, [variable.id]: nextName })); const duplicate = currentVariables.some((item) => item.id !== variable.id && item.name?.toLowerCase() === nextName.toLowerCase()); if (isValidVariableName(nextName, variable.type) && !duplicate) { updateVariable(variable.id, { name: nextName }); setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); } }} onBlur={() => setNameDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; })} aria-label={`${variable.name} variable name`} title={isNodeOwned ? 'Defined by a Create Variable node. Edit it on the graph.' : isSystemManaged ? 'Set automatically by ARC Studio.' : 'Use 1–64 letters or numbers, with single hyphens between them.'} />
         <AnimatedDropdown value={variable.type} disabled={!currentCanEdit || isReadOnly} onChange={(nextType) => { setJsonDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); setNumberDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); setExpandedValueIds((current) => { const next = new Set(current); next.delete(variable.id); return next; }); setInvalidJsonIds((current) => { const next = new Set(current); next.delete(variable.id); return next; }); updateVariable(variable.id, { type: nextType, initialValue: defaultForType(nextType) }); }} ariaLabel={`${variable.name} variable type`} options={VARIABLE_TYPES} className="variable-type-dropdown" />
         {variable.type === 'boolean'
           ? <div className="variable-boolean"><AnimatedCheckbox disabled={!currentCanEdit || isReadOnly} checked={Boolean(variable.initialValue)} onChange={(checked) => updateVariable(variable.id, { initialValue: checked })} label={`${variable.name} initial value`} /> <span>True</span></div>
@@ -97,33 +127,92 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
               : <input className={`variable-value ${variable.type === 'number' && numberDrafts[variable.id] === '' ? 'is-empty-number' : ''}`} type={isSystemManaged ? 'text' : variable.type === 'number' ? 'number' : 'text'} maxLength={variable.type === 'string' ? 10000 : undefined} value={variable.type === 'number' && !isSystemManaged && numberDrafts[variable.id] !== undefined ? numberDrafts[variable.id] : variable.initialValue ?? ''} disabled={!currentCanEdit || isReadOnly} readOnly={isSystemManaged || isNodeOwned} autoCapitalize="none" autoCorrect="off" spellCheck={false} onFocus={() => setValueExpanded(variable.id, true)} onBlur={() => setValueExpanded(variable.id, false)} onChange={(event) => { if (variable.type === 'number') { const draft = event.target.value; setNumberDrafts((current) => ({ ...current, [variable.id]: draft })); if (draft !== '') { updateVariable(variable.id, { initialValue: Number(draft) }); setNumberDrafts((current) => { const next = { ...current }; delete next[variable.id]; return next; }); } } else updateVariable(variable.id, { initialValue: event.target.value.slice(0, 10000) }); }} aria-label={`${variable.name} initial value`} aria-invalid={variable.type === 'number' && numberDrafts[variable.id] === '' || undefined} />}
         {invalidJsonIds.has(variable.id) && <small className="variable-form-error">Enter a valid JSON {variable.type === 'array' ? 'array' : 'object'} under 10,000 characters.</small>}
         {activeScope === 'graph' && <div className="variable-persistence" title="When off, this variable starts at its initial value for each graph run and resets when that run ends."><AnimatedCheckbox disabled={!currentCanEdit || isReadOnly} checked={variable.persist !== false} onChange={(persist) => updateVariable(variable.id, { persist })} label={`Persist ${variable.name}`} /><span>Persist</span></div>}
-        {['string', 'array', 'object'].includes(variable.type) && <button className="variable-open-editor" type="button" disabled={!currentCanEdit || isReadOnly} title={`Open ${variable.name} in Text Editor`} aria-label={`Open ${variable.name} in Text Editor`} onClick={() => onOpenTextEditor?.(variable, activeScope)}><FileCode2 size={14} /></button>}
+        {['string', 'array', 'object'].includes(variable.type) && <button className="variable-open-editor" type="button" disabled={!currentCanEdit && !isReadOnly} title={isReadOnly ? `View ${variable.name} in Text Editor (Read only)` : `Open ${variable.name} in Text Editor`} aria-label={isReadOnly ? `View ${variable.name} in Text Editor (Read only)` : `Open ${variable.name} in Text Editor`} onClick={() => onOpenTextEditor?.(variable, activeScope, isReadOnly)}><FileCode2 size={14} /></button>}
         <button className="variable-delete" disabled={!currentCanEdit || isNodeOwned} onClick={() => changeVariables?.(currentVariables.filter((item) => item.id !== variable.id))} title={isNodeOwned ? 'Remove the Create Variable node to delete this variable.' : `Delete ${variable.name}`} aria-label={`Delete ${variable.name}`}><Trash2 size={15} /></button>
       </div>;
       }) : <div className="variable-empty">{currentVariables.length ? 'No matching variables' : `No ${activeScope === 'project' ? 'project' : 'graph'} variables`}</div>}
     </div>
     {!currentCanEdit && <div className="variable-empty">{activeScope === 'graph' ? 'Open an editable graph to add graph variables.' : 'You do not have permission to edit project variables.'}</div>}
     <form ref={createRowRef} className={`variable-create-row ${!currentCanEdit ? 'is-disabled' : ''}`} noValidate onSubmit={addVariable}>
-      <input value={name} maxLength={64} pattern="(?:[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|DISCORD_APP_ID)" disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setName(event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64)); setNameError(''); }} placeholder="Variable name" aria-label="New variable name" aria-invalid={Boolean(nameError)} title="Use letters or numbers with single hyphens. DISCORD_APP_ID is also available as a number." />
+      <input value={name} maxLength={64} pattern="(?:[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*|DISCORD_APP_ID|APP_LATENCY|GATEWAY_LATENCY|BOT_UPTIME|BOT_STATISTICS)" disabled={!currentCanEdit} autoCapitalize="none" autoCorrect="off" spellCheck={false} onChange={(event) => { setName(event.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64)); setNameError(''); }} placeholder="Variable name" aria-label="New variable name" aria-invalid={Boolean(nameError)} title="Use letters or numbers with single hyphens. Built in variables are ARC managed values." />
       <AnimatedDropdown value={type} disabled={!currentCanEdit} onChange={setType} ariaLabel="New variable type" options={VARIABLE_TYPES} className="variable-type-dropdown" />
       <button className="variable-add" disabled={!currentCanEdit || currentVariables.length >= 100} type="submit" title={currentVariables.length >= 100 ? 'Maximum 100 variables per scope' : 'Create variable'} aria-label="Create variable"><Plus size={15} /></button>
       {nameError && <small className="variable-form-error" role="alert">{nameError}</small>}
     </form>
   </>;
   const selectScope = (scope) => { setActiveScope(scope); onScopeChange?.(scope); setNameError(''); };
-  const scopeTabs = <><div className="graph-variable-tabs" role="tablist" aria-label="Variable scope"><button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button><button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button></div><small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small></>;
+  const scopeTabs = <>
+    <div className="graph-variable-tabs" role="tablist" aria-label="Variable scope">
+      <button type="button" role="tab" aria-selected={activeScope === 'project'} className={activeScope === 'project' ? 'is-active' : ''} onClick={() => selectScope('project')}>Project <span>{projectVariables.length}</span></button>
+      <button type="button" role="tab" aria-selected={activeScope === 'graph'} className={activeScope === 'graph' ? 'is-active' : ''} onClick={() => selectScope('graph')}>Graph <span>{variables.length}</span></button>
+    </div>
+    <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
+  </>;
+
+  const systemVariablesControl = <div className={`system-variables-menu-container ${presentation === 'sidebar' ? 'is-sidebar' : ''}`} ref={systemMenuRef}>
+    <button type="button" className={`icon-button compact system-variables-trigger ${systemMenuOpen ? 'is-active' : ''}`} onClick={() => setSystemMenuOpen((open) => !open)} title="System variables" aria-label="System variables">
+      <Cpu size={14} />
+    </button>
+    {systemMenuOpen && <div className="system-variables-dropdown">
+      <div className="system-variables-dropdown-header">
+        <strong>System variables</strong>
+        <button type="button" className="system-variables-dropdown-close" onClick={() => setSystemMenuOpen(false)} aria-label="Close system variables menu"><X size={12} /></button>
+      </div>
+      <div className="system-variables-dropdown-list">
+        {SYSTEM_VARIABLES.map((sysVar) => {
+          const existing = projectVariables.find((item) => item.name === sysVar.name);
+          const isManaged = existing && (SYSTEM_MANAGED_IDS.includes(existing.id) || existing.systemManaged === true);
+          const hasConflict = existing && !isManaged;
+          const isAdded = existing && isManaged;
+          return <div key={sysVar.name} className="system-variable-item">
+            <div className="system-variable-item-info">
+              <div className="system-variable-item-name">
+                <code>{sysVar.name}</code>
+                <span className="system-variable-item-type">{sysVar.type}</span>
+              </div>
+              <div className="system-variable-item-desc">{sysVar.description}</div>
+              {hasConflict && <small className="system-variable-conflict-warning">Delete custom variable first to restore system variable</small>}
+            </div>
+            <div className="system-variable-item-action">
+              {isAdded ? (
+                <span className="system-variable-status is-added"><Check size={12} /> Added</span>
+              ) : hasConflict ? (
+                <button type="button" className="system-variable-restore-btn is-disabled" disabled title="Delete the custom variable first">Restore</button>
+              ) : (
+                <button type="button" className="system-variable-restore-btn" disabled={restoringName === sysVar.name || !currentCanEdit} onClick={async () => {
+                  setRestoringName(sysVar.name);
+                  try {
+                    await onRestoreSystemVariable?.(sysVar.name);
+                  } finally {
+                    setRestoringName(null);
+                  }
+                }}>
+                  <RotateCcw size={12} />
+                  {restoringName === sysVar.name ? 'Restoring…' : 'Restore'}
+                </button>
+              )}
+            </div>
+          </div>;
+        })}
+      </div>
+    </div>}
+  </div>;
+
   if (presentation === 'sidebar') return isOpen ? <aside className="graph-variables-sidebar" aria-label="Variables" style={{ '--arc-sidebar-width': `${sidebarWidth}px` }}>
     <SidebarResizeHandle width={sidebarWidth} defaultWidth={320} onResize={onSidebarResize} />
     <header className="graph-library-header">
       <span><Braces size={14} />Variables<small>{projectVariables.length + variables.length}</small></span>
-      <button className="icon-button compact" type="button" aria-label="Close graph variables" onClick={onClose}><X size={14} /></button>
+      <div className="graph-library-header-actions">
+        {systemVariablesControl}
+        <button className="icon-button compact" type="button" aria-label="Close graph variables" onClick={onClose}><X size={14} /></button>
+      </div>
     </header>
     <div className={`graph-variables-sidebar-content ${isSaving ? 'is-saving' : ''}`}>
       {isSaving && <div className="variable-save-progress" role="status" aria-label="Saving variables"><i /></div>}
       {scopeTabs}{content}
     </div>
   </aside> : null;
-  return <Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project-wide and graph-specific values" icon={Braces} maxWidth="lg">{scopeTabs}{content}</Modal>;
+  return <Modal isOpen={isOpen} onClose={onClose} title="Variables" subtitle="Project-wide and graph-specific values" icon={Braces} maxWidth="lg" headerMeta={systemVariablesControl}>{scopeTabs}{content}</Modal>;
 }
 
 function defaultForType(type) {
@@ -135,5 +224,11 @@ function defaultForType(type) {
 }
 
 function isValidVariableName(name, type = '') {
-  return String(name || '') === 'DISCORD_APP_ID' ? type === 'number' : /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(String(name || ''));
+  if (['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME'].includes(String(name || ''))) {
+    return !type || type === 'number';
+  }
+  if (String(name || '') === 'BOT_STATISTICS') {
+    return !type || type === 'object';
+  }
+  return /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(String(name || ''));
 }

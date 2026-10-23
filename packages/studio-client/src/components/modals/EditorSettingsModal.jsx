@@ -33,6 +33,7 @@ const shortcutActions = [
   ['arrangeNodes', 'Arrange nodes'],
   ['toggleLibrary', 'Toggle Library'],
   ['openSearch', 'Open node search'],
+  ['addNote', 'Add note'],
   ['emojiPicker', 'Open emoji picker'],
   ['saveGraph', 'Save graph'],
   ['undo', 'Undo'],
@@ -160,7 +161,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     } catch (error) { setLogRetentionMessage(error.message || 'Could not save the retention setting.'); }
   };
 
-  return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace">
+  return <Modal isOpen={isOpen} onClose={onClose} title="Editor settings" subtitle="Customize your workspace" panelClassName="modal-editor-settings">
     <div className="settings-tabs" role="tablist" aria-label="Editor settings sections">
       {tabs.map((tab) => {
         const disabled = (tab.id === 'shortcuts' || tab.id === 'discord' || tab.id === 'data') && !desktopMode;
@@ -173,6 +174,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <SelectInput label="Canvas quality" value={['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto'} options={[{ value: 'auto', label: 'Auto' }, { value: 'fast', label: 'Fast' }, { value: 'optimal', label: 'Optimal' }, { value: 'quality', label: 'Quality' }]} onChange={(value) => update('canvasQuality', value)} />
       <Toggle label="Snap to grid" description="Align nodes while dragging" checked={settings.snapToGrid ?? true} onChange={(value) => update('snapToGrid', value)} />
       <Toggle label="Zoom with mouse wheel" description="Zoom the canvas without holding Ctrl or ⌘" checked={settings.zoomCanvasWithScroll ?? false} onChange={(value) => update('zoomCanvasWithScroll', value)} />
+      <Toggle label="Right-click to pan canvas" description="Drag with right-click to move the canvas and use left-click for its context menu" checked={settings.canvasRightClickPan ?? false} onChange={(value) => update('canvasRightClickPan', value)} />
       <Toggle label="Canvas grid" description="Show the canvas dot pattern" checked={settings.showGrid ?? true} onChange={(value) => update('showGrid', value)} />
       <Toggle label="Execution pulse" description="Animate active connections" checked={settings.wirePulse ?? true} onChange={(value) => update('wirePulse', value)} />
       <Toggle label="Magnetic sockets" description="Assist wire placement near pins" checked={settings.magneticSnap ?? true} onChange={(value) => update('magneticSnap', value)} />
@@ -182,6 +184,7 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
       <Toggle label="Reduce motion" description="Use shorter transitions and disable decorative animation" checked={settings.reduceMotion ?? false} onChange={(value) => update('reduceMotion', value)} />
       <SelectInput label="UI scale" value={String(settings.uiScale || '100')} options={['80', '90', '100', '110', '120', '130', '140'].map((value) => ({ value, label: `${value}%` }))} onChange={(value) => update('uiScale', value)} />
       <small className="settings-shortcut-hint">{platform === 'macos' ? '⌘' : 'Ctrl'} + / − adjusts scale</small>
+      <SelectInput label="Font scale" value={String(settings.fontScale || '100')} options={['80', '90', '100', '110', '120', '130', '140'].map((value) => ({ value, label: `${value}%` }))} onChange={(value) => update('fontScale', value)} />
     </div>}
 
     {activeTab === 'interface' && <div className="settings-section settings-tab-content">
@@ -282,6 +285,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     {activeTab === 'shortcuts' && desktopMode && <div className="settings-section settings-tab-content settings-shortcuts-content">
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
       <div className="settings-shortcut-editor">{shortcutActions.filter(([key]) => key !== 'arrangeNodes' || localWorkspace).map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : shortcuts[key] ? formatShortcut(shortcuts[key], platform) : 'Unassigned'}</button></div>)}</div>
+      <div className="settings-shortcut-gesture"><strong>Canvas find</strong><span>{platform === 'macos' ? '⌘F' : 'Ctrl+F'} opens the active sidebar search when one is open, otherwise it finds on the canvas. {platform === 'macos' ? '⌘G' : 'Ctrl+G'} and {platform === 'macos' ? '⌘⇧G' : 'Ctrl+Shift+G'} move through results.</span></div>
+      <div className="settings-shortcut-gesture"><strong>Collaborative arrows</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and Shift, then drag on the canvas. Arrows fade after 10 seconds unless you keep them.</span></div>
       <div className="settings-shortcut-gesture"><strong>Colored sections</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and drag a node to move it between sections. It stays grouped while inside; drag it fully outside to remove it. The section won’t stretch to follow the node.</span></div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>

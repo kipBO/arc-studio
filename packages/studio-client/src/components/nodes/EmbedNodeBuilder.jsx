@@ -7,6 +7,7 @@ import {
 import { DiscordTextField } from '../ui/DiscordTextField.jsx';
 import { TemplateVariableHints } from '../ui/TemplateVariableHints.jsx';
 import { DiscordLongTextField, LONG_TEXT_THRESHOLD } from '../ui/DiscordLongTextField.jsx';
+import { getTextTemplateSlots } from './nodeDefinitions.js';
 //
 export const EmbedBlockTypes = [
   { type: 'title', label: 'Title', icon: Type },
@@ -96,10 +97,29 @@ export function getEmbedFieldSocketLabels(field, fieldIndex, fields = []) {
   };
 }
 
-export function embedBlockPins(blocks = []) {
+export function embedBlockTemplateSlots(blocks = [], graphVariables = []) {
+  const knownVariables = new Set(graphVariables.map((variable) => variable.name?.toLowerCase()).filter(Boolean));
+  const slots = new Set();
+  for (const block of blocks) {
+    const fields = block.type === 'title' || block.type === 'description' ? ['value']
+      : block.type === 'url' ? ['url']
+        : block.type === 'author' ? ['name', 'url', 'icon']
+          : block.type === 'footer' ? ['text', 'icon']
+            : block.type === 'image' || block.type === 'thumbnail' ? ['url']
+              : block.type === 'field' ? ['name', 'value'] : [];
+    for (const field of fields) {
+      for (const name of getTextTemplateSlots(block[field])) {
+        if (!knownVariables.has(name.toLowerCase()) && !/^arg\d+$/i.test(name)) slots.add(name);
+      }
+    }
+  }
+  return [...slots].map((name) => ({ id: `slot_${name}`, label: name, type: 'arg', defaultValue: '' }));
+}
+
+export function embedBlockPins(blocks = [], graphVariables = []) {
   const fields = blocks.filter((block) => block.type === 'field');
   let fieldIndex = -1;
-  return blocks.flatMap((block) => {
+  const blockPins = blocks.flatMap((block) => {
     const stringPin = (id, label) => ({ id: `block_${block.id}_${id}`, label, type: 'string', defaultValue: block[id] || '' });
     if (block.type === 'title') return [stringPin('value', 'Title')];
     if (block.type === 'description') return [stringPin('value', 'Message')];
@@ -116,12 +136,14 @@ export function embedBlockPins(blocks = []) {
     }
     return [];
   });
+  return [...blockPins, ...embedBlockTemplateSlots(blocks, graphVariables)];
 }
 
 export function EmbedNodeBuilder({
   data = {},
   onChange,
   mode = 'node',
+  hasParentNode = mode === 'node',
   onOpenStudio,
   onOpenTextStudio,
   templateSuggestions = [],
@@ -316,7 +338,7 @@ export function EmbedNodeBuilder({
             aria-invalid={message ? 'true' : undefined}
           />
         )}
-        {allowEmoji && <TemplateVariableHints value={block[key]} graphVariables={graphVariables} templatePreviewValues={templatePreviewValues} />}
+        {allowEmoji && <TemplateVariableHints value={block[key]} graphVariables={graphVariables} inputSlots={hasParentNode ? embedBlockTemplateSlots(blocks, graphVariables) : []} connectedInputIds={connectedInputIds} templatePreviewValues={templatePreviewValues} />}
         {message && <small className="embed-field-error">{message}</small>}
       </label>
     );

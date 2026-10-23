@@ -34,8 +34,8 @@ function duplicateSlashCommandMessage(name) {
 }
 
 export function ControlDock({
-  logs = [], botStatus = 'DISCONNECTED', botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
-  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange
+  logs = [], botStatus = 'DISCONNECTED', discordAuthWarning = null, botMetrics = {}, botProfile, activeTabId, activeProjectId = '', authToken, onEmojisChange, emojiCacheScope = '', networkOnline = true, cachedAppEmojis = [],
+  graphs = [], graphLookup = new Map(), graphValidationReports = [], graphNodes = [], nodeDefinitions = BuiltInNodeDefinitions, isLocked = false, canControlBot = false, consoleOpenRequest = 0, gatewayStartedRequest = 0, commandBrowserRequest = 0, onClearLogs, onStartBot, onStopBot, onEnsureGraphsSaved, onOpenGraph, onTraceLog, onTraceIssue, onIntentSummaryChange
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('console');
@@ -200,7 +200,7 @@ export function ControlDock({
       }
     }
   }, [simulationModals, selectedModalNodeId]);
-  const nodeDefinitionByType = useMemo(() => new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition])), []);
+  const nodeDefinitionByType = useMemo(() => new Map(nodeDefinitions.map((definition) => [definition.type, definition])), [nodeDefinitions]);
   useEffect(() => {
     setTracePathExpanded(false);
     setTraceOutputsExpanded(false);
@@ -684,7 +684,7 @@ export function ControlDock({
     try {
       const response = await fetch(apiUrl('/api/bot/commands/preview'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-arc-token': authToken }, body: JSON.stringify({ graphs }) });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not review command changes.');
+      if (!response.ok) throw new Error([data.error || 'Could not review command changes.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
       setExpandedReviewIssues(new Set());
       setCommandReview({ ...data, graphs });
     } catch (error) {
@@ -709,7 +709,7 @@ export function ControlDock({
       if (!response.ok) {
         if (response.status === 429) setCommandDeployUntil(Date.now() + Math.max(1000, Number(data.retryAfterMs) || 30_000));
         if (response.status === 409) setCommandReview(null);
-        throw new Error(data.error || 'Could not deploy slash commands.');
+        throw new Error([data.error || 'Could not deploy slash commands.', data.discordAuthWarning?.message].filter(Boolean).join(' '));
       }
       setCommandDeployUntil(Date.now() + 30_000);
       setCommandReview(null);
@@ -943,6 +943,10 @@ export function ControlDock({
             <div><strong>Discord API cooldown</strong><span>{botMetrics?.rateLimitScope === 'global' ? 'A global limit is active.' : 'A route limit is active.'} Live API actions are paused; use Simulation to keep testing your graphs.</span><small>Changing networks does not clear a Discord API rate limit.</small></div>
             <time>{rateLimitSeconds}s</time>
           </div>}
+          {discordAuthWarning && <div className="discord-auth-warning" role="status">
+            <AlertTriangle size={17} />
+            <div><strong>{discordAuthWarning.title || 'Discord rejected the bot token'}</strong><span>{discordAuthWarning.message}</span></div>
+          </div>}
           <section className="bot-overview">
             <div className="bot-card">
               <div className="bot-avatar">{botProfile?.avatar && botProfile?.id ? <img src={`https://cdn.discordapp.com/avatars/${encodeURIComponent(botProfile.id)}/${encodeURIComponent(botProfile.avatar)}.${botProfile.avatar.startsWith('a_') ? 'gif' : 'webp'}`} alt="" /> : <Smile size={22} />}</div>
@@ -1000,6 +1004,10 @@ export function ControlDock({
       </div>, modalRoot)}
       {modalRoot && createPortal(<Modal isOpen={Boolean(commandReview)} onClose={() => { setCommandReview(null); setDeployError(''); }} title="Deployment review" subtitle={`${reviewCommandItems.length} commands · ${reviewIssueCount('error')} errors · ${reviewIssueCount('warning')} warnings`} icon={ShieldCheck} maxWidth="max-w-2xl" footer={commandReview && <><button className="studio-button" onClick={() => setCommandReview(null)}>Cancel</button><button className="studio-button studio-button-primary" onClick={deployCommands} disabled={!networkOnline || !commandReview.valid || commandReview.noChanges || deployingCommands || commandDeploySeconds > 0 || isDiscordRateLimited || graphValidationReports.some(({ report }) => report.errors.length)}>{deployingCommands ? 'Deploying…' : !networkOnline ? 'Offline' : isDiscordRateLimited ? `Cooldown · ${rateLimitSeconds}s` : commandReview.noChanges ? 'No changes' : `Deploy ${commandReview.commands?.length || 0} commands`}</button></>}>
         {commandReview && <div className="deployment-review-content">
+          {(commandReview.discordAuthWarning || discordAuthWarning) && <div className="discord-auth-warning is-review" role="status">
+            <AlertTriangle size={17} />
+            <div><strong>{(commandReview.discordAuthWarning || discordAuthWarning).title || 'Discord rejected the bot token'}</strong><span>{(commandReview.discordAuthWarning || discordAuthWarning).message}</span></div>
+          </div>}
           <section className="command-review-section"><strong>Graph checks</strong>
             {reviewIssueGroups.length ? <div className="deployment-review-issues">{reviewIssueGroups.map((group) => {
               const expanded = expandedReviewIssues.has(group.key);

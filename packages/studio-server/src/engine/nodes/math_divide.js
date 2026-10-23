@@ -1,0 +1,28 @@
+export default {
+  "description": "Divides A by B, division by zero returns 0",
+  "type": "math_divide",
+  "category": "Math",
+  "label": "Divide (÷)",
+  "color": "#38bdf8",
+  "inputs": [
+    {
+      "id": "a",
+      "label": "A",
+      "type": "number",
+      "defaultValue": 0
+    },
+    {
+      "id": "b",
+      "label": "B",
+      "type": "number",
+      "defaultValue": 0
+    }
+  ],
+  "outputs": [
+    {
+      "id": "result",
+      "label": "Result",
+      "type": "number"
+    }
+  ]
+};

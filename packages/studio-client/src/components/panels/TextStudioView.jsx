@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
 import { countDiscordCodeBlocks, detectDiscordCodeLanguages, inferDiscordCodeLanguage } from '../ui/DiscordLongTextField.jsx';
 import { TemplateSyntaxHelp } from '../ui/TemplateSyntaxHelp.jsx';
 import { renderTextTemplate } from '../../../../studio-server/src/engine/TemplateExpressions.js';
@@ -37,6 +37,46 @@ function getJsonError(value) {
     const before = value.slice(0, position).split('\n');
     return `Invalid JSON · line ${before.length}, column ${before.at(-1).length + 1}`;
   }
+}
+
+function getSearchMatches(text, query, { matchCase, wholeWord, useRegex }) {
+  if (!query) return { matches: [], error: '' };
+  let expression;
+  try {
+    const source = useRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    expression = new RegExp(source, `gu${matchCase ? '' : 'i'}`);
+  } catch (error) {
+    return { matches: [], error: error instanceof Error ? error.message : 'Invalid regular expression' };
+  }
+  const matches = [];
+  for (const match of text.matchAll(expression)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    if (end === start) continue;
+    if (wholeWord && (/[\p{L}\p{N}_]/u.test(text[start - 1] || '') || /[\p{L}\p{N}_]/u.test(text[end] || ''))) continue;
+    matches.push({ start, end });
+  }
+  return { matches, error: '' };
+}
+
+function renderSearchLine(line, lineStart, matches, activeMatchIndex, startIndex) {
+  const lineEnd = lineStart + line.length;
+  const segments = [];
+  let cursor = 0;
+  let index = startIndex;
+  while (index < matches.length && matches[index].end <= lineStart) index += 1;
+  for (; index < matches.length && matches[index].start < lineEnd; index += 1) {
+    const match = matches[index];
+    const start = Math.max(match.start, lineStart);
+    const end = Math.min(match.end, lineEnd);
+    if (start >= end) continue;
+    if (start > cursor + lineStart) segments.push(line.slice(cursor, start - lineStart));
+    segments.push(<mark key={`${index}-${start}`} className={index === activeMatchIndex ? 'is-active' : ''}>{line.slice(start - lineStart, end - lineStart)}</mark>);
+    cursor = end - lineStart;
+  }
+  if (cursor < line.length) segments.push(line.slice(cursor));
+  const nextIndex = index > startIndex && matches[index - 1].end > lineEnd + 1 ? index - 1 : index;
+  return { content: segments.length ? segments : line || ' ', nextIndex };
 }
 
 function highlightCode(line, language) {
@@ -90,15 +130,23 @@ function highlightMarkdown(line) {
   return <span className={lineClass}>{tokens.length ? tokens : line || ' '}</span>;
 }
 
-export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
+export function TextStudioView({ label, value = '', readOnly = false, sharedDraft, remoteCursors = [], collaborators = [], appEmojis = [], graphVariables = [], templateValuePaths = [], templateSuggestions = [], templatePreviewValues = {}, maxLength, onApply, onClose, onDraftChange, onCursorChange }) {
   const [draft, setDraft] = useState(String(value ?? ''));
   const [discardPromptOpen, setDiscardPromptOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [useRegex, setUseRegex] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(-1);
   const editorRef = useRef(null);
+  const searchInputRef = useRef(null);
   const undoStackRef = useRef([]);
   const redoStackRef = useRef([]);
   const beforeInputRef = useRef(null);
   const gutterRef = useRef(null);
   const codeLayerRef = useRef(null);
+  const searchLayerRef = useRef(null);
   const remoteCaretLayerRef = useRef(null);
   const lines = useMemo(() => draft.split('\n'), [draft]);
   const blocks = useMemo(() => countDiscordCodeBlocks(draft), [draft]);
@@ -145,29 +193,124 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
     return text.length > 500 ? `${text.slice(0, 497)}…` : text;
   }, [draft, graphVariables, templatePreviewValues, appEmojis]);
   const containsTemplate = /(?<!\\)\{\{\s*[^{}]+?\s*\}\}/.test(draft);
+  const { matches: searchMatches, error: searchError } = useMemo(
+    () => getSearchMatches(draft, searchQuery, { matchCase, wholeWord, useRegex }),
+    [draft, searchQuery, matchCase, wholeWord, useRegex]
+  );
+  const searchLines = useMemo(() => {
+    let offset = 0;
+    let matchIndex = 0;
+    return draft.split('\n').map((line) => {
+      const result = renderSearchLine(line, offset, searchMatches, activeMatchIndex, matchIndex);
+      matchIndex = result.nextIndex;
+      offset += line.length + 1;
+      return result.content;
+    });
+  }, [draft, searchMatches, activeMatchIndex]);
+
+  const navigateSearch = (direction, fromOffset = editorRef.current?.selectionStart ?? 0) => {
+    if (!searchMatches.length) {
+      setActiveMatchIndex(-1);
+      return;
+    }
+    let nextIndex;
+    if (activeMatchIndex >= 0) {
+      nextIndex = (activeMatchIndex + direction + searchMatches.length) % searchMatches.length;
+    } else if (direction > 0) {
+      nextIndex = searchMatches.findIndex((match) => match.start >= fromOffset);
+      if (nextIndex < 0) nextIndex = 0;
+    } else {
+      nextIndex = -1;
+      for (let index = searchMatches.length - 1; index >= 0; index -= 1) {
+        if (searchMatches[index].start < fromOffset) {
+          nextIndex = index;
+          break;
+        }
+      }
+      if (nextIndex < 0) nextIndex = searchMatches.length - 1;
+    }
+    setActiveMatchIndex(nextIndex);
+    requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      const match = searchMatches[nextIndex];
+      if (!editor || !match) return;
+      editor.focus();
+      editor.setSelectionRange(match.start, match.end);
+      const line = draft.slice(0, match.start).split('\n').length - 1;
+      editor.scrollTop = Math.max(0, line * 22 - editor.clientHeight / 2);
+    });
+  };
+  const openSearch = () => {
+    const editor = editorRef.current;
+    const selectedText = editor && editor.selectionStart !== editor.selectionEnd
+      ? draft.slice(editor.selectionStart, editor.selectionEnd)
+      : '';
+    if (selectedText && !searchOpen) setSearchQuery(selectedText);
+    setSearchOpen(true);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  };
+
+  useEffect(() => {
+    if (!searchMatches.length) {
+      setActiveMatchIndex(-1);
+      return;
+    }
+    setActiveMatchIndex((current) => current >= searchMatches.length ? 0 : current);
+  }, [searchMatches]);
 
   const close = () => {
-    if (draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
+    if (!readOnly && draft !== String(value ?? '')) { setDiscardPromptOpen(true); return; }
     onClose?.();
   };
-  useStudioEscape(close);
-  const apply = () => onApply?.(detectDiscordCodeLanguages(draft));
+  useStudioEscape(() => {
+    if (searchOpen) {
+      setSearchOpen(false);
+      editorRef.current?.focus();
+      return;
+    }
+    close();
+  });
+  const apply = () => {
+    if (readOnly) return;
+    onApply?.(detectDiscordCodeLanguages(draft));
+  };
 
   useEffect(() => {
     const handleKeys = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') apply();
+      const command = event.metaKey || event.ctrlKey;
+      if (command && !event.altKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        openSearch();
+        return;
+      }
+      if (command && !event.altKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        navigateSearch(event.shiftKey ? -1 : 1);
+        return;
+      }
+      if (event.key === 'F3') {
+        event.preventDefault();
+        navigateSearch(event.shiftKey ? -1 : 1);
+        return;
+      }
+      if (!readOnly && (event.metaKey || event.ctrlKey) && event.key === 'Enter') apply();
     };
     window.addEventListener('keydown', handleKeys);
     return () => window.removeEventListener('keydown', handleKeys);
-  }, [draft, onApply, onClose]);
+  }, [draft, onApply, onClose, readOnly, searchMatches, matchCase, wholeWord, useRegex, searchQuery, activeMatchIndex]);
 
   const syncScroll = (event) => {
     const editor = event.currentTarget;
     if (gutterRef.current) gutterRef.current.scrollTop = editor.scrollTop;
     if (codeLayerRef.current) codeLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
+    if (searchLayerRef.current) searchLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
     if (remoteCaretLayerRef.current) remoteCaretLayerRef.current.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
   };
   const changeDraft = (event) => {
+    if (readOnly) return;
     const next = event.target.value;
     const bounded = maxLength ? Array.from(next).slice(0, maxLength).join('') : next;
     if (bounded !== draft) {
@@ -211,6 +354,7 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
     beforeInputRef.current = { text: draft, start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd };
   };
   const handleEditorKeyDown = (event) => {
+    if (readOnly) return;
     const command = event.metaKey || event.ctrlKey;
     if (command && !event.altKey) {
       const key = event.key.toLowerCase();
@@ -273,13 +417,27 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
   return <section className="discord-text-studio" aria-label={`Edit ${label}`}>
     <header className="discord-text-studio-header">
       <button type="button" className="discord-text-studio-back" onClick={close}><ArrowLeft size={15} /><span>Back</span></button>
-      <div className="discord-text-studio-title"><div><strong>Text editor</strong></div>{collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>{collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}</div>}</div>
-      <div className="discord-text-studio-actions"><button type="button" className="discord-text-studio-apply" onClick={apply}>Apply</button><button type="button" className="discord-text-studio-close" onClick={close} aria-label="Close editor"><X size={16} /></button></div>
+      <div className="discord-text-studio-title"><div><strong>Text editor</strong>{readOnly && <span className="read-only-badge">Locked (Read only)</span>}</div>{collaborators.length > 0 && <div className="studio-collaborators" title={collaborators.map((peer) => peer.username).join(', ')} aria-label={`Editing with ${collaborators.map((peer) => peer.username).join(', ')}`}>{collaborators.slice(0, 5).map((peer) => <span key={peer.userId} style={{ '--collaborator-color': peer.color }}>{peer.username.slice(0, 1).toUpperCase()}</span>)}</div>}</div>
+      <div className="discord-text-studio-actions">{!readOnly && <button type="button" className="discord-text-studio-apply" onClick={apply}>Apply</button>}<button type="button" className="discord-text-studio-close" onClick={close} aria-label="Close editor"><X size={16} /></button></div>
     </header>
+    {searchOpen && <div className="text-studio-search" role="search" aria-label="Find in text">
+      <label className="text-studio-search-input"><Search size={14} /><input ref={searchInputRef} value={searchQuery} onChange={(event) => { setSearchQuery(event.target.value); setActiveMatchIndex(-1); }} onKeyDown={(event) => {
+        if (event.key === 'Enter') { event.preventDefault(); navigateSearch(event.shiftKey ? -1 : 1); }
+        if (event.key === 'Escape') { event.preventDefault(); setSearchOpen(false); editorRef.current?.focus(); }
+      }} placeholder="Find" aria-label="Find text" /></label>
+      <span className="text-studio-search-count" role="status">{searchError ? 'Invalid pattern' : searchMatches.length ? `${activeMatchIndex < 0 ? 0 : activeMatchIndex + 1} of ${searchMatches.length}` : 'No results'}</span>
+      <button type="button" className="text-studio-search-nav" onClick={() => navigateSearch(-1)} aria-label="Previous match" title="Previous match (⌘⇧G)"><ChevronUp size={15} /></button>
+      <button type="button" className="text-studio-search-nav" onClick={() => navigateSearch(1)} aria-label="Next match" title="Next match (⌘G)"><ChevronDown size={15} /></button>
+      <label className="text-studio-search-option" title="Match case"><input type="checkbox" checked={matchCase} onChange={(event) => setMatchCase(event.target.checked)} /> Aa</label>
+      <label className="text-studio-search-option" title="Match whole word"><input type="checkbox" checked={wholeWord} onChange={(event) => setWholeWord(event.target.checked)} /> ab</label>
+      <label className="text-studio-search-option" title="Use regular expression"><input type="checkbox" checked={useRegex} onChange={(event) => setUseRegex(event.target.checked)} /> .* </label>
+      <button type="button" className="text-studio-search-close" onClick={() => { setSearchOpen(false); editorRef.current?.focus(); }} aria-label="Close find"><X size={15} /></button>
+    </div>}
     <div className="discord-text-studio-editor-shell">
       <div className="discord-text-studio-gutter" ref={gutterRef} aria-hidden="true">{lines.map((_, index) => <span key={index}>{index + 1}</span>)}</div>
       <div className="discord-text-studio-editor-viewport">
         <pre ref={codeLayerRef} className="discord-text-studio-code-layer" aria-hidden="true">{highlightedLines.map((line, index) => <span key={index} className={`discord-text-studio-line ${line.isCode ? 'is-code' : ''}`}>{line.content}</span>)}</pre>
+        {searchOpen && <pre ref={searchLayerRef} className="text-studio-search-layer" aria-hidden="true">{searchLines.map((line, index) => <span key={index} className="discord-text-studio-line">{line}</span>)}</pre>}
         <div ref={remoteCaretLayerRef} className="discord-text-remote-caret-layer" aria-hidden="true">{remoteCursors.map((peer) => {
           const caret = Math.min(peer.caret, draft.length);
           const before = draft.slice(0, caret).split('\n');
@@ -287,11 +445,11 @@ export function DiscordTextStudioView({ label, value = '', sharedDraft, remoteCu
           const column = before.at(-1).length;
           return <span key={peer.username} className="discord-text-remote-caret" style={{ left: 18 + column * 7.83, top: 15 + line * 22, '--collaborator-color': peer.color }}><i /><b>{peer.username}</b></span>;
         })}</div>
-        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
+        <DiscordTextField as="textarea" ref={editorRef} className="discord-text-studio-editor" readOnly={readOnly} value={draft} onBeforeInput={handleBeforeInput} onChange={changeDraft} onKeyDown={handleEditorKeyDown} onKeyUp={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onClick={(event) => onCursorChange?.(event.currentTarget.selectionStart)} onScroll={syncScroll} onPointerDown={(event) => event.stopPropagation()} spellCheck={false} autoFocus wrap="off" aria-label={`${label} text`} discordAutocomplete templateAutocomplete appEmojis={appEmojis} graphVariables={graphVariables} templateValuePaths={templateValuePaths} templateSuggestions={templateSuggestions} />
       </div>
     </div>
     {containsTemplate && <div className="discord-text-studio-preview"><strong>Template preview</strong><pre>{templatePreview || '(empty)'}</pre></div>}
-    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
+    <footer className="discord-text-studio-footer"><TemplateSyntaxHelp /><span>{characterCount.toLocaleString()}{maxLength ? ` / ${maxLength.toLocaleString()} characters` : ' characters'}</span><span>{jsonError ? <em className="text-editor-json-error" role="status">{jsonError}</em> : isJson ? 'Valid JSON' : `${lines.length.toLocaleString()} lines${blocks.length ? ` · ${blocks.length} code ${blocks.length === 1 ? 'block' : 'blocks'}` : ''}`}</span>{isJson && !readOnly && <button type="button" className="text-editor-format-json" disabled={Boolean(jsonError)} onClick={formatJson}>Format JSON</button>}</footer>
     <Modal isOpen={discardPromptOpen} onClose={() => setDiscardPromptOpen(false)} title="Discard text changes?" subtitle="These edits have not been applied." footer={<><Button variant="secondary" onClick={() => setDiscardPromptOpen(false)}>Keep editing</Button><Button variant="danger" onClick={onClose}>Discard changes</Button></>}><p className="close-graph-copy">Your graph or variable stays unchanged until you choose Apply.</p></Modal>
   </section>;
 }

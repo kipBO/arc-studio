@@ -121,6 +121,7 @@ export const serverConfig = {
   defaultBotToken: process.env.DISCORD_BOT_TOKEN?.trim() || null,
   activityWebhookUrl: process.env.ARC_ACTIVITY_WEBHOOK_URL?.trim() || '',
   version: rootPackage?.version || serverPackage?.version || 'unknown',
+  minimumClientVersion: rootPackage?.arcStudio?.minimumClientVersion || rootPackage?.version || serverPackage?.version || 'unknown',
   chezcordVersion: chezcordPackage?.version || 'unknown'
 };
 

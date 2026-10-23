@@ -1,11 +1,10 @@
 import { Router } from 'express';
 import { serverConfig } from '../config.js';
 import { createAuthMiddleware, requirePermission } from '../auth.js';
-import { NodeDefinitions, NodeCategories } from '../engine/NodeRegistry.js';
+import { NodeDefinitions, NodeCategories, NODE_SCHEMA_VERSION } from '../engine/NodeRegistry.js';
 import { MockGateway } from '../engine/MockGateway.js';
 import { StartupDiagnostics } from '../engine/StartupDiagnostics.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
-import { RESTClient } from 'chezcord';
 import { buildBotArchive } from '../export/BotArchive.js';
 import { PluginStore } from '../engine/PluginStore.js';
 import { downloadSafeHttpFile } from '../engine/SafeHttpRequest.js';
@@ -208,7 +207,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   });
 
   router.post('/auth/login', (req, res) => {
-    const { username, password, rememberMe } = req.body;
+    const { username, password, rememberMe, clientBuild } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
@@ -221,7 +220,16 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         retryAt: session.retryAt
       });
       logger.info(`User logged in: ${session.user.username} (role: ${session.user.role})`);
-      recordTeamActivity({ user: session.user }, 'account.signed_in', 'Signed in to the workspace', {});
+      const buildVersion = typeof clientBuild?.version === 'string' && /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(clientBuild.version)
+        ? clientBuild.version
+        : '';
+      const buildPlatform = ['Windows', 'Linux', 'macOS'].includes(clientBuild?.platform) ? clientBuild.platform : '';
+      const buildArchitecture = ['x64', 'x86', 'arm64', 'arm'].includes(clientBuild?.architecture) ? clientBuild.architecture : '';
+      recordTeamActivity({ user: session.user }, 'account.signed_in', 'Signed in to the workspace', {
+        ...(buildVersion ? { clientVersion: buildVersion } : {}),
+        ...(buildPlatform ? { clientPlatform: buildPlatform } : {}),
+        ...(buildArchitecture ? { clientArchitecture: buildArchitecture } : {})
+      });
       res.json({ success: true, ...session });
     } catch (err) {
       const ownerPasswordIncorrect = !serverConfig.desktopMode && err.ownerPasswordIncorrect === true;
@@ -621,6 +629,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       status: botManager.status,
       profile: botManager.botProfile,
       intents: botManager.getIntentPlan?.() || [],
+      discordAuthWarning: botManager.discordAuthWarning || null,
       hasToken: Boolean(botManager.getBotToken()),
       canExportBotToken
     });
@@ -635,7 +644,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   const getBotApplicationContext = async () => {
     const token = botManager.getBotToken();
     if (!token) throw new Error('Configure a bot token first.');
-    const rest = new RESTClient({ token });
+    const rest = botManager.createTrackedRESTClient(token);
     let application = botManager.botProfile?.application;
     if (!application?.id) application = await rest.getCurrentApplication();
     if (!application?.id) throw new Error('Discord did not return an application ID for this bot.');
@@ -654,7 +663,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       botManager.applicationEmojis = items;
       res.json({ applicationId: application.id, emojis: items, total: items.length, limit: 2000 });
     } catch (error) {
-      res.status(error.status || 400).json({ error: error.message });
+      res.status(error.status || 400).json({ error: error.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -679,7 +688,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       logger.info(`Uploaded app emoji :${emoji.name}: (${emoji.id}) to application ${application.id}`);
       res.json({ success: true, emoji });
     } catch (error) {
-      res.status(error.status || 400).json({ error: error.message });
+      res.status(error.status || 400).json({ error: error.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -691,7 +700,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       logger.info(`Deleted app emoji ${req.params.emojiId} from application ${application.id}`);
       res.json({ success: true });
     } catch (error) {
-      res.status(error.status || 400).json({ error: error.message });
+      res.status(error.status || 400).json({ error: error.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -704,7 +713,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const profile = await botManager.verifyAndFetchProfile(token.trim());
       res.json({ success: true, profile });
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      res.status(400).json({ error: err.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -714,11 +723,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       return res.status(400).json({ error: 'Bot token not configured.' });
     }
     try {
-      const rest = new RESTClient({ token });
+      const rest = botManager.createTrackedRESTClient(token);
       const guilds = await rest.getCurrentUserGuilds({ limit: 100 });
       res.json({ guilds });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -729,11 +738,11 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       return res.status(400).json({ error: 'Bot token not configured.' });
     }
     try {
-      const rest = new RESTClient({ token });
+      const rest = botManager.createTrackedRESTClient(token);
       const emojis = await rest.getGuildEmojis(req.params.guildId);
       res.json({ emojis });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -748,12 +757,12 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
     }
 
     try {
-      const rest = new RESTClient({ token });
+      const rest = botManager.createTrackedRESTClient(token);
       const created = await rest.createGuildEmoji(req.params.guildId, { name, image, roles: roles || [] });
       logger.info(`Custom emoji :${created.name}: uploaded to guild ${req.params.guildId}`);
       res.json({ success: true, emoji: created });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -806,7 +815,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       await botManager.startBot();
       res.json({ success: true, status: botManager.status, intents: botManager.getIntentPlan?.() || [] });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: err.message, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -820,7 +829,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const result = await botManager.deploySlashCommands(req.body?.graphs, req.body?.planHash);
       res.json({ success: true, ...result });
     } catch (err) {
-      res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs });
+      res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -829,7 +838,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
       const plan = await botManager.previewSlashCommands(req.body?.graphs);
       res.json({ success: true, ...plan });
     } catch (err) {
-      res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs });
+      res.status(err.status || 400).json({ error: err.message, retryAfterMs: err.retryAfterMs, discordAuthWarning: botManager.discordAuthWarning || null });
     }
   });
 
@@ -857,6 +866,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
   // Node Registry Metadata
   router.get('/nodes/registry', (req, res) => {
     res.json({
+      schemaVersion: NODE_SCHEMA_VERSION,
       categories: NodeCategories,
       definitions: NodeDefinitions
     });
@@ -991,7 +1001,20 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
 
   // Graph Workspaces & Tabs
   router.get('/variables/project', requirePermission('graphs:read'), (_req, res) => {
-    res.json({ projectId: botManager.project.id, variables: botManager.getProjectVariables() });
+    res.json({
+      projectId: botManager.project.id,
+      variables: botManager.getProjectVariables(),
+      disabledBuiltInVariables: [...botManager.disabledBuiltInProjectVariables]
+    });
+  });
+
+  router.post('/variables/project/restore-builtin', requirePermission('graphs:write'), (req, res) => {
+    try {
+      const result = botManager.restoreBuiltInProjectVariable(req.body?.name);
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message || 'Could not restore system variable.' });
+    }
   });
 
   router.put('/variables/project', requirePermission('graphs:write'), (req, res) => {
@@ -1102,6 +1125,7 @@ export function createApiRouter(botManager, userStore, logger, managerForUser = 
         projectName: project.name,
         projectAuthor: projectOwner?.username || req.user?.username || 'Unknown',
         logRetentionDays: project.logRetentionDays ?? process.env.LOG_RETENTION_DAYS ?? 7,
+        statisticsSettings: botManager.commandStatistics.getSettings(),
         ...(includeBotToken ? { botToken } : {})
       });
       res.setHeader('Cache-Control', 'no-store, private');

@@ -58,8 +58,9 @@ function validateRepositoryUrl(value) {
   } catch { return 'Enter a valid HTTPS GitHub or GitLab repository URL.'; }
 }
 
-export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize, networkOnline = true }) {
+export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canInstall = false, canManageSource = false, sidebarWidth = 360, onSidebarResize }) {
   const [catalog, setCatalog] = useState([]);
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false);
   const [studioVersion, setStudioVersion] = useState(window.__arc?.version || '0.0.0');
   const [installed, setInstalled] = useState([]);
   const [repository, setRepository] = useState({ url: 'https://github.com/relentiousdragon/arc-plugins', provider: 'github' });
@@ -91,7 +92,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   useEffect(() => { onInstalledRef.current = onInstalled; }, [onInstalled]);
 
   useEffect(() => {
-    if (!authToken || !canInstall || !networkOnline) return undefined;
+    if (!authToken || !canInstall) return undefined;
     let cancelled = false;
     const checkUpdates = async () => {
       try {
@@ -108,7 +109,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
     };
     const interval = window.setInterval(checkUpdates, 5 * 60 * 1000);
     return () => { cancelled = true; window.clearInterval(interval); };
-  }, [authToken, canInstall, networkOnline]);
+  }, [authToken, canInstall]);
 
   const loadInstalled = async () => {
     const response = await fetch(apiUrl('/api/plugins/installed'), { headers: { 'x-arc-token': authToken } });
@@ -121,13 +122,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
   const loadStore = async () => {
     setLoading(true);
     setError('');
-    if (!networkOnline) {
-      setCatalog([]);
-      try { await loadInstalled(); }
-      catch (loadError) { setError(loadError.message || 'Could not load installed plugins.'); }
-      setLoading(false);
-      return;
-    }
+    setCatalogUnavailable(false);
     const headers = { 'x-arc-token': authToken };
     const [installedResult, catalogResult, sourceResult] = await Promise.allSettled([
       loadInstalled(),
@@ -137,6 +132,8 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
     if (catalogResult.status === 'fulfilled') {
       setCatalog(Array.isArray(catalogResult.value.plugins) ? catalogResult.value.plugins : []);
       if (catalogResult.value.studioVersion) setStudioVersion(catalogResult.value.studioVersion);
+    } else {
+      setCatalogUnavailable(true);
     }
     if (sourceResult.status === 'fulfilled' && sourceResult.value.repository?.url) setRepository(sourceResult.value.repository);
 
@@ -165,11 +162,7 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
       setSearch('');
       loadStore();
     }
-  }, [isOpen, authToken, networkOnline]);
-
-  useEffect(() => {
-    if (isOpen && !networkOnline && ['store', 'source'].includes(activeTab)) setActiveTab('installed');
-  }, [isOpen, networkOnline, activeTab]);
+  }, [isOpen, authToken]);
 
   const installedById = useMemo(() => new Map(installed.map((plugin) => [plugin.id, plugin])), [installed]);
   const catalogById = useMemo(() => new Map(catalog.map((plugin) => [plugin.id, plugin])), [catalog]);
@@ -379,14 +372,14 @@ export function PluginStoreModal({ isOpen, onClose, authToken, onInstalled, canI
         <span><PackageOpen size={14} />Plugin Store</span>
         <button className="icon-button compact" type="button" aria-label="Close plugin store" onClick={() => !busyId && onClose?.()} disabled={Boolean(busyId)}><X size={14} /></button>
       </header>
-      {!networkOnline && <div className="plugin-store-offline-notice" role="status"><AlertTriangle size={13} /><span>Offline. The plugin catalog is unavailable; installed plugins and local imports remain available.</span></div>}
+      {catalogUnavailable && <div className="plugin-store-offline-notice" role="status"><AlertTriangle size={13} /><span>The plugin catalog is unavailable, check your network.</span></div>}
       <nav className="plugin-store-tabs" aria-label="Plugin Store sections">
         {[
           ['installed', 'Installed', installed.length],
           ['store', 'Store', catalog.length],
           ['source', 'Source'],
           ['local', 'Local']
-        ].map(([id, label, count]) => <button key={id} type="button" disabled={!networkOnline && ['store', 'source'].includes(id)} className={activeTab === id ? 'is-active' : ''} aria-current={activeTab === id ? 'page' : undefined} onClick={() => {
+        ].map(([id, label, count]) => <button key={id} type="button" className={activeTab === id ? 'is-active' : ''} aria-current={activeTab === id ? 'page' : undefined} onClick={() => {
           setActiveTab(id);
           setError('');
           if (id === 'installed') loadInstalled().catch((loadError) => setError(loadError.message || 'Could not load installed plugins.'));

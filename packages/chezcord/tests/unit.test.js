@@ -109,6 +109,52 @@ describe('Client & RESTClient', () => {
     assert.equal(client.ws, null);
   });
 
+  test('creates standalone and message based threads through Discord channel routes', async () => {
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ id: `thread-${calls.length}`, parent_id: 'channel-1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+    try {
+      const rest = new RESTClient({ token: 'test-token', apiBase: 'https://discord.test/api/v10' });
+      await rest.createThread('channel-1', {
+        name: 'Private topic',
+        type: 'private',
+        autoArchiveDuration: 4320,
+        rateLimitPerUser: 30,
+        invitable: false,
+        reason: 'Support discussion'
+      });
+      await rest.createThreadFromMessage('channel-1', 'message-1', {
+        name: 'Message discussion',
+        autoArchiveDuration: 1440
+      });
+      assert.equal(calls[0].url, 'https://discord.test/api/v10/channels/channel-1/threads');
+      assert.equal(calls[0].init.method, 'POST');
+      assert.deepEqual(JSON.parse(calls[0].init.body), {
+        name: 'Private topic',
+        type: 12,
+        auto_archive_duration: 4320,
+        rate_limit_per_user: 30,
+        invitable: false
+      });
+      assert.equal(calls[0].init.headers['X-Audit-Log-Reason'], 'Support%20discussion');
+      assert.equal(calls[1].url, 'https://discord.test/api/v10/channels/channel-1/messages/message-1/threads');
+      assert.deepEqual(JSON.parse(calls[1].init.body), {
+        name: 'Message discussion',
+        auto_archive_duration: 1440
+      });
+      assert.throws(() => rest.createThread('channel-1', { name: 'Bad type', type: 'forum' }), /public or private/);
+      assert.throws(() => rest.createThread('channel-1', { name: 'Bad duration', autoArchiveDuration: 10 }), /auto archive duration/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('reconnects without duplicate dispatches and removes shard listeners on destroy', async () => {
     const OriginalWebSocket = globalThis.WebSocket;
     const sockets = [];

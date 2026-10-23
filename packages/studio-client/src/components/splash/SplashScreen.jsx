@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
+import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
 
 const desktopConfig = window.__ARC_STUDIO_CONFIG__ || {};
+const SETUP_TAGLINE = 'Visualize your Discord bot.';
 const getLocalUsername = () => {
   try { return localStorage.getItem('arc_local_username') || desktopConfig.localUsername || 'Admin'; }
   catch { return desktopConfig.localUsername || 'Admin'; }
@@ -109,6 +111,8 @@ export function SplashScreen({
   const [showWorkspaceUrl, setShowWorkspaceUrl] = useState(workspaceMode !== 'remote');
   const [remoteUrl, setRemoteUrl] = useState(remoteWorkspaceUrl);
   const [lowPower, setLowPower] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || false);
+  const [typedIntro, setTypedIntro] = useState(() => needsSetup ? '' : SETUP_TAGLINE);
   const fieldRefs = useRef({});
 
   const credentialOrigin = (() => { try { return normalizeWorkspaceUrl(remoteUrl); } catch { return ''; } })();
@@ -175,6 +179,33 @@ export function SplashScreen({
       }
     };
   }, []);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const update = () => setReducedMotion(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  useEffect(() => {
+    const message = SETUP_TAGLINE;
+    if (!needsSetup || lowPower || reducedMotion) {
+      setTypedIntro(message);
+      return undefined;
+    }
+    setTypedIntro('');
+    let index = 0;
+    let interval;
+    const startTimer = window.setTimeout(() => {
+      interval = window.setInterval(() => {
+        index += 1;
+        setTypedIntro(message.slice(0, index));
+        if (index >= message.length) window.clearInterval(interval);
+      }, 24);
+    }, 360);
+    return () => {
+      window.clearTimeout(startTimer);
+      if (interval) window.clearInterval(interval);
+    };
+  }, [needsSetup, lowPower, reducedMotion]);
 
   const shakeFields = (fields) => {
     fields.forEach((field) => {
@@ -198,7 +229,6 @@ export function SplashScreen({
     setError('');
     setFieldErrors({});
     if (!masterKey.trim()) {
-      setError('Enter the setup key to continue.');
       setFieldErrors({ masterKey: 'A setup key is required.' });
       shakeFields(['masterKey']);
       return;
@@ -298,7 +328,7 @@ export function SplashScreen({
         ? localDesktopSetup
           ? { username: username.trim(), password, rememberMe: persistChoice }
           : { masterKey: masterKey.trim(), username: username.trim(), password, rememberMe: persistChoice, ...(!desktopMode ? { workspaceName: serverWorkspaceName.trim() } : {}) }
-        : { username: username.trim(), password, rememberMe: persistChoice };
+        : { username: username.trim(), password, rememberMe: persistChoice, clientBuild: await getClientBuildInfo() };
       let response;
       let data = {};
       let replacementRequestId = '';
@@ -473,9 +503,18 @@ export function SplashScreen({
   const activeWorkspaceName = desktopMode && workspaceMode === 'local' ? 'Local Workspace' : 'Private Workspace';
 
   return (
-    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-low-power={lowPower ? 'true' : undefined}>
+    <main className={`auth-screen ${desktopMode ? 'is-desktop' : ''}`} data-initial-setup={needsSetup ? 'true' : undefined} data-low-power={lowPower ? 'true' : undefined}>
       {desktopMode && <div className="auth-window-drag-region" data-tauri-drag-region="true" aria-hidden="true" />}
       <div className="auth-backdrop" aria-hidden="true"><span /><span /><span /></div>
+      {needsSetup && !desktopServerError && <svg className="setup-network" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
+        <path className="setup-network-wire setup-network-wire-a" pathLength="1" d="M -80 112 C 132 48 220 170 410 126 S 708 54 900 106 S 1244 174 1520 88" />
+        <path className="setup-network-wire setup-network-wire-b" pathLength="1" d="M -80 188 C 148 116 266 252 458 204 S 762 126 966 174 S 1284 238 1520 158" />
+        <path className="setup-network-wire setup-network-wire-c" pathLength="1" d="M -80 268 C 156 202 280 324 480 278 S 796 202 1000 248 S 1304 308 1520 232" />
+        <path className="setup-network-wire setup-network-wire-d" pathLength="1" d="M -80 788 C 156 854 280 732 480 778 S 796 854 1000 808 S 1304 748 1520 824" />
+        <path className="setup-network-wire setup-network-wire-e" pathLength="1" d="M -80 712 C 148 784 266 648 458 696 S 762 774 966 726 S 1284 662 1520 742" />
+        <path className="setup-network-wire setup-network-wire-f" pathLength="1" d="M -80 632 C 132 696 220 574 410 618 S 708 690 900 638 S 1244 570 1520 656" />
+      </svg>}
+      {needsSetup && !desktopServerError && <div className="setup-vignette" aria-hidden="true" />}
       <button className="auth-theme-toggle" onClick={onToggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}</button>
       {desktopServerError ? <section className="desktop-server-error" role="alert" aria-labelledby="desktop-server-error-title">
         <div className="desktop-server-error-icon" aria-hidden="true">💩</div>
@@ -487,7 +526,7 @@ export function SplashScreen({
       </section> : <div className="auth-layout">
         <section className="auth-intro" aria-label="ARC Studio">
           <div className="auth-intro-brand"><img src="/arc.png" alt="" /><span>ARC <b>STUDIO</b></span></div>
-          <div className="auth-intro-copy"><h1>Visualize your Discord bot.</h1></div>
+          <div className="auth-intro-copy"><h1 aria-label={SETUP_TAGLINE}><span className={`setup-typewriter ${needsSetup && !lowPower && !reducedMotion && typedIntro.length < SETUP_TAGLINE.length ? 'is-typing' : ''}`} aria-hidden="true">{typedIntro}</span></h1></div>
         </section>
         <section className="auth-card" aria-labelledby={remotePending ? undefined : 'auth-title'} aria-label={remotePending ? 'Connect to an external workspace' : undefined}>
           {!needsProjectOnboarding && desktopMode && <div className="workspace-switcher" role="tablist" aria-label="Workspace type">

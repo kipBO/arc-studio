@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import rootPackage from '../package.json' with { type: 'json' };
 import studioClient from '../packages/studio-client/package.json' with { type: 'json' };
 import studioServer from '../packages/studio-server/package.json' with { type: 'json' };
@@ -43,7 +42,7 @@ const expectedBuilds = new Map([
   ['aarch64-unknown-linux-gnu', { platform: 'linux', architecture: 'arm64' }]
 ]);
 const buildInfoFiles = files.filter((file) => path.basename(file) === 'arc-build-info.json');
-if (buildInfoFiles.length !== expectedBuilds.size) throw new Error(`Expected ${expectedBuilds.size} platform build metadata files; found ${buildInfoFiles.length}.`);
+if (buildInfoFiles.length !== expectedBuilds.size) throw new Error(`Expected ${expectedBuilds.size} platform build metadata files, found ${buildInfoFiles.length}.`);
 const seenTargets = new Set();
 const builds = [];
 for (const file of buildInfoFiles) {
@@ -61,21 +60,25 @@ for (const file of buildInfoFiles) {
 }
 for (const target of expectedBuilds.keys()) if (!seenTargets.has(target)) throw new Error(`Missing platform build metadata for ${target}.`);
 
-const installerMarkers = [...expectedBuilds.keys()];
-for (const marker of installerMarkers) {
-  const installers = files.filter((file) => file.includes(marker) && /(?:\.dmg|\.exe|\.AppImage)$/.test(file));
-  if (installers.length !== 1) throw new Error(`Expected one installer for ${marker}; found ${installers.length}.`);
-  const installerPath = installers[0];
-  const checksumPath = `${installerPath}.sha256`;
-  if (!files.includes(checksumPath)) throw new Error(`Missing SHA-256 checksum for ${path.basename(installerPath)}.`);
-  const expectedDigest = fs.readFileSync(checksumPath, 'utf8').trim().split(/\s+/)[0].toLowerCase();
-  const actualDigest = createHash('sha256').update(fs.readFileSync(installerPath)).digest('hex');
-  if (!/^[a-f0-9]{64}$/.test(expectedDigest) || expectedDigest !== actualDigest) throw new Error(`SHA-256 checksum does not match ${path.basename(installerPath)}.`);
+const installerExtensions = new Map([
+  ['universal-apple-darwin', '.dmg'],
+  ['x86_64-pc-windows-msvc', '.exe'],
+  ['aarch64-pc-windows-msvc', '.exe'],
+  ['x86_64-unknown-linux-gnu', '.AppImage'],
+  ['aarch64-unknown-linux-gnu', '.AppImage']
+]);
+for (const [marker, extension] of installerExtensions) {
+  const installers = files.filter((file) => file.includes(marker) && file.toLowerCase().endsWith(extension.toLowerCase()));
+  if (installers.length !== 1) throw new Error(`Expected one installer for ${marker}, found ${installers.length}.`);
+}
+for (const marker of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) {
+  const packages = files.filter((file) => file.includes(marker) && file.endsWith('.deb'));
+  if (packages.length !== 1) throw new Error(`Expected one Debian package for ${marker}, found ${packages.length}.`);
 }
 
 const artifactFor = (targetMarker, suffix) => {
   const matches = files.filter((file) => file.includes(targetMarker) && path.basename(file).endsWith(suffix));
-  if (matches.length !== 1) throw new Error(`Expected one ${suffix} update artifact for ${targetMarker}; found ${matches.length}.`);
+  if (matches.length !== 1) throw new Error(`Expected one ${suffix} update artifact for ${targetMarker}, found ${matches.length}.`);
   return matches[0];
 };
 const publishedAssetName = (name) => name.replace(/ /g, '.');

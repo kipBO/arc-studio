@@ -10,7 +10,6 @@
 [![CI status](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/relentiousdragon/arc-studio/actions/workflows/ci.yml)
 [![Desktop builds](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml/badge.svg?event=push)](https://github.com/relentiousdragon/arc-studio/actions/workflows/desktop-builds.yml)
 [![Commits](docs/badges/commits.svg)](https://github.com/relentiousdragon/arc-studio/commits)
-[![GitHub release downloads](docs/badges/release-downloads.svg)](https://github.com/relentiousdragon/arc-studio/releases)
 [![GitHub stars](docs/badges/stars.svg)](https://github.com/relentiousdragon/arc-studio)
 [![GitHub forks](docs/badges/forks.svg)](https://github.com/relentiousdragon/arc-studio/network/members)
 <!-- ARC_BADGES:END -->
@@ -24,7 +23,7 @@ Create your Discord bot then export code to run it anywhere on the node.js runti
 - Connect a Discord app and test your bot live, or use the offline simulator when you are offline
 - Make slash commands, messages, embeds, buttons, menus, and modals
 - Collaborate on projects and edit graphs live with your team
-- Export project as a standalone bot
+- Export project as a standalone bot that can run anywhere with node.js runtime
 
 ARC Studio is in development. Submit an issue for bugs or pull request to contribute.
 
@@ -43,8 +42,8 @@ Run it yourself in a browser, or install the desktop app:
 | macOS 14 or newer | Universal app for Intel and Apple silicon |
 | Windows 10 version 1803 or newer | x64 installer |
 | Windows 11 | x64 and ARM64 installers |
-| Universal Linux application | x64 and ARM64 AppImages |
-| Debian, Ubuntu and other compatible | x64 and ARM64 .deb |
+| Linux (Universal) | x64 and ARM64 AppImages |
+| Debian, Ubuntu and other compatible distributions | x64 and ARM64 .deb |
 
 See [desktop downloads and system requirements](docs/DESKTOP_DISTRIBUTION.md).
 
@@ -118,4 +117,4 @@ ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Th
 
 
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
-Last Edited: 21 October 2026
+Last Edited: 23 October 2026

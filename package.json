@@ -1,6 +1,9 @@
 {
   "name": "arc-monorepo",
-  "version": "2026.1.1-nightly.7",
+  "version": "2026.1.1-nightly.8",
+  "arcStudio": {
+    "minimumClientVersion": "2026.1.1-nightly.8"
+  },
   "private": true,
   "description": "Visual Discord Bot Creator Studio",
   "author": "relentiousdragon (https://github.com/relentiousdragon)",
