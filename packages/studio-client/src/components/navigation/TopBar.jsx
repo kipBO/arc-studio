@@ -2,21 +2,29 @@ import React, { useEffect, useRef, useState } from 'react';
 import { getArcUiScale } from '../../core/uiScale.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import {
-  AlertCircle, AlertTriangle, ArrowLeftRight, Check, BookmarkPlus, Calculator, CircleAlert, ChevronDown, CircleUserRound, Copy, Download, FilePlus2, LockKeyhole, LogOut, Pencil, Sparkles,
+  AlertCircle, AlertTriangle, ArrowLeftRight, Check, BookmarkPlus, Calculator, CircleAlert, ChevronDown, CircleUserRound, Copy, Download, FilePlus2, LockKeyhole, LogOut, Pencil, Sparkles, Star,
   LockOpen, Play, Redo2, Save, Settings2, Square, Undo2, Users, WifiOff, X
 } from 'lucide-react';
 //
+const COLLABORATOR_COLORS = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
+function getCollaboratorColor(userId) {
+  let hash = 0;
+  for (const char of String(userId || '')) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return COLLABORATOR_COLORS[(hash >>> 0) % COLLABORATOR_COLORS.length];
+}
 export function TopBar({
-  tabs = [], graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [],
-  desktopMode = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
+  tabs = [], graphTabStatuses = new Map(), projectCollaborators = [], activeTabId, saveFeedbackGraphId, hideGraphSave = false, botStatus = 'DISCONNECTED', botProfile, currentUser, graphTemplates = [], defaultGraphId = 'tab_slash_help',
+  desktopMode = false, localWorkspace = false, workspaceLabel = '', activeProjectId = '', uploadProgress = null, shortcutPlatform = 'windows',
   isLocked = false, onToggleLock, onSelectTab, onFollowCollaborator,
-  onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onOpenSettings, onOpenUsers, onLogout,
+  onAddTab, onAddBlankGraph, onAddFunctionGraph, onNewEmbed, onUseTemplate, onCloseTab, onSaveGraph, onRenameGraph, onDuplicateGraph, onSetDefault, onOpenSettings, onOpenUsers, onLogout,
   onOpenBotSettings, onStartBot, onStopBot, onUndo, onRedo, canUndo = false, canRedo = false, onValidate, validationStatus = 'warning', validationErrors = 0, validationWarnings = 0, onSwitchWorkspace, networkOnline = true, appUpdate = null, serverUpdateAvailable = false, onOpenStudioUpdate
 }) {
   const [tabMenu, setTabMenu] = useState(null);
   const [newGraphMenu, setNewGraphMenu] = useState(null);
   const [brandExpanded, setBrandExpanded] = useState(true);
   const brandHovered = useRef(false);
+  const tabMenuRef = useRef(null);
+  const newGraphMenuRef = useRef(null);
   const uiScale = getArcUiScale();
   const shortcutModifier = shortcutPlatform === 'macos' ? '⌘' : 'Ctrl';
   const toggleWindowMaximize = () => {
@@ -45,6 +53,11 @@ export function TopBar({
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeGraphUnsaved = graphTabStatuses.get(activeTabId)?.unsaved ?? Boolean(activeTab?.isDirty);
   const showSavedFeedback = Boolean(activeTabId && saveFeedbackGraphId === activeTabId && !activeGraphUnsaved);
+  const profileInitial = !desktopMode || !localWorkspace ? Array.from(String(currentUser?.username || '').trim())[0]?.toLocaleUpperCase() : '';
+  const peerColor = projectCollaborators.find((peer) => peer.userId === currentUser?.id)?.color;
+  const profileColor = !profileInitial || !currentUser?.id
+    ? ''
+    : typeof peerColor === 'string' && /^#[\da-f]{6}$/i.test(peerColor) ? peerColor : getCollaboratorColor(currentUser.id);
 
   useEffect(() => {
     brandHovered.current = false;
@@ -57,16 +70,22 @@ export function TopBar({
 
   useEffect(() => {
     if (!tabMenu && !newGraphMenu) return undefined;
-    const close = () => setTabMenu(null);
-    const closeNewGraph = () => setNewGraphMenu(null);
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('pointerdown', closeNewGraph);
+    const close = (event) => {
+      if (event.type === 'pointerdown' && event.target instanceof Node && tabMenuRef.current?.contains(event.target)) return;
+      setTabMenu(null);
+    };
+    const closeNewGraph = (event) => {
+      if (event.type === 'pointerdown' && event.target instanceof Node && newGraphMenuRef.current?.contains(event.target)) return;
+      setNewGraphMenu(null);
+    };
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('pointerdown', closeNewGraph, true);
     document.addEventListener('keydown', close);
     document.addEventListener('keydown', closeNewGraph);
     const removePageBlurListener = onPageBlur(() => { setTabMenu(null); setNewGraphMenu(null); });
     return () => {
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('pointerdown', closeNewGraph);
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('pointerdown', closeNewGraph, true);
       document.removeEventListener('keydown', close);
       document.removeEventListener('keydown', closeNewGraph);
       removePageBlurListener();
@@ -101,11 +120,12 @@ export function TopBar({
           return (
             <div key={tab.id} className={`graph-tab ${active ? 'is-active' : ''}`} role="presentation" onContextMenu={(event) => {
               event.preventDefault();
-              setTabMenu({ tab, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198 * uiScale)) / uiScale, y: Math.max(8, Math.min(event.clientY, window.innerHeight - 120 * uiScale)) / uiScale });
+              setTabMenu({ tab, x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198 * uiScale)) / uiScale, y: Math.max(8, Math.min(event.clientY, window.innerHeight - 150 * uiScale)) / uiScale });
             }}>
               <button className={`graph-tab-select${tabCollaborators.length ? ' has-collaborators' : ''}`} role="tab" aria-selected={active} onClick={() => onSelectTab?.(tab.id)} title={tab.name}>
                 {hasErrors ? <AlertTriangle className="graph-tab-status-error" size={13} aria-label={statusTitle} title={statusTitle} /> : unsaved ? <span className="graph-tab-dirty" role="img" aria-label={statusTitle} title={statusTitle} /> : null}
                 <span className="graph-tab-name">{tab.name || 'Untitled graph'}</span>
+                {defaultGraphId === tab.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}
               </button>
               {tabCollaborators.length > 0 && <span className="graph-tab-presence" aria-label={`${tabCollaborators.length} collaborator${tabCollaborators.length === 1 ? '' : 's'} viewing this graph`}>
                 {visibleCollaborators.map((peer) => <button key={peer.userId} type="button" style={{ '--collaborator-color': peer.color }} title={`Follow ${peer.username} in ${tab.name || 'this graph'}`} aria-label={`Follow ${peer.username} in ${tab.name || 'this graph'}`} onClick={() => onFollowCollaborator?.(peer.userId, tab.id)}>{String(peer.username || '?').slice(0, 1).toUpperCase()}</button>)}
@@ -123,7 +143,7 @@ export function TopBar({
         }} data-tooltip="New graph · right-click for quick actions" aria-label="New graph"><FilePlus2 size={16} />{tabs.length === 0 && <span>New</span>}</button>
       </div>
 
-      {newGraphMenu && <div className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      {newGraphMenu && <div ref={newGraphMenuRef} className="graph-context-menu new-graph-context-menu" style={{ left: newGraphMenu.x, top: newGraphMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => { onAddTab?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> New graph</button>
         <button onClick={() => { onAddBlankGraph?.(); setNewGraphMenu(null); }}><FilePlus2 size={14} /> Create new blank graph</button>
         <button onClick={() => { onAddFunctionGraph?.(); setNewGraphMenu(null); }}><Calculator size={14} /> New function graph</button>
@@ -134,9 +154,10 @@ export function TopBar({
         </>}
       </div>}
 
-      {tabMenu && <div className="graph-context-menu tab-context-menu" style={{ left: tabMenu.x, top: tabMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
+      {tabMenu && <div ref={tabMenuRef} className="graph-context-menu tab-context-menu" style={{ left: tabMenu.x, top: tabMenu.y }} onPointerDown={(event) => event.stopPropagation()}>
         <button onClick={() => { onRenameGraph?.(tabMenu.tab); setTabMenu(null); }}><Pencil size={14} /> Rename graph</button>
         <button onClick={() => { onDuplicateGraph?.(tabMenu.tab); setTabMenu(null); }}><Copy size={14} /> Duplicate graph</button>
+        <button onClick={() => { onSetDefault?.(tabMenu.tab); setTabMenu(null); }}><Star size={14} fill={defaultGraphId === tabMenu.tab.id ? 'currentColor' : 'none'} /> {defaultGraphId === tabMenu.tab.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button onClick={() => { onCloseTab?.(tabMenu.tab.id); setTabMenu(null); }}><X size={14} /> Close graph</button>
       </div>}
 
@@ -172,7 +193,7 @@ export function TopBar({
 
         <div className="profile-menu">
           <button className="profile-trigger" title={`${currentUser?.username || 'Account'} · ${currentUser?.role || ''}`}>
-            <span className="profile-avatar"><CircleUserRound size={17} /></span>
+            <span className={`profile-avatar ${profileInitial && profileColor ? 'has-initial' : ''}`} style={profileInitial && profileColor ? { '--collaborator-color': profileColor } : undefined}>{profileInitial && profileColor ? profileInitial : <CircleUserRound size={17} />}</span>
             <span className="profile-name">{currentUser?.username || 'Account'}</span>
             <ChevronDown size={13} className="profile-chevron" />
           </button>
