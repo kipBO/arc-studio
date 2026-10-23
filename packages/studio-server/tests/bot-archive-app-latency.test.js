@@ -137,6 +137,32 @@ test('standalone bot export packages only runtime modules required by graph node
   assert.ok(!entries.has('src/security/CryptoEngine.js'));
 });
 
+test('standalone bot export stores graph and node IDs without display names', () => {
+  const archive = buildBotArchive([{
+    id: 'graph_id_123',
+    name: 'Private Graph Display Name',
+    nodes: [{
+      id: 'node_id_456',
+      type: 'delay',
+      label: 'Private Node Display Name',
+      data: { name: 'Runtime data remains available' }
+    }],
+    connections: []
+  }]);
+  const graphs = JSON.parse(readZipEntry(archive, 'graphs.json'));
+  const runtime = readZipEntry(archive, 'src/index.js');
+
+  assert.equal(graphs[0].id, 'graph_id_123');
+  assert.equal(Object.hasOwn(graphs[0], 'name'), false);
+  assert.equal(graphs[0].nodes[0].id, 'node_id_456');
+  assert.equal(Object.hasOwn(graphs[0].nodes[0], 'label'), false);
+  assert.equal(graphs[0].nodes[0].data.name, 'Runtime data remains available');
+  assert.doesNotMatch(readZipEntry(archive, 'graphs.json'), /Private (?:Graph|Node) Display Name/);
+  assert.match(runtime, /failure\.graphId/);
+  assert.match(runtime, /failure\.nodeId/);
+  assert.doesNotMatch(runtime, /failure\.graphName|failure\.nodeLabel/);
+});
+
 test('standalone bot export includes crypto runtime and engine only when crypto nodes are used', () => {
   const archive = buildBotArchive([{
     id: 'crypto-export',
