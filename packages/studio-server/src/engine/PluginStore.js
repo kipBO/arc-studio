@@ -40,7 +40,10 @@ const allowedNode = (type) => type === 'function_input'
   || type === 'format_text'
   || type === 'compare_text'
   || type.startsWith('math_')
-  || type.startsWith('value_');
+  || type.startsWith('logic_')
+  || type.startsWith('value_')
+  || type.startsWith('data_')
+  || type.startsWith('variable_');
 const registryCache = new Map();
 const registryRequests = new Map();
 //
@@ -778,13 +781,16 @@ function validatePack(pack, entry) {
         let pins = definition[direction] || [];
         if (node.type === 'format_text' && direction === 'inputs') {
           const names = new Set([...String(node.data?.template || '').matchAll(/(?<!\\)\{\{\s*([\w.-]+)\s*\}\}/g)].map((match) => match[1]));
-          pins = [...names].map((name) => ({ id: `slot_${name}`, type: 'string' }));
+          pins = [...names].map((name) => {
+            const argument = /^arg(\d+)$/i.exec(name);
+            return argument ? { id: `arg_${argument[1]}`, type: 'arg' } : { id: `slot_${name}`, type: 'arg' };
+          });
         }
         return pins.find((pin) => pin.id === (direction === 'outputs' ? connection.sourcePinId : connection.targetPinId)) || null;
       };
       const sourcePin = pinFor(source, 'outputs');
       const targetPin = pinFor(target, 'inputs');
-      if (!sourcePin || !targetPin || sourcePin.type !== targetPin.type) throw new Error(`Function ${functionId} contains an invalid or mismatched value connection.`);
+      if (!sourcePin || !targetPin || (sourcePin.type !== targetPin.type && sourcePin.type !== 'arg' && targetPin.type !== 'arg')) throw new Error(`Function ${functionId} contains an invalid or mismatched value connection.`);
     }
   }
   const visit = (id, active = new Set(), visited = new Set()) => {
