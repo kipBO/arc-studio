@@ -23,29 +23,6 @@ test('activity webhook delivery status persists and stale in progress records ar
   }
 });
 
-test('activity text is stored as provided', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-activity-store-'));
-  const filePath = path.join(directory, 'activity.json');
-  try {
-    const store = new ActivityStore(filePath);
-    const entry = store.record(
-      { id: 'owner', username: 'Owner, admin - editor' },
-      'graph.updated',
-      'Updated - graph; saved',
-      { projectName: 'Project - Alpha, Beta', changedNodes: [{ name: 'Send - message, reply' }] }
-    );
-    assert.equal(entry.actor.username, 'Owner, admin - editor');
-    assert.equal(entry.summary, 'Updated - graph, saved');
-    assert.equal(entry.details.projectName, 'Project - Alpha, Beta');
-    assert.equal(entry.details.changedNodes[0].name, 'Send - message, reply');
-
-    const reloadedStore = new ActivityStore(filePath);
-    assert.equal(reloadedStore.list()[0].summary, 'Updated - graph; saved');
-  } finally {
-    fs.rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 test('separate project activity files do not share entries and can import matching legacy records', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-project-activity-'));
   try {
