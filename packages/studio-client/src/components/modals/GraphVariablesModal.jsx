@@ -149,7 +149,7 @@ export function GraphVariablesModal({ isOpen, onClose, variables = [], projectVa
     <small className="graph-variable-scope-hint">{activeScope === 'project' ? 'Project variables are shared across graphs and always persist.' : 'Graph variables persist by default. Turn off Persist to reset a value after each run.'}</small>
   </>;
 
-  const systemVariablesControl = <div className="system-variables-menu-container" ref={systemMenuRef}>
+  const systemVariablesControl = <div className={`system-variables-menu-container ${presentation === 'sidebar' ? 'is-sidebar' : ''}`} ref={systemMenuRef}>
     <button type="button" className={`icon-button compact system-variables-trigger ${systemMenuOpen ? 'is-active' : ''}`} onClick={() => setSystemMenuOpen((open) => !open)} title="System variables" aria-label="System variables">
       <Cpu size={14} />
     </button>
