@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
+import { AlertCircle, AppWindow, Bot, Braces, ChevronDown, CircleHelp, Database, Download, FileCode2, FileUp, FolderTree, LayoutGrid, LockKeyhole, MoreHorizontal, PackageOpen, Plus, Save, Search, ShieldCheck, SlidersHorizontal, Sparkles, Ticket, TrendingUp, Trash2, Users, X } from 'lucide-react';
 import { TopBar } from './components/navigation/TopBar.jsx';
 import { NodeCanvas } from './components/canvas/NodeCanvas.jsx';
 import { ControlDock } from './components/dock/ControlDock.jsx';
@@ -30,7 +30,7 @@ const EditorSettingsModal = lazyNamed(() => import('./components/modals/EditorSe
 const GraphVariablesModal = lazyNamed(() => import('./components/modals/GraphVariablesModal.jsx'), 'GraphVariablesModal');
 const GraphLibraryPanel = lazyNamed(() => import('./components/panels/GraphLibraryPanel.jsx'), 'GraphLibraryPanel');
 const EmbedStudioView = lazyNamed(() => import('./components/panels/EmbedStudioView.jsx'), 'EmbedStudioView');
-const DiscordTextStudioView = lazyNamed(() => import('./components/panels/DiscordTextStudioView.jsx'), 'DiscordTextStudioView');
+const TextStudioView = lazyNamed(() => import('./components/panels/TextStudioView.jsx'), 'TextStudioView');
 const PermissionStudioView = lazyNamed(() => import('./components/panels/PermissionStudioView.jsx'), 'PermissionStudioView');
 const SlashCommandStudioView = lazyNamed(() => import('./components/panels/SlashCommandStudioView.jsx'), 'SlashCommandStudioView');
 const PopupModalStudioView = lazyNamed(() => import('./components/panels/PopupModalStudioView.jsx'), 'PopupModalStudioView');
@@ -630,6 +630,11 @@ export function App() {
   const [projectLastSeen, setProjectLastSeen] = useState({});
   const [maxProjects, setMaxProjects] = useState(() => localDesktopWorkspace ? null : 10);
   useEffect(() => { if (localDesktopWorkspace) setMaxProjects(null); }, [localDesktopWorkspace]);
+  const [projectSearch, setProjectSearch] = useState('');
+  const projectQuery = projectSearch.trim().toLowerCase();
+  const filteredProjects = projectQuery
+    ? projects.filter((project) => String(project.name || '').toLowerCase().includes(projectQuery))
+    : projects;
   const [needsProjectOnboarding, setNeedsProjectOnboarding] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState('');
   const activeProjectIdRef = useRef(activeProjectId);
@@ -5410,6 +5415,26 @@ export function App() {
         return;
       }
       if (target instanceof HTMLElement && target.closest('[role="dialog"]')) return;
+      if (command && !event.altKey && key === 'f') {
+        const sidebarOpen = isLibraryOpen || isProjectsOpen || isPluginStoreOpen || isBotSidebarOpen || isVariablesOpen;
+        if (sidebarOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          window.dispatchEvent(new Event('arc:canvas-find-close'));
+          const searchInput = document.querySelector('.graph-library-search input, aside[aria-label="Projects"] .project-sidebar-search input, aside[aria-label="Plugin store"] .plugin-store-search input, aside[aria-label="Bot"] input[placeholder*="search" i], aside[aria-label="Variables"] input[placeholder*="search" i], aside input[placeholder^="Filter " i]');
+          if (searchInput instanceof HTMLInputElement && !searchInput.disabled) {
+            searchInput.focus();
+            searchInput.select();
+          }
+          return;
+        }
+      }
+      if (command && !event.altKey && key === 'g'
+        && (isLibraryOpen || isProjectsOpen || isPluginStoreOpen || isBotSidebarOpen || isVariablesOpen)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (shortcutMatches(event, shortcuts.switchTabNext) && tabs.length > 1) {
         event.preventDefault();
         event.stopPropagation();
@@ -5531,7 +5556,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isLibraryOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
+  }, [activeNodes, activeTabId, botStatus, closeGraphDialog, desktopMode, discordTextStudioOpenForActiveGraph, embedStudio, embedStudioOpenForActiveGraph, handleAddBlankGraph, handleAddTab, handleAutoLayout, handleCloseTab, handleSaveEmbedShortcut, handleSaveGraph, handleSaveTextStudio, handleRedo, handleStartBot, handleStopBot, handleUndo, isBotSidebarOpen, isLibraryOpen, isPluginStoreOpen, isProjectsOpen, isVariablesOpen, isLocked, localDesktopWorkspace, openNodeRename, openPaletteAt, rememberUserGraph, remoteWorkspaceBlocked, savedGraphs, selectedCanvasNodeCount, selectedCanvasNodeId, settings.shortcuts, shortcutPlatform, tabs]);
 
   const handleToggleLock = () => {
     setIsLocked((locked) => {
@@ -5820,7 +5845,7 @@ export function App() {
             showSave={embedStudio.mode !== 'new'}
           />}
 
-          {discordTextStudioOpenForActiveGraph && <DiscordTextStudioView
+          {discordTextStudioOpenForActiveGraph && <TextStudioView
             key={discordTextStudio.collabId}
             label={discordTextStudio.label}
             value={discordTextStudio.value}
@@ -5986,8 +6011,9 @@ export function App() {
               <button className="icon-button compact" type="button" aria-label="Close projects" onClick={() => { if (!projectBusy) setIsProjectsOpen(false); }} disabled={projectBusy}><X size={14} /></button>
             </header>
             <p className="project-sidebar-description">Switch between bot projects or create a new one. {!localDesktopWorkspace && (maxProjects === null ? 'No project limit.' : `${projects.length} of ${maxProjects} projects.`)}</p>
+            {projects.length > 10 && <label className="project-sidebar-search"><Search size={14} /><input type="search" value={projectSearch} onChange={(event) => setProjectSearch(event.target.value)} placeholder="Search projects" aria-label="Search projects" /></label>}
             <div className={`project-switcher-list ${projects.length ? '' : 'is-empty'}`}>
-              {projects.map((project) => <div key={project.id} className={`project-switcher-row ${project.id === activeProjectId ? 'is-active' : ''}`} onContextMenu={(event) => openProjectMenu(event, project)}>
+              {filteredProjects.map((project) => <div key={project.id} className={`project-switcher-row ${project.id === activeProjectId ? 'is-active' : ''}`} onContextMenu={(event) => openProjectMenu(event, project)}>
                 <button
                   type="button"
                   className="project-switcher-item"
@@ -6008,6 +6034,11 @@ export function App() {
                 <FolderTree size={19} aria-hidden="true" />
                 <strong>No projects yet</strong>
                 <span>Create a project below to start building a bot.</span>
+              </div>}
+              {projects.length > 0 && !filteredProjects.length && <div className="project-switcher-empty">
+                <Search size={19} aria-hidden="true" />
+                <strong>No projects found</strong>
+                <span>Try a different search.</span>
               </div>}
             </div>
             <form className="project-create-form" onSubmit={handleCreateProject}>
