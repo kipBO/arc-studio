@@ -177,6 +177,16 @@ export class MockGateway extends EventEmitter {
         outputSink.push({ type: 'CREATE_CHANNEL', guildId, channel: data, reason, timestamp: new Date().toISOString() });
         return { id, guild_id: guildId, ...data };
       },
+      createThread: async (channelId, options) => {
+        const id = `mock_thread_${Date.now()}`;
+        outputSink.push({ type: 'CREATE_THREAD', channelId, options, timestamp: new Date().toISOString() });
+        return { id, parent_id: channelId, name: options.name, type: options.type === 'private' ? 12 : 11 };
+      },
+      createThreadFromMessage: async (channelId, messageId, options) => {
+        const id = `mock_thread_${Date.now()}`;
+        outputSink.push({ type: 'CREATE_THREAD_FROM_MESSAGE', channelId, messageId, options, timestamp: new Date().toISOString() });
+        return { id, parent_id: channelId, name: options.name, type: 11 };
+      },
       modifyChannel: async (channelId, changes, reason) => {
         outputSink.push({ type: 'EDIT_CHANNEL', channelId, changes, reason, timestamp: new Date().toISOString() });
         return { id: channelId, ...changes };
