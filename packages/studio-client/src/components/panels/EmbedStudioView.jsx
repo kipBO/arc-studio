@@ -100,6 +100,7 @@ export function EmbedStudioView({
   content = '',
   blocks = [],
   wiredFields = {},
+  hasParentNode = false,
   attachments = EMPTY_ATTACHMENTS,
   components = [],
   componentsOnly = false,
@@ -491,8 +492,10 @@ export function EmbedStudioView({
                 mode="studio"
                 data={{ blocks: items }}
                 wiredFields={wiredFields}
+                hasParentNode={hasParentNode}
                 appEmojis={appEmojis}
                 graphVariables={graphVariables}
+                connectedInputIds={new Set(Object.keys(wiredFields))}
                 templateValuePaths={templateValuePaths}
                 templatePreviewValues={templatePreviewValues}
                 templateSuggestions={templateSuggestions}
