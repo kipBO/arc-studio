@@ -5,6 +5,7 @@ import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArr
 import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
+import { DEFAULT_SHORTCUTS, formatShortcut, shortcutMatches } from '../../core/shortcuts.js';
 import { getEffectiveCanvasQuality } from '../../core/canvasQuality.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
@@ -16,6 +17,7 @@ const NODE_WIDTH = 248;
 const EMPTY_PIN_SET = new Set();
 const EMPTY_TEMPLATE_PREVIEW_VALUES = Object.freeze({});
 const EMPTY_REMOTE_NODE_STATE = Object.freeze({});
+const COLLABORATOR_COLORS = ['#63b3ed', '#f687b3', '#68d391', '#f6ad55', '#b794f4', '#4fd1c5', '#fc8181', '#90cdf4', '#fbd38d', '#9ae6b4'];
 const LARGE_GRAPH_NODE_LIMIT = 48;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
 const NODE_CULL_OVERSCAN_MIN = 520;
@@ -31,6 +33,11 @@ const getCanvasDisplayScale = (element) => {
   if (bounds?.width > 0 && layoutWidth > 0) return bounds.width / layoutWidth;
   const canvasBounds = element.getBoundingClientRect();
   return canvasBounds.width > 0 && element.clientWidth > 0 ? canvasBounds.width / element.clientWidth : 1;
+};
+const getCollaboratorColor = (id) => {
+  let hash = 0;
+  for (const char of String(id || '')) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return COLLABORATOR_COLORS[(hash >>> 0) % COLLABORATOR_COLORS.length];
 };
 
 function equalDefinitionValue(left, right) {
@@ -160,6 +167,7 @@ function RemoteCollaborationCursor({ peer }) {
     {peer.action.mode === 'text' ? <Type size={16} strokeWidth={2.4} /> : peer.action.mode === 'cut' ? <Scissors size={16} strokeWidth={2.4} /> : ['node-drag', 'note-drag', 'library-drag', 'pan'].includes(peer.action.kind) || peer.action.mode === 'pan' ? <Hand size={17} strokeWidth={2.4} /> : <MousePointer2 size={17} strokeWidth={2.4} />}
     <span>{peer.username}</span>
     {peer.action.kind === 'wire-drag' && <small>Connecting</small>}
+    {peer.action.kind === 'arrow-drag' && <small>Drawing arrow</small>}
     {peer.action.kind === 'node-drag' && <small>Moving {peer.action.nodeIds?.length > 1 ? `${peer.action.nodeIds.length} nodes` : 'node'}</small>}
     {peer.action.kind === 'note-drag' && <small>Moving note</small>}
     {peer.action.kind === 'node-edit' && <small>Editing node</small>}
@@ -253,8 +261,8 @@ function getWireCutSegments(pathElement, event) {
 }
 
 export function NodeCanvas({
-  nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
-  tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
+  nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, canvasLocked = isLocked, canWriteGraphs = true, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
+  tagGroups = [], notes = [], arrows = [], transientArrows = [], currentUser = null, projectOwnerId = '', noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onArrowsChange, onCanvasArrowAction, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
   graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
@@ -424,14 +432,21 @@ export function NodeCanvas({
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [selectedNoteIds, setSelectedNoteIds] = useState([]);
+  const [selectedArrowIds, setSelectedArrowIds] = useState([]);
   const [shiftHeld, setShiftHeld] = useState(false);
   const [deleteConfirmationIds, setDeleteConfirmationIds] = useState(null);
   const [deleteConfirmationNoteIds, setDeleteConfirmationNoteIds] = useState([]);
+  const [deleteConfirmationArrowIds, setDeleteConfirmationArrowIds] = useState([]);
   const [selectionBox, setSelectionBox] = useState(null);
   const [draggingNode, setDraggingNode] = useState(null);
   const draggingNodeRef = useRef(draggingNode);
   draggingNodeRef.current = draggingNode;
   const [draggingNote, setDraggingNote] = useState(null);
+  const [draggingArrows, setDraggingArrows] = useState(null);
+  const [drawingArrow, setDrawingArrow] = useState(null);
+  const [localTransientArrows, setLocalTransientArrows] = useState([]);
+  const [arrowClock, setArrowClock] = useState(Date.now());
+  const observedArrowSourcesRef = useRef(new Map());
   const [focusedNote, setFocusedNote] = useState(null);
   const [graphChatComposerOpen, setGraphChatComposerOpen] = useState(false);
   const [graphChatDraft, setGraphChatDraft] = useState('');
@@ -446,6 +461,11 @@ export function NodeCanvas({
   const focusedNoteLock = focusedNoteId ? noteEditLocks[focusedNoteId] : null;
   const ownsFocusedNoteLock = Boolean(focusedNoteLock && focusedNoteLock.userId === currentUser?.id && focusedNoteLock.clientId === collaborationClientId);
   const userRank = { viewer: 1, operator: 2, editor: 3, admin: 4, owner: 5 };
+  const mayManageArrow = (arrow) => !arrow.locked || Boolean(canWriteGraphs && currentUser && (
+    arrow.createdById === currentUser.id
+    || currentUser.id === projectOwnerId
+    || (userRank[String(currentUser.role || '').toLowerCase()] || 0) > (userRank[String(arrow.createdByRole || 'viewer').toLowerCase()] || 0)
+  ));
   const mayEditNote = (note) => !note.locked || Boolean(currentUser && (
     (note.createdById && currentUser.id && note.createdById === currentUser.id)
     || (note.createdBy && currentUser.username && note.createdBy.toLocaleLowerCase() === currentUser.username.toLocaleLowerCase())
@@ -453,7 +473,57 @@ export function NodeCanvas({
   ));
   const focusedNoteRecord = focusedNoteId ? notes.find((note) => note.id === focusedNoteId) : null;
   const canRequestFocusedNoteLock = Boolean(focusedNoteRecord && !isLocked && mayEditNote(focusedNoteRecord));
+  const canvasArrows = useMemo(() => {
+    const byId = new Map();
+    for (const arrow of transientArrows) if (arrow?.id && arrow.start && arrow.end) byId.set(arrow.id, arrow);
+    for (const arrow of localTransientArrows) if (arrow?.id && arrow.start && arrow.end) byId.set(arrow.id, arrow);
+    for (const arrow of arrows) if (arrow?.locked && arrow.id && arrow.start && arrow.end) byId.set(arrow.id, arrow);
+    return [...byId.values()].filter((arrow) => !arrow.hidden);
+  }, [arrows, transientArrows, localTransientArrows]);
 
+  useEffect(() => {
+    setLocalTransientArrows([]);
+    setSelectedArrowIds([]);
+    setDrawingArrow(null);
+    onCollaborationAction?.({ kind: 'cursor', cursor: end, mode: 'move', selectedNodeIds }, true);
+    setDraggingArrows(null);
+  }, [graphId, projectId]);
+  useEffect(() => {
+    if (!canvasArrows.length && !localTransientArrows.length) return undefined;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setArrowClock(now);
+      setLocalTransientArrows((previous) => previous.filter((arrow) => arrow.expiresAt > now));
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [canvasArrows.length, localTransientArrows.length]);
+  useEffect(() => {
+    const current = new Map([
+      ...transientArrows.filter((arrow) => arrow?.id && arrow.start && arrow.end).map((arrow) => [arrow.id, arrow]),
+      ...arrows.filter((arrow) => arrow?.locked && arrow.id && arrow.start && arrow.end).map((arrow) => [arrow.id, arrow])
+    ]);
+    const previous = observedArrowSourcesRef.current;
+    const removed = [...previous].filter(([id]) => !current.has(id)).map(([, arrow]) => arrow);
+    observedArrowSourcesRef.current = current;
+    if (removed.length) {
+      const now = Date.now();
+      const removedIds = new Set(removed.map((arrow) => arrow.id));
+      setLocalTransientArrows((existing) => {
+        const hiddenIds = new Set(existing.filter((arrow) => arrow.hidden).map((arrow) => arrow.id));
+        return [
+          ...existing.filter((arrow) => hiddenIds.has(arrow.id) || !removedIds.has(arrow.id)),
+          ...removed.filter((arrow) => !hiddenIds.has(arrow.id)).map((arrow) => ({ ...arrow, removing: true, expiresAt: now + 220 }))
+        ];
+      });
+    }
+  }, [arrows, transientArrows]);
+  useEffect(() => {
+    const activeIds = new Set(canvasArrows.filter((arrow) => !arrow.removing).map((arrow) => arrow.id));
+    setSelectedArrowIds((previous) => {
+      const next = previous.filter((id) => activeIds.has(id));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [canvasArrows]);
   useEffect(() => {
     setGraphChatComposerOpen(false);
     setGraphChatDraft('');
@@ -679,20 +749,30 @@ export function NodeCanvas({
               return viewport && rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
             })
             .map((card) => card.dataset.noteId);
+          const visibleArrowIds = [...(containerRef.current?.querySelectorAll('[data-arrow-id]') || [])]
+            .filter((path) => {
+              const rect = path.getBoundingClientRect();
+              return viewport && rect.right > viewport.left && rect.left < viewport.right && rect.bottom > viewport.top && rect.top < viewport.bottom;
+            })
+            .map((path) => path.dataset.arrowId);
           setSelectedNoteIds(visibleNoteIds);
-          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: visibleIds, selectedNoteIds: visibleNoteIds });
+          setSelectedArrowIds(visibleArrowIds);
+          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: visibleIds, selectedNoteIds: visibleNoteIds, selectedArrowIds: visibleArrowIds });
         } else {
           const allNodeIds = nodes.map((node) => node.id);
           const allNoteIds = notes.map((note) => note.id);
+          const allArrowIds = canvasArrows.map((arrow) => arrow.id);
           selectNodes(allNodeIds);
           setSelectedNoteIds(allNoteIds);
-          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: allNodeIds, selectedNoteIds: allNoteIds });
+          setSelectedArrowIds(allArrowIds);
+          onCollaborationAction?.({ kind: 'selection', selectedNodeIds: allNodeIds, selectedNoteIds: allNoteIds, selectedArrowIds: allArrowIds });
         }
         return;
       }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedNodeIds.length || selectedNoteIds.length) && !isLocked && !shortcutBlocked) {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && !shortcutBlocked
+        && ((!isLocked && (selectedNodeIds.length || selectedNoteIds.length)) || (!canvasLocked && selectedArrowIds.length))) {
         event.preventDefault();
-        deleteSelectedItems(selectedNodeIds, selectedNoteIds);
+        deleteSelectedItems(isLocked ? [] : selectedNodeIds, isLocked ? [] : selectedNoteIds, false, selectedArrowIds);
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && selectedNodeIds.length && !shortcutBlocked) {
         event.preventDefault();
@@ -719,7 +799,7 @@ export function NodeCanvas({
           setGraphChatAnchor(position);
           setGraphChatDraft('');
           setGraphChatComposerOpen(true);
-        } else if (key === 'n' && !event.shiftKey && !isLocked) {
+        } else if (shortcutMatches(event, settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote) && !isLocked) {
           event.preventDefault();
           const bounds = containerRef.current?.getBoundingClientRect();
           const pointer = pointerPositionRef.current;
@@ -728,7 +808,7 @@ export function NodeCanvas({
             ? { x: Math.round(((pointer.x - bounds.left) / displayScale - pan.x) / zoom), y: Math.round(((pointer.y - bounds.top) / displayScale - pan.y) / zoom) }
             : bounds ? { x: Math.round((bounds.width / displayScale / 2 - pan.x) / zoom), y: Math.round((bounds.height / displayScale / 2 - pan.y) / zoom) } : { x: 100, y: 100 };
           addNote(position);
-        } else if (key === 'f' && !event.shiftKey) {
+        } else if (key === 'f' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
           event.preventDefault();
           setContextMenu(null);
           fitView();
@@ -742,7 +822,12 @@ export function NodeCanvas({
           }
         }
       }
-      if (event.key === 'Escape' && connectingWire) cancelConnectingWire();
+      if (event.key === 'Escape') {
+        if (connectingWire) cancelConnectingWire();
+        if (drawingArrow) onCollaborationAction?.({ kind: 'cursor', cursor: drawingArrow.end, mode: 'move', selectedNodeIds }, true);
+        setDrawingArrow(null);
+        setDraggingArrows(null);
+      }
     };
     const onKeyUp = (event) => {
       if (event.code === 'Space') spaceDownRef.current = false;
@@ -758,7 +843,7 @@ export function NodeCanvas({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, connectingWire, isLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen]);
+  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, selectedArrowIds, canvasArrows, connectingWire, drawingArrow, isLocked, canvasLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen, settings.shortcuts?.addNote]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
@@ -1381,19 +1466,24 @@ export function NodeCanvas({
     setSelectedNodeIds((selected) => selected.filter((id) => id !== nodeId));
   }
 
-  function deleteSelectedItems(nodeIds = selectedNodeIds, noteIds = selectedNoteIds, confirmed = false) {
+  function deleteSelectedItems(nodeIds = selectedNodeIds, noteIds = selectedNoteIds, confirmed = false, arrowIds = selectedArrowIds) {
     const uniqueNodeIds = [...new Set(nodeIds)];
     const removableNoteIds = [...new Set(noteIds)].filter((id) => {
       const note = notes.find((item) => item.id === id);
       return note && !isNoteBeingEditedByOther(id) && (!note.locked || mayEditNote(note));
     });
+    const removableArrowIds = [...new Set(arrowIds)].filter((id) => {
+      const arrow = canvasArrows.find((item) => item.id === id);
+      return arrow && (!arrow.locked || mayManageArrow(arrow));
+    });
     if (uniqueNodeIds.length > 1 && !confirmed) {
       setDeleteConfirmationIds(uniqueNodeIds);
       setDeleteConfirmationNoteIds(removableNoteIds);
+      setDeleteConfirmationArrowIds(removableArrowIds);
       return;
     }
-    if (!uniqueNodeIds.length && !removableNoteIds.length) return;
-    onHistoryGroupStart?.();
+    if (!uniqueNodeIds.length && !removableNoteIds.length && !removableArrowIds.length) return;
+    if (uniqueNodeIds.length || removableNoteIds.length || removableArrowIds.some((id) => canvasArrows.find((arrow) => arrow.id === id)?.locked)) onHistoryGroupStart?.();
     if (uniqueNodeIds.length) {
       const ids = new Set(uniqueNodeIds);
       onNodesChange?.(nodes.filter((node) => !ids.has(node.id)));
@@ -1403,20 +1493,29 @@ export function NodeCanvas({
       const ids = new Set(removableNoteIds);
       onNotesChange?.(notes.filter((note) => !ids.has(note.id)));
     }
-    onHistoryGroupEnd?.();
+    const removedLockedArrowIds = new Set(removableArrowIds.filter((id) => canvasArrows.find((arrow) => arrow.id === id)?.locked));
+    if (removedLockedArrowIds.size) onArrowsChange?.(arrows.filter((arrow) => !removedLockedArrowIds.has(arrow.id)));
+    for (const id of removableArrowIds.filter((arrowId) => !canvasArrows.find((arrow) => arrow.id === arrowId)?.locked)) {
+      if (!onCanvasArrowAction || onCanvasArrowAction('delete', { id }) === false) removeTransientArrowLocally(id);
+    }
+    if (uniqueNodeIds.length || removableNoteIds.length || removedLockedArrowIds.size) onHistoryGroupEnd?.();
     setSelectedNodeId(null);
     setSelectedNodeIds([]);
     setSelectedNoteIds([]);
+    setSelectedArrowIds([]);
     setDeleteConfirmationIds(null);
     setDeleteConfirmationNoteIds([]);
+    setDeleteConfirmationArrowIds([]);
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: [], selectedNoteIds: [], selectedArrowIds: [] }, true);
   }
 
-  const selectNodes = (ids, primaryId = ids[ids.length - 1] || null, { preserveNotes = false } = {}) => {
+  const selectNodes = (ids, primaryId = ids[ids.length - 1] || null, { preserveNotes = false, preserveArrows = false } = {}) => {
     const validIds = [...new Set(ids)];
     setSelectedNodeIds(validIds);
     setSelectedNodeId(primaryId && validIds.includes(primaryId) ? primaryId : validIds[validIds.length - 1] || null);
     if (!preserveNotes) setSelectedNoteIds([]);
-    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: validIds, selectedNoteIds: preserveNotes ? selectedNoteIds : [] });
+    if (!preserveArrows) setSelectedArrowIds([]);
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: validIds, selectedNoteIds: preserveNotes ? selectedNoteIds : [], selectedArrowIds: preserveArrows ? selectedArrowIds : [] });
   };
 
   const selectNotes = (noteIds, { additive = false } = {}) => {
@@ -1426,8 +1525,82 @@ export function NodeCanvas({
     if (!additive) {
       setSelectedNodeIds([]);
       setSelectedNodeId(null);
+      setSelectedArrowIds([]);
     }
-    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds });
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds, selectedArrowIds: additive ? selectedArrowIds : [] });
+  };
+
+  const selectCanvasArrow = (event, arrow) => {
+    if (event.button !== 0) return;
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    const nextIds = additive
+      ? selectedArrowIds.includes(arrow.id) ? selectedArrowIds.filter((id) => id !== arrow.id) : [...selectedArrowIds, arrow.id]
+      : [arrow.id];
+    setSelectedArrowIds(nextIds);
+    if (!additive) {
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedNoteIds([]);
+    }
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: additive ? selectedNoteIds : [], selectedArrowIds: nextIds });
+  };
+
+  const removeTransientArrowLocally = (id) => {
+    const arrow = canvasArrows.find((item) => item.id === id);
+    if (!arrow) return;
+    const now = Date.now();
+    setLocalTransientArrows((previous) => [...previous.filter((item) => item.id !== id), { ...arrow, removing: true, expiresAt: Math.max(arrow.expiresAt || 0, now + 220) }]);
+    window.setTimeout(() => {
+      setLocalTransientArrows((previous) => previous.map((item) => item.id === id ? { ...item, removing: false, hidden: true } : item));
+    }, 190);
+  };
+
+  const beginArrowDrag = (event, arrow) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    const additive = event.metaKey || event.ctrlKey || event.shiftKey;
+    if (additive) {
+      selectCanvasArrow(event, arrow);
+      return;
+    }
+    const selectedIds = selectedArrowIds.includes(arrow.id) ? selectedArrowIds : [arrow.id];
+    if (!selectedArrowIds.includes(arrow.id)) {
+      setSelectedArrowIds(selectedIds);
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedNoteIds([]);
+      onCollaborationAction?.({ kind: 'selection', selectedNodeIds: [], selectedNoteIds: [], selectedArrowIds: selectedIds });
+    }
+    if (canvasLocked || (arrow.locked && (isLocked || !canWriteGraphs || !mayManageArrow(arrow)))) return;
+    const moving = canvasArrows.filter((item) => selectedIds.includes(item.id) && mayManageArrow(item));
+    setDraggingArrows({
+      ids: moving.map((item) => item.id),
+      initial: Object.fromEntries(moving.map((item) => [item.id, { start: item.start, end: item.end }])),
+      startX: event.clientX,
+      startY: event.clientY,
+      startPan: viewportRef.current.pan,
+      deltaX: 0,
+      deltaY: 0
+    });
+    if (Number.isInteger(event.pointerId)) containerRef.current?.setPointerCapture?.(event.pointerId);
+  };
+
+  const toggleArrowLock = (arrow) => {
+    if (canvasLocked || isLocked || !canWriteGraphs || !mayManageArrow(arrow)) return;
+    if (!arrow.locked) {
+      if (arrows.filter((item) => item?.locked).length >= 300) return;
+      if (!onCanvasArrowAction || onCanvasArrowAction('lock', { id: arrow.id }) === false) {
+        if (arrow.createdById !== currentUser?.id) return;
+        onArrowsChange?.([...arrows, { ...arrow, locked: true, expiresAt: null }]);
+        setLocalTransientArrows((previous) => previous.filter((item) => item.id !== arrow.id));
+      }
+      return;
+    }
+    if (!onCanvasArrowAction || onCanvasArrowAction('unlock', { id: arrow.id }) === false) {
+      const now = Date.now();
+      onArrowsChange?.(arrows.filter((item) => item.id !== arrow.id));
+      setLocalTransientArrows((previous) => [...previous, { ...arrow, locked: false, createdAt: now, expiresAt: now + 12_000 }]);
+    }
   };
 
   const handleNoteSelectionPointerDown = (event, noteId) => {
@@ -1440,8 +1613,9 @@ export function NodeCanvas({
     if (!additive) {
       setSelectedNodeIds([]);
       setSelectedNodeId(null);
+      setSelectedArrowIds([]);
     }
-    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds });
+    onCollaborationAction?.({ kind: 'selection', selectedNodeIds: additive ? selectedNodeIds : [], selectedNoteIds: nextIds, selectedArrowIds: additive ? selectedArrowIds : [] });
     return additive;
   };
 
@@ -1666,7 +1840,15 @@ export function NodeCanvas({
       const currentViewport = viewportRef.current;
       const cursor = { x: ((event.clientX - bounds.left) / displayScale - currentViewport.pan.x) / currentViewport.zoom, y: ((event.clientY - bounds.top) / displayScale - currentViewport.pan.y) / currentViewport.zoom };
       collaborationCursorRef.current = cursor;
-      if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, nodeId: connectingWire.nodeId, pinId: connectingWire.pinId, direction: connectingWire.direction, snapTarget: connectingWire.snapTarget ? { nodeId: connectingWire.snapTarget.nodeId, pinId: connectingWire.snapTarget.pinId } : null, selectedNodeIds });
+      if (drawingArrow) {
+        const end = { x: Math.round(cursor.x), y: Math.round(cursor.y) };
+        setDrawingArrow((current) => current ? { ...current, end } : current);
+        onCollaborationAction?.({ kind: 'arrow-drag', cursor: end, start: drawingArrow.start });
+      } else if (draggingArrows) {
+        const deltaX = Math.round(((event.clientX - draggingArrows.startX) / displayScale - (currentViewport.pan.x - draggingArrows.startPan.x)) / currentViewport.zoom);
+        const deltaY = Math.round(((event.clientY - draggingArrows.startY) / displayScale - (currentViewport.pan.y - draggingArrows.startPan.y)) / currentViewport.zoom);
+        setDraggingArrows((current) => current ? { ...current, deltaX, deltaY } : current);
+      } else if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, nodeId: connectingWire.nodeId, pinId: connectingWire.pinId, direction: connectingWire.direction, snapTarget: connectingWire.snapTarget ? { nodeId: connectingWire.snapTarget.nodeId, pinId: connectingWire.snapTarget.pinId } : null, selectedNodeIds });
       else if (draggingNode) {
         const currentPan = viewportRef.current.pan;
         const deltaX = ((event.clientX - draggingNode.startX) / displayScale - (currentPan.x - draggingNode.startPan.x)) / zoom;
@@ -1715,9 +1897,14 @@ export function NodeCanvas({
           const rect = card.getBoundingClientRect();
           return rect.right >= screenRect.left && rect.left <= screenRect.right && rect.bottom >= screenRect.top && rect.top <= screenRect.bottom;
         }).map((card) => card.dataset.noteId);
+        const hitArrowIds = [...(containerRef.current?.querySelectorAll('[data-arrow-id]') || [])].filter((path) => {
+          const rect = path.getBoundingClientRect();
+          return rect.right >= screenRect.left && rect.left <= screenRect.right && rect.bottom >= screenRect.top && rect.top <= screenRect.bottom;
+        }).map((path) => path.dataset.arrowId);
         const selected = start.additive ? [...new Set([...selectedNodeIds, ...hitIds])] : hitIds;
         const selectedNotes = start.additive ? [...new Set([...selectedNoteIds, ...hitNoteIds])] : hitNoteIds;
-        onCollaborationAction?.({ kind: 'selection', cursor, mode: 'select', selectedNodeIds: selected, selectedNoteIds: selectedNotes, selectionRect });
+        const selectedArrows = start.additive ? [...new Set([...selectedArrowIds, ...hitArrowIds])] : hitArrowIds;
+        onCollaborationAction?.({ kind: 'selection', cursor, mode: 'select', selectedNodeIds: selected, selectedNoteIds: selectedNotes, selectedArrowIds: selectedArrows, selectionRect });
       }
       else {
         const target = event.target instanceof Element ? event.target : null;
@@ -1901,8 +2088,72 @@ export function NodeCanvas({
   };
 
   const finishPointer = (event, activeWire = connectingWire) => {
+    if (drawingArrow) {
+      const bounds = containerRef.current?.getBoundingClientRect();
+      const scale = getCanvasDisplayScale(containerRef.current);
+      const end = bounds ? {
+        x: Math.round(((event.clientX - bounds.left) / scale - pan.x) / zoom),
+        y: Math.round(((event.clientY - bounds.top) / scale - pan.y) / zoom)
+      } : drawingArrow.end;
+      setDrawingArrow(null);
+      onCollaborationAction?.({ kind: 'cursor', cursor: end, mode: 'move', selectedNodeIds }, true);
+      if (!canvasLocked && Math.hypot(end.x - drawingArrow.start.x, end.y - drawingArrow.start.y) >= 8) {
+        const now = Date.now();
+        const payload = { start: drawingArrow.start, end };
+        if (onCanvasArrowAction?.('create', payload) === false) {
+          setLocalTransientArrows((previous) => [...previous, {
+            id: `local_arrow_${crypto.randomUUID()}`,
+            ...payload,
+            color: currentUser?.color || getCollaboratorColor(currentUser?.id),
+            createdBy: currentUser?.username || 'You',
+            createdById: currentUser?.id || '',
+            createdByRole: currentUser?.role || 'viewer',
+            createdAt: now,
+            expiresAt: now + 12_000,
+            locked: false
+          }]);
+        }
+      }
+      return;
+    }
+    if (draggingArrows) {
+      const scale = getCanvasDisplayScale(containerRef.current);
+      const deltaX = Math.round(((event.clientX - draggingArrows.startX) / scale - (pan.x - draggingArrows.startPan.x)) / zoom);
+      const deltaY = Math.round(((event.clientY - draggingArrows.startY) / scale - (pan.y - draggingArrows.startPan.y)) / zoom);
+      const moved = Math.hypot(deltaX, deltaY) >= 1;
+      if (moved) {
+        const positions = new Map(draggingArrows.ids.map((id) => {
+          const initial = draggingArrows.initial[id];
+          return [id, { start: { x: initial.start.x + deltaX, y: initial.start.y + deltaY }, end: { x: initial.end.x + deltaX, y: initial.end.y + deltaY } }];
+        }));
+        const lockedIds = new Set(draggingArrows.ids.filter((id) => arrows.some((arrow) => arrow.id === id && arrow.locked)));
+        const nextArrows = arrows.map((arrow) => positions.has(arrow.id) && lockedIds.has(arrow.id)
+          ? { ...arrow, ...positions.get(arrow.id) }
+          : arrow);
+        if (lockedIds.size) {
+          onHistoryGroupStart?.();
+          onArrowsChange?.(nextArrows);
+          onHistoryGroupEnd?.();
+        }
+        const transientMoves = draggingArrows.ids.filter((id) => !lockedIds.has(id)).map((id) => ({ id, ...positions.get(id) }));
+        if (transientMoves.length && (!onCanvasArrowAction || onCanvasArrowAction('move-many', { arrows: transientMoves }) === false)) {
+          const fallback = new Map(transientMoves.map((arrow) => [arrow.id, arrow]));
+          const sourceById = new Map(canvasArrows.map((arrow) => [arrow.id, arrow]));
+          setLocalTransientArrows((previous) => [
+            ...previous.filter((arrow) => !fallback.has(arrow.id)),
+            ...transientMoves.flatMap((move) => {
+              const source = sourceById.get(move.id);
+              return source ? [{ ...source, ...move }] : [];
+            })
+          ]);
+        }
+      }
+      setDraggingArrows(null);
+      return;
+    }
     let finalSelectedNodeIds = selectedNodeIds;
     let finalSelectedNoteIds = selectedNoteIds;
+    let finalSelectedArrowIds = selectedArrowIds;
     const finishedDraggingNode = draggingNode;
     const finishBounds = containerRef.current?.getBoundingClientRect();
     const finishScale = getCanvasDisplayScale(containerRef.current);
@@ -1987,15 +2238,23 @@ export function NodeCanvas({
           const rect = card.getBoundingClientRect();
           return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
         }).map((card) => card.dataset.noteId);
+        const hitArrowIds = [...(containerRef.current?.querySelectorAll('[data-arrow-id]') || [])].filter((path) => {
+          const rect = path.getBoundingClientRect();
+          return rect.right >= box.left && rect.left <= box.right && rect.bottom >= box.top && rect.top <= box.bottom;
+        }).map((path) => path.dataset.arrowId);
         finalSelectedNodeIds = marqueeStart.additive ? [...new Set([...selectedNodeIds, ...hitIds])] : hitIds;
         finalSelectedNoteIds = marqueeStart.additive ? [...new Set([...selectedNoteIds, ...hitNoteIds])] : hitNoteIds;
+        finalSelectedArrowIds = marqueeStart.additive ? [...new Set([...selectedArrowIds, ...hitArrowIds])] : hitArrowIds;
         selectNodes(finalSelectedNodeIds, finalSelectedNodeIds[finalSelectedNodeIds.length - 1] || null, { preserveNotes: true });
         setSelectedNoteIds(finalSelectedNoteIds);
+        setSelectedArrowIds(finalSelectedArrowIds);
       } else if (!marqueeStart.additive) {
         finalSelectedNodeIds = [];
         finalSelectedNoteIds = [];
+        finalSelectedArrowIds = [];
         selectNodes([]);
         setSelectedNoteIds([]);
+        setSelectedArrowIds([]);
       }
       selectionStartRef.current = null;
       setSelectionBox(null);
@@ -2032,7 +2291,7 @@ export function NodeCanvas({
       else if (targetRow && targetRow.dataset.nodeId !== activeWire.nodeId) shakeNode(targetRow.closest('[data-node-card-id]')?.dataset.nodeCardId);
       setConnectingWire(null);
     }
-    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
+    if (finalSelectedNodeIds.length || finalSelectedNoteIds.length || finalSelectedArrowIds.length || marqueeStart) onCollaborationAction?.({ kind: 'selection', cursor: finishCursor, selectedNodeIds: finalSelectedNodeIds, selectedNoteIds: finalSelectedNoteIds, selectedArrowIds: finalSelectedArrowIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
     else if (finishCursor) onCollaborationAction?.({ kind: 'cursor', cursor: finishCursor, mode: 'move', selectedNodeIds, nodePositions: finishedNodePositions, notePositions: finishedNotePositions }, true);
   };
 
@@ -2102,6 +2361,26 @@ export function NodeCanvas({
   };
 
   const handlePinPointerDownCapture = (event) => {
+    if (event.button === 0 && event.altKey && event.shiftKey && !canvasLocked
+      && containerRef.current?.contains(event.target)
+      && !(event.target instanceof Element && event.target.closest('.canvas-tools, .canvas-breadcrumbs, [data-arrow-control-id]'))) {
+      const bounds = containerRef.current.getBoundingClientRect();
+      const displayScale = getCanvasDisplayScale(containerRef.current);
+      const point = {
+        x: Math.round(((event.clientX - bounds.left) / displayScale - pan.x) / zoom),
+        y: Math.round(((event.clientY - bounds.top) / displayScale - pan.y) / zoom)
+      };
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedNodeIds([]);
+      setSelectedNodeId(null);
+      setSelectedNoteIds([]);
+      setSelectedArrowIds([]);
+      setDrawingArrow({ start: point, end: point });
+      onCollaborationAction?.({ kind: 'arrow-drag', cursor: point, start: point });
+      containerRef.current.setPointerCapture?.(event.pointerId);
+      return;
+    }
     const row = event.target instanceof Element ? event.target.closest('.node-pin-row') : null;
     if (event.button !== 0 || !row || !containerRef.current?.contains(row)) {
       pinDoubleClickRef.current = null;
@@ -2391,6 +2670,8 @@ export function NodeCanvas({
     const curve = Math.max(Math.abs(x2 - x1) * 0.5, 52);
     return `M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}`;
   };
+  const arrowMarkerId = `canvas-arrow-head-${String(projectId || 'default').replace(/[^a-zA-Z0-9_-]/g, '')}-${String(graphId || 'active').replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const getArrowMarkerId = (id) => `${arrowMarkerId}-${String(id).replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
   const openContextMenu = (event) => {
     event.preventDefault();
@@ -2401,13 +2682,26 @@ export function NodeCanvas({
     if (event.target.closest?.('.canvas-tools, .canvas-breadcrumbs')) return;
     const nodeCard = event.target.closest?.('[data-node-card-id]');
     const noteCard = event.target.closest?.('[data-note-id]');
+    const arrowPath = event.target.closest?.('[data-arrow-id]');
+    const arrowControl = event.target.closest?.('[data-arrow-control-id]');
     const tagGroupElement = event.target.closest?.('[data-tag-group-id]');
     const wireGroup = event.target.closest?.('[data-wire-id]');
     const nodeId = nodeCard?.dataset.nodeCardId || null;
     const noteId = noteCard?.dataset.noteId || null;
+    const arrowId = arrowPath?.dataset.arrowId || arrowControl?.dataset.arrowControlId || null;
     const groupId = tagGroupElement?.dataset.tagGroupId || null;
     if (nodeId && !selectedNodeIds.includes(nodeId)) selectNodes([nodeId], nodeId);
     if (noteId && !selectedNoteIds.includes(noteId)) selectNotes([noteId]);
+    if (arrowId) {
+      const nextArrowIds = selectedArrowIds.includes(arrowId) ? selectedArrowIds : [arrowId];
+      if (!selectedArrowIds.includes(arrowId)) {
+        setSelectedNodeIds([]);
+        setSelectedNodeId(null);
+        setSelectedNoteIds([]);
+        setSelectedArrowIds(nextArrowIds);
+      }
+      onCollaborationAction?.({ kind: 'selection', selectedNodeIds: [], selectedNoteIds: [], selectedArrowIds: nextArrowIds });
+    }
     setContextMenu({
       x: Math.max(8, event.clientX),
       y: Math.max(8, event.clientY),
@@ -2418,6 +2712,8 @@ export function NodeCanvas({
       })(),
       nodeId,
       noteId,
+      arrowId,
+      arrowIds: arrowId ? (selectedArrowIds.includes(arrowId) ? selectedArrowIds : [arrowId]) : selectedArrowIds,
       nodeIds: nodeId ? (selectedNodeIds.includes(nodeId) ? selectedNodeIds : [nodeId]) : selectedNodeIds,
       groupId,
       wireId: wireGroup?.dataset.wireId || null,
@@ -3013,7 +3309,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           openContextMenu(event);
           return;
         }
-        if (event.detail !== 3 || event.target.closest?.('button, input, textarea, select, [data-node-card-id], [data-note-id], [data-wire-id]')) return;
+        if (event.detail !== 3 || event.target.closest?.('button, input, textarea, select, [data-node-card-id], [data-note-id], [data-wire-id], [data-arrow-id], [data-arrow-control-id]')) return;
         const bounds = containerRef.current?.getBoundingClientRect();
         if (!bounds) return;
         const displayScale = getCanvasDisplayScale(containerRef.current);
@@ -3035,6 +3331,8 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         const nodePositions = collaborationMotionSupported && draggingNode ? (draggingNode.nodeIds || [draggingNode.id]).map((id) => { const node = nodes.find((item) => item.id === id); return node ? { id, x: node.x, y: node.y } : null; }).filter(Boolean) : undefined;
         if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds, nodePositions }, true);
         setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onHistoryGroupEnd?.();
+        if (drawingArrow && !collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: drawingArrow.end, mode: 'move', selectedNodeIds }, true);
+        setDrawingArrow(null); setDraggingArrows(null);
       }}
       onContextMenu={openContextMenu}
       onDragOver={updateLibraryDragPreview}
@@ -3094,6 +3392,67 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         <svg className="wire-layer wire-layer-base" width="20000" height="20000" aria-label="Graph connections">
           {visibleBaseConnections.map((connection) => renderWire(connection, false))}
         </svg>
+        <svg className="canvas-arrow-layer" width="20000" height="20000" aria-label="Canvas arrows">
+          <defs>
+            {canvasArrows.map((arrow) => <marker key={arrow.id} id={getArrowMarkerId(arrow.id)} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={arrow.color || getCollaboratorColor(arrow.createdById)} />
+            </marker>)}
+            {remoteActions.filter((peer) => peer.action?.kind === 'arrow-drag' && peer.action.start && peer.action.cursor)
+              .map((peer) => <marker key={`remote-${peer.userId}`} id={`${arrowMarkerId}-remote-${String(peer.userId).replace(/[^a-zA-Z0-9_-]/g, '')}`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill={peer.color} />
+              </marker>)}
+            <marker id={`${arrowMarkerId}-preview`} viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill={currentUser?.color || getCollaboratorColor(currentUser?.id)} />
+            </marker>
+          </defs>
+          {canvasArrows.map((arrow) => {
+            const drag = draggingArrows?.ids.includes(arrow.id) ? draggingArrows : null;
+            const initial = drag?.initial[arrow.id];
+            const offsetX = initial ? drag.deltaX || 0 : 0;
+            const offsetY = initial ? drag.deltaY || 0 : 0;
+            const start = { x: (initial?.start.x ?? arrow.start.x) + offsetX, y: (initial?.start.y ?? arrow.start.y) + offsetY };
+            const end = { x: (initial?.end.x ?? arrow.end.x) + offsetX, y: (initial?.end.y ?? arrow.end.y) + offsetY };
+            const selected = selectedArrowIds.includes(arrow.id);
+            const remotelySelected = remoteActions.some((peer) => peer.action?.kind === 'selection' && peer.action.selectedArrowIds?.includes(arrow.id));
+            const remaining = Math.max(0, (arrow.expiresAt || Infinity) - arrowClock);
+            const opacity = arrow.locked ? 1 : Math.min(1, remaining / 2000);
+            const path = `M ${start.x} ${start.y} L ${end.x} ${end.y}`;
+            return <g key={arrow.id} className={`canvas-arrow ${arrow.locked ? 'is-locked' : 'is-transient'} ${selected ? 'is-selected' : ''} ${remotelySelected ? 'is-collaborator-selected' : ''} ${arrow.removing ? 'is-removing' : ''}`} style={{ '--arrow-color': arrow.color || getCollaboratorColor(arrow.createdById), opacity: settings.reduceMotion && arrow.removing ? 0 : opacity }}>
+              {selected && <path d={path} className="canvas-arrow-selection-outline" />}
+              <path d={path} className="canvas-arrow-visible" markerEnd={`url(#${getArrowMarkerId(arrow.id)})`} />
+              <path
+                d={path}
+                className="canvas-arrow-hit-area"
+                data-arrow-id={arrow.id}
+                onPointerDown={arrow.removing ? undefined : (event) => beginArrowDrag(event, arrow)}
+                onContextMenu={arrow.removing ? undefined : openContextMenu}
+              />
+              {selected && <text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 10} className="canvas-arrow-author" textAnchor="middle">{arrow.createdBy || 'Unknown'}</text>}
+              {selected && <g className="canvas-arrow-endpoints" pointerEvents="none"><circle cx={start.x} cy={start.y} r="3" /><circle cx={end.x} cy={end.y} r="3" /></g>}
+            </g>;
+          })}
+          {drawingArrow && <path d={`M ${drawingArrow.start.x} ${drawingArrow.start.y} L ${drawingArrow.end.x} ${drawingArrow.end.y}`} className="canvas-arrow-visible canvas-arrow-preview" style={{ '--arrow-color': currentUser?.color || getCollaboratorColor(currentUser?.id) }} markerEnd={`url(#${arrowMarkerId}-preview)`} />}
+          {remoteActions.filter((peer) => peer.action?.kind === 'arrow-drag' && peer.action.start && peer.action.cursor)
+            .map((peer) => <path key={`remote-arrow-${peer.userId}`} d={`M ${peer.action.start.x} ${peer.action.start.y} L ${peer.action.cursor.x} ${peer.action.cursor.y}`} className="canvas-arrow-visible canvas-arrow-preview" style={{ '--arrow-color': peer.color }} markerEnd={`url(#${arrowMarkerId}-remote-${String(peer.userId).replace(/[^a-zA-Z0-9_-]/g, '')})`} />)}
+        </svg>
+        {canvasArrows.filter((arrow) => selectedArrowIds.includes(arrow.id)).map((arrow) => {
+          const drag = draggingArrows?.ids.includes(arrow.id) ? draggingArrows : null;
+          const initial = drag?.initial[arrow.id];
+          const end = {
+            x: (initial?.end.x ?? arrow.end.x) + (drag?.deltaX || 0),
+            y: (initial?.end.y ?? arrow.end.y) + (drag?.deltaY || 0)
+          };
+          const manageable = !canvasLocked && !isLocked && canWriteGraphs && mayManageArrow(arrow)
+            && (arrow.locked || (arrows.filter((item) => item?.locked).length < 300
+              && (collaborationReady || arrow.createdById === currentUser?.id)));
+          const lockTitle = !arrow.locked && arrows.filter((item) => item?.locked).length >= 300
+            ? 'This graph already has the maximum of 300 saved arrows'
+            : arrow.locked ? 'Unlock arrow and let it fade' : 'Keep arrow permanently';
+          return <div key={`arrow-controls-${arrow.id}`} className="canvas-arrow-controls" data-arrow-control-id={arrow.id} style={{ left: end.x + 10, top: end.y - 13 }}>
+            <button type="button" title={lockTitle} aria-label={lockTitle} disabled={!manageable} onPointerDown={(event) => event.stopPropagation()} onClick={() => toggleArrowLock(arrow)}>{arrow.locked ? <LockKeyhole size={12} /> : <LockOpen size={12} />}</button>
+            <button type="button" title="Delete arrow" aria-label="Delete arrow" disabled={canvasLocked || (arrow.locked && (isLocked || !canWriteGraphs || !mayManageArrow(arrow)))} onPointerDown={(event) => event.stopPropagation()} onClick={() => deleteSelectedItems([], [], false, [arrow.id])}><X size={12} /></button>
+          </div>;
+        })}
         {renderedCanvasNodes.map((node) => {
           const isSelected = selectedNodeIdSet.has(node.id);
           const isWireRelated = relatedNodeIds.has(node.id) && !isSelected;
@@ -3343,7 +3702,18 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         <button onClick={() => onDebugAction?.('continue')} title="Continue until the next pause or completion" aria-label="Continue debug run"><FastForward size={14} />Continue</button>
       </div>}
       {contextMenu && createPortal(<div ref={contextMenuRef} className="canvas-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y, transform: `scale(${uiScale})`, transformOrigin: 'top left' }} onPointerDown={(event) => event.stopPropagation()}>
-        {contextMenu.noteId ? (() => {
+        {contextMenu.arrowId ? (() => {
+          const arrow = canvasArrows.find((item) => item.id === contextMenu.arrowId);
+          if (!arrow) return null;
+          const manageable = !canvasLocked && !isLocked && canWriteGraphs && mayManageArrow(arrow)
+            && (arrow.locked || (arrows.filter((item) => item?.locked).length < 300
+              && (collaborationReady || arrow.createdById === currentUser?.id)));
+          const ids = contextMenu.arrowIds?.length ? contextMenu.arrowIds : [arrow.id];
+          return <>
+            <button role="menuitem" title={!arrow.locked && arrows.filter((item) => item?.locked).length >= 300 ? 'This graph already has the maximum of 300 saved arrows' : undefined} disabled={!manageable} onClick={() => { toggleArrowLock(arrow); setContextMenu(null); }}>{arrow.locked ? 'Unlock arrow' : 'Keep arrow permanently'}</button>
+            <button role="menuitem" className="is-danger" disabled={canvasLocked || ids.some((id) => { const item = canvasArrows.find((candidate) => candidate.id === id); return item?.locked && (isLocked || !canWriteGraphs || !mayManageArrow(item)); })} onClick={() => { deleteSelectedItems([], [], false, ids); setContextMenu(null); }}>Delete arrow{ids.length > 1 ? ` (${ids.length})` : ''}</button>
+          </>;
+        })() : contextMenu.noteId ? (() => {
           const note = notes.find((item) => item.id === contextMenu.noteId);
           return note ? <>
             <button role="menuitem" disabled={isLocked || (note.locked && !mayEditNote(note))} onClick={() => { onRequestCreateTagGroup?.([], [note.id]); setContextMenu(null); }}>Create color section… <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span></button>
@@ -3382,7 +3752,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           <button role="menuitem" className="is-danger" disabled={isLocked} onClick={() => { deleteNode(contextMenu.nodeId); setContextMenu(null); }}>Delete node <span className="context-shortcut"><kbd>Delete</kbd></span></button>
         </> : <>
           <button role="menuitem" onClick={() => { onOpenPalette?.(contextMenu.position); setContextMenu(null); }}>Add node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button>
-          <button role="menuitem" disabled={isLocked} onClick={() => addNote(contextMenu.position)}>Add note <span className="context-shortcut"><kbd>N</kbd></span></button>
+          <button role="menuitem" disabled={isLocked} onClick={() => addNote(contextMenu.position)}>Add note <span className="context-shortcut"><kbd>{formatShortcut(settings.shortcuts?.addNote || DEFAULT_SHORTCUTS.addNote, shortcutPlatform)}</kbd></span></button>
           {nodes.length > 0 && <button role="menuitem" disabled={isLocked} onClick={() => { onRequestCreateTagGroup?.(contextMenu.nodeIds); setContextMenu(null); }}>Create color section… {contextMenu.nodeIds?.length > 0 && <span className="context-shortcut"><kbd>Shift</kbd><kbd>G</kbd></span>}</button>}
           {(() => {
             const selectedIds = (contextMenu.nodeIds || []).filter((id) => nodes.some((node) => node.id === id));
@@ -3399,11 +3769,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       </div>, document.body)}
       <Modal
         isOpen={Boolean(deleteConfirmationIds)}
-        onClose={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); }}
-        onConfirm={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true)}
+        onClose={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); setDeleteConfirmationArrowIds([]); }}
+        onConfirm={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true, deleteConfirmationArrowIds)}
         title="Delete selected items?"
-        subtitle={`This will delete ${deleteConfirmationIds?.length || 0} nodes${deleteConfirmationNoteIds.length ? ` and ${deleteConfirmationNoteIds.length} notes` : ''} and their connections.`}
-        footer={<><Button variant="secondary" onClick={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); }}>Cancel</Button><Button variant="danger" onClick={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true)}>Delete selected</Button></>}
+        subtitle={`This will delete ${deleteConfirmationIds?.length || 0} nodes${deleteConfirmationNoteIds.length ? ` and ${deleteConfirmationNoteIds.length} notes` : ''}${deleteConfirmationArrowIds.length ? ` and ${deleteConfirmationArrowIds.length} arrows` : ''} and their connections.`}
+        footer={<><Button variant="secondary" onClick={() => { setDeleteConfirmationIds(null); setDeleteConfirmationNoteIds([]); setDeleteConfirmationArrowIds([]); }}>Cancel</Button><Button variant="danger" onClick={() => deleteSelectedItems(deleteConfirmationIds || [], deleteConfirmationNoteIds, true, deleteConfirmationArrowIds)}>Delete selected</Button></>}
       >
         <p className="close-graph-copy">This action cannot be undone.</p>
       </Modal>
