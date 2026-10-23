@@ -22,7 +22,7 @@ function readLibraryExpansion() {
 }
 
 export function GraphLibraryPanel({
-  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
+  graphs = [], templates = [], snapshots = [], nodePrefabs = [], embedAssets = [], graphVariables = [], graphActivity = [], definitions = BuiltInNodeDefinitions, newNodesUserKey = 'anonymous', defaultGraphId, activeGraph, openGraphIds = [], activeTabId, usageScope = 'default', desktopMode = false, canImportGraph = true, sidebarWidth = 320, activeSection: activeSectionProp, onActiveSectionChange, onSidebarResize, onClose, onOpenGraph, onImportGraph, onUseTemplate, onCreateFunction, onDeleteGraph, onDeleteGraphs, onDuplicateGraph, onRenameGraph, onSaveTemplate, onDeleteTemplate, onSetDefault, onExportBot, exportInProgress = false, onAddNode, onAddPrefab, onDeletePrefab, onCreateEmbed, onOpenEmbed, onDeleteEmbed, onManageVariables, onCreateSnapshot, onDeleteSnapshot, onRestoreSnapshot
 }) {
   const uiScale = getArcUiScale();
   const [query, setQuery] = useState('');
@@ -33,6 +33,7 @@ export function GraphLibraryPanel({
   const [contextMenu, setContextMenu] = useState(null);
   const [libraryDragGhost, setLibraryDragGhost] = useState(null);
   const [selectedLibraryNodeTypes, setSelectedLibraryNodeTypes] = useState([]);
+  const [selectedGraphKeys, setSelectedGraphKeys] = useState([]);
   const [selectedVariableIds, setSelectedVariableIds] = useState([]);
   const [snapshotName, setSnapshotName] = useState('');
   const [showSnapshotName, setShowSnapshotName] = useState(false);
@@ -40,6 +41,7 @@ export function GraphLibraryPanel({
   const [snapshotError, setSnapshotError] = useState('');
   const [, setNewNodeRevision] = useState(0);
   const [compareSnapshot, setCompareSnapshot] = useState(null);
+  const uniqueSelectedGraphKeys = [...new Set(selectedGraphKeys)];
   const isSearching = Boolean(query.trim());
   useEffect(() => {
     if (activeSection !== 'nodes') return undefined;
@@ -59,12 +61,21 @@ export function GraphLibraryPanel({
     const previous = kind === 'graphs' ? currentProject.graphs || DEFAULT_EXPANDED_GRAPH_GROUPS : currentProject.nodes || {};
     return { ...current, [projectId]: { ...currentProject, [kind]: typeof update === 'function' ? update(previous) : update } };
   });
+  useEffect(() => {
+    const pluginCategories = [...new Set(definitions.filter((node) => node.pluginAdapter && !node.hidden).map((node) => node.category).filter(Boolean))];
+    if (!pluginCategories.length) return;
+    updateExpandedGroups('nodes', (current) => {
+      const additions = Object.fromEntries(pluginCategories.filter((category) => current[category] === undefined).map((category) => [category, true]));
+      return Object.keys(additions).length ? { ...current, ...additions } : current;
+    });
+  }, [definitions, usageScope]);
   const usageStorageKey = `arc_library_usage:${usageScope || 'default'}`;
   const usageRef = useRef(readLibraryUsage(usageStorageKey));
   const [usage, setUsage] = useState(usageRef.current);
   const contextMenuRef = useRef(null);
   const importGraphInputRef = useRef(null);
   const pointerDragRef = useRef(null);
+  const graphSelectionAnchorRef = useRef(null);
   const graphSearchIndex = useMemo(() => createSearchIndex(graphs, (graph) => [graph.name, graph.graphType, graph.id]), [graphs]);
   const templateSearchIndex = useMemo(() => createSearchIndex(templates, (graph) => [graph.name, graph.graphType, graph.id]), [templates]);
   const nodeSearchIndex = useMemo(() => createSearchIndex(definitions.filter((node) => !node.hidden), (node) => [
@@ -110,6 +121,14 @@ export function GraphLibraryPanel({
       return next.length === current.length ? current : next;
     });
   }, [graphVariables]);
+  useEffect(() => {
+    const existing = new Set(graphs.map(graphSelectionKey));
+    setSelectedGraphKeys((current) => {
+      const next = [...new Set(current.filter((key) => existing.has(key)))];
+      if (graphSelectionAnchorRef.current && !existing.has(graphSelectionAnchorRef.current)) graphSelectionAnchorRef.current = null;
+      return next.length === current.length && next.every((id, index) => id === current[index]) ? current : next;
+    });
+  }, [graphs]);
 
   useEffect(() => {
     const nextUsage = readLibraryUsage(usageStorageKey);
@@ -294,7 +313,34 @@ export function GraphLibraryPanel({
 
   const openContextMenu = (event, graph) => {
     event.preventDefault();
-    setContextMenu({ graph, kind: 'graph', x: event.clientX, y: event.clientY });
+    const graphKey = graphSelectionKey(graph);
+    const graphKeys = uniqueSelectedGraphKeys.includes(graphKey) ? uniqueSelectedGraphKeys : [graphKey];
+    setContextMenu({ graph, graphKeys, kind: 'graph', x: event.clientX, y: event.clientY });
+  };
+
+  const handleGraphClick = (event, graph) => {
+    const graphKey = graphSelectionKey(graph);
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      const graphKeys = filteredGraphs.map(graphSelectionKey);
+      const targetIndex = graphKeys.indexOf(graphKey);
+      const anchorKey = graphSelectionAnchorRef.current || graphKey;
+      const anchorIndex = graphKeys.indexOf(anchorKey);
+      if (event.shiftKey && targetIndex >= 0 && anchorIndex >= 0) {
+        const range = graphKeys.slice(Math.min(targetIndex, anchorIndex), Math.max(targetIndex, anchorIndex) + 1);
+        setSelectedGraphKeys((current) => event.metaKey || event.ctrlKey ? [...new Set([...current, ...range])] : range);
+      } else {
+        setSelectedGraphKeys((current) => current.includes(graphKey)
+          ? current.filter((key) => key !== graphKey)
+          : [...current, graphKey]);
+      }
+      graphSelectionAnchorRef.current = graphKey;
+      return;
+    }
+    setSelectedGraphKeys([]);
+    graphSelectionAnchorRef.current = null;
+    recordUsage('graphs', graph.id);
+    onOpenGraph?.(graph);
   };
 
   const openTemplateMenu = (event, graph) => {
@@ -333,24 +379,29 @@ export function GraphLibraryPanel({
       ].map(([id, label, Icon]) => <button key={id} role="tab" aria-selected={activeSection === id} className={activeSection === id ? 'is-active' : ''} onClick={() => setActiveSection(id)}><Icon size={13} /><span>{label}</span></button>)}
     </div>
     <label className="graph-library-search"><Search size={13} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Filter ${activeSection}`} aria-label={`Filter ${activeSection}`} /></label>
-    <div className="graph-library-tree" role="tree">
+    <div className={`graph-library-tree${['graph', 'graph-group'].includes(contextMenu?.kind) ? ' is-context-menu-open' : ''}`} role="tree">
       {activeSection === 'graphs' && <>
+        {uniqueSelectedGraphKeys.length > 0 && <div className="graph-library-selection-hint" role="status"><span>{uniqueSelectedGraphKeys.length} graph{uniqueSelectedGraphKeys.length === 1 ? '' : 's'} selected</span><button type="button" onClick={() => { setSelectedGraphKeys([]); graphSelectionAnchorRef.current = null; }} aria-label="Deselect all graphs">Deselect all</button></div>}
         {frequentGraphs.length > 0 && <section className="graph-library-frequent">
           <div className="graph-library-section-heading graph-library-subsection"><span><Star size={13} /> Frequently used</span><small>{frequentGraphs.length} / 3</small></div>
           <div className="graph-library-frequent-list">{frequentGraphs.map((graph) => {
             const lastSeen = graphLastSeen.get(graph.id);
-            return <button key={graph.id} className="graph-library-entry graph-library-entry-with-activity" onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} title={lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && <i title="Open in a tab" />}</button>;
+            const selected = uniqueSelectedGraphKeys.includes(graphSelectionKey(graph));
+            const active = graph.id === activeTabId;
+            return <button key={graph.id} className={`graph-library-entry graph-library-entry-with-activity${active ? ' is-active' : ''}${selected ? ' is-multi-selected' : ''}`} aria-pressed={selected} aria-current={active ? 'page' : undefined} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={active ? 'Currently active graph' : lastSeen ? `Last here: ${lastSeen.username || 'Collaborator'} · ${formatGraphLastSeen(lastSeen.updatedAt)}` : 'Open graph'}><FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{openGraphIds.includes(graph.id) && <i title={active ? 'Currently active graph' : 'Open in a tab'} />}</button>;
           })}</div>
         </section>}
         {graphGroups.map(([groupName, items]) => <section className="graph-library-group" key={groupName}>
-          <button className="graph-library-root graph-library-subroot" onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
+          <button className="graph-library-root graph-library-subroot" onClick={() => { if (!isSearching) updateExpandedGroups('graphs', (current) => ({ ...current, [groupName]: !current[groupName] })); }} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ kind: 'graph-group', groupName, graphKeys: items.map(graphSelectionKey), x: event.clientX, y: event.clientY }); }} aria-expanded={isSearching || Boolean(expandedGroups[groupName])} role="treeitem">
             {isSearching || expandedGroups[groupName] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}{groupName === 'Functions' ? <Calculator size={13} /> : <FolderTree size={13} />}<span>{groupName}</span><small>{items.length}</small>
           </button>
           {(isSearching || expandedGroups[groupName]) && <div className="graph-library-children" role="group">{items.map((graph) => {
             const isOpen = openGraphIds.includes(graph.id);
             const lastSeen = graphLastSeen.get(graph.id);
-            return <div key={graph.id} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''} ${contextMenu?.kind === 'graph' && contextMenu.graph?.id === graph.id ? 'is-context-menu-open' : ''}`} role="treeitem" aria-current={graph.id === activeTabId ? 'page' : undefined}>
-              <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={() => { recordUsage('graphs', graph.id); onOpenGraph?.(graph); }} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}>
+            const graphKey = graphSelectionKey(graph);
+            const selected = uniqueSelectedGraphKeys.includes(graphKey);
+            return <div key={graphKey} className={`graph-library-item ${graph.id === activeTabId ? 'is-active' : ''}${selected ? ' is-multi-selected' : ''} ${contextMenu?.kind === 'graph' && graphSelectionKey(contextMenu.graph) === graphKey ? 'is-context-menu-open' : ''}`} role="treeitem" aria-selected={selected} aria-current={graph.id === activeTabId ? 'page' : undefined}>
+              <button className={`graph-library-entry${lastSeen?.username ? ' graph-library-entry-with-activity' : ''}`} aria-pressed={selected} draggable={!desktopMode} onPointerDown={(event) => beginPointerDrag(event, { type: 'graph-call', graphId: graph.id })} onClickCapture={suppressClickAfterDrag} onDragStart={(event) => startGraphDrag(event, graph)} onDragEnd={finishGraphDrag} onClick={(event) => handleGraphClick(event, graph)} onContextMenu={(event) => openContextMenu(event, graph)} title={lastSeen?.username ? `Last here: ${lastSeen.username} · ${formatGraphLastSeen(lastSeen.updatedAt)}. Drag into the canvas to call this graph.` : 'Drag into the canvas to call this graph'}>
                 <FileCode2 size={14} /><span className="graph-library-entry-copy"><span>{graph.name || 'Untitled graph'}</span>{lastSeen?.username && <small>{lastSeen.username} · {formatGraphLastSeen(lastSeen.updatedAt)}</small>}</span>{defaultGraphId === graph.id && <Star className="graph-default-star" size={11} fill="currentColor" title="Default for new graphs" />}{isOpen && <i title="Open in a tab" />}
               </button>
               <button className="graph-library-more" onClick={(event) => openContextMenu(event, graph)} aria-label={`Actions for ${graph.name || 'graph'}`} title="Graph actions"><MoreHorizontal size={14} /></button>
@@ -437,9 +488,17 @@ export function GraphLibraryPanel({
         <button onClick={() => { onOpenGraph?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Open graph</button>
         <button onClick={() => { onDuplicateGraph?.(contextMenu.graph); setContextMenu(null); }}><Copy size={14} /> Duplicate graph</button>
         <button onClick={() => { onRenameGraph?.(contextMenu.graph); setContextMenu(null); }}><Pencil size={14} /> Rename graph</button>
-        <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
+        <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button onClick={() => { onSaveTemplate?.(contextMenu.graph); setContextMenu(null); }}><BookmarkPlus size={14} /> Save as template</button>
-        <button className="is-danger" onClick={() => { onDeleteGraph?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved graph</button>
+        <button className="is-danger" onClick={() => {
+          const selectedGraphs = (contextMenu.graphKeys || [graphSelectionKey(contextMenu.graph)]).map((key) => graphs.find((graph) => graphSelectionKey(graph) === key)).filter(Boolean);
+          if (selectedGraphs.length > 1) onDeleteGraphs?.(selectedGraphs);
+          else onDeleteGraph?.(contextMenu.graph);
+          setSelectedGraphKeys([]);
+          setContextMenu(null);
+        }}><X size={14} /> {contextMenu.graphKeys?.length > 1 ? `Delete ${contextMenu.graphKeys.length} selected graphs` : 'Delete saved graph'}</button>
+      </> : contextMenu.kind === 'graph-group' ? <>
+        <button onClick={() => { setSelectedGraphKeys([...new Set(contextMenu.graphKeys || [])]); graphSelectionAnchorRef.current = null; setContextMenu(null); }}><FileCode2 size={14} /> Select all {contextMenu.groupName} graphs</button>
       </> : contextMenu.kind === 'prefab' ? <>
         <button onClick={() => { onAddPrefab?.(contextMenu.graph); setContextMenu(null); }}><FileCode2 size={14} /> Add to graph</button>
         <button className="is-danger" onClick={() => { onDeletePrefab?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete saved node</button>
@@ -448,7 +507,7 @@ export function GraphLibraryPanel({
         <button className="is-danger" onClick={() => { onDeleteEmbed?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete embed</button>
       </> : <>
         <button onClick={() => { onUseTemplate?.(contextMenu.graph); setContextMenu(null); }}><Play size={14} /> Create from template</button>
-        <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
+        <button onClick={() => { onSetDefault?.(contextMenu.graph); setContextMenu(null); }}><Star size={14} fill={defaultGraphId === contextMenu.graph.id ? 'currentColor' : 'none'} /> {defaultGraphId === contextMenu.graph.id ? 'Default for new graphs' : 'Set as new graph default'}</button>
         <button className="is-danger" onClick={() => { onDeleteTemplate?.(contextMenu.graph); setContextMenu(null); }}><X size={14} /> Delete template</button>
       </>}
     </div>, document.body)}
@@ -567,4 +626,13 @@ function groupGraphs(graphs) {
     groups.get(group).push(graph);
   }
   return order.map((name) => [name, groups.get(name)]).filter(([, items]) => items.length);
+}
+
+function graphSelectionKey(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  return JSON.stringify([
+    graph?.id || '',
+    graph?.graphType || '',
+    nodes.map((node) => [node?.id || '', node?.type || '']).sort(([leftId, leftType], [rightId, rightType]) => leftId.localeCompare(rightId) || leftType.localeCompare(rightType))
+  ]);
 }
