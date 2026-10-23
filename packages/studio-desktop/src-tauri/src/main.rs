@@ -992,6 +992,7 @@ fn main() {
             } else {
                 (None, None)
             };
+            //std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
             let mut window = WebviewWindowBuilder::from_config(app.handle(), &window_config)?
                 .inner_size(window_size.width, window_size.height);
             #[cfg(target_os = "linux")]
