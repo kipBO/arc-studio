@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ArrowLeft, ArrowRight, Eye, EyeOff, Globe2, KeyRound, Laptop2, LoaderCircle, LockKeyhole, Moon, Pencil, ShieldCheck, Sun } from 'lucide-react';
 import { arcEvents } from '../../core/ArcEvents.js';
 import { apiUrl, normalizeWorkspaceUrl } from '../../core/api.js';
+import { getClientBuildInfo } from '../../core/clientBuildInfo.js';
 import { Modal } from '../ui/Modal.jsx';
 import { Button } from '../ui/Button.jsx';
 import studioPackage from '../../../package.json';
@@ -298,7 +299,7 @@ export function SplashScreen({
         ? localDesktopSetup
           ? { username: username.trim(), password, rememberMe: persistChoice }
           : { masterKey: masterKey.trim(), username: username.trim(), password, rememberMe: persistChoice, ...(!desktopMode ? { workspaceName: serverWorkspaceName.trim() } : {}) }
-        : { username: username.trim(), password, rememberMe: persistChoice };
+        : { username: username.trim(), password, rememberMe: persistChoice, clientBuild: await getClientBuildInfo() };
       let response;
       let data = {};
       let replacementRequestId = '';
