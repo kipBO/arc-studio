@@ -501,6 +501,21 @@ body.is-resizing-sidebar, body.is-resizing-sidebar * { cursor: ew-resize !import
 .canvas-tag-group-members small { color: var(--muted); }
 .wire-layer { position: absolute; z-index: 1; inset: 0; overflow: visible; pointer-events: none; }
 .wire-layer.wire-layer-selected { z-index: 15; }
+.canvas-arrow-layer { position: absolute; z-index: 1; inset: 0; overflow: visible; pointer-events: none; }
+.canvas-arrow { transition: opacity .1s linear; }
+.canvas-arrow.is-removing { transform-box: fill-box; transform-origin: center; animation: canvasArrowPopOut .18s ease-in forwards; pointer-events: none; }
+@keyframes canvasArrowPopOut { to { opacity: 0; transform: scale(.55); } }
+.canvas-arrow-visible { fill: none; stroke: var(--arrow-color, var(--accent)); stroke-width: 3.4; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.canvas-arrow-head { fill: var(--arrow-color, var(--accent)); }
+.canvas-arrow-hit-area { fill: none; stroke: transparent; stroke-width: 18; pointer-events: stroke; cursor: move; }
+.canvas-arrow-selection-outline { fill: none; stroke: var(--arrow-color, var(--accent)); stroke-width: 8; stroke-dasharray: 2 7; stroke-linecap: round; opacity: .55; pointer-events: none; }
+.canvas-arrow-author { fill: var(--arrow-color, var(--accent)); paint-order: stroke; stroke: var(--canvas); stroke-width: 4px; stroke-linejoin: round; font: 650 10px var(--font-sans, Inter, system-ui, sans-serif); pointer-events: none; }
+.canvas-arrow-endpoints circle { fill: var(--arrow-color, var(--accent)); stroke: var(--canvas); stroke-width: 1.5; }
+.canvas-arrow-preview { stroke-dasharray: 5 5; opacity: .72; }
+.canvas-arrow-controls { position: absolute; z-index: 1; display: flex; gap: 3px; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: color-mix(in srgb, var(--panel) 94%, transparent); box-shadow: 0 3px 10px rgb(0 0 0 / 20%); pointer-events: none; }
+.canvas-arrow-controls button { display: grid; width: 20px; height: 20px; place-items: center; padding: 0; border: 0; border-radius: 4px; color: var(--text-secondary); background: transparent; cursor: pointer; pointer-events: auto; }
+.canvas-arrow-controls button:hover { color: var(--text); background: var(--panel-hover); }
+.canvas-arrow-controls button:disabled { opacity: .4; cursor: not-allowed; }
 .wire-group { pointer-events: none; }
 .wire-hit-area { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
 .wire-visible { fill: none; stroke: var(--wire-color); stroke-width: 1.9; stroke-opacity: var(--wire-opacity, .78); pointer-events: none; filter: drop-shadow(0 1px 1px color-mix(in srgb, var(--wire-color) 12%, transparent)); transition: stroke-width .2s ease, stroke-opacity .2s ease; }
