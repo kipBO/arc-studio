@@ -83,6 +83,34 @@ test('activity delivery uses a concise embed and a timestamp without exposing we
   assert.deepEqual(deliveryStatuses, ['in_progress', 'success']);
 });
 
+test('sign-in activity includes known client build details in the Discord embed', async (context) => {
+  const previousFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = previousFetch; });
+  let request;
+  globalThis.fetch = async (_url, options) => {
+    request = options;
+    return { status: 204, ok: true };
+  };
+  const dispatcher = new ActivityWebhookDispatcher({
+    isEnabled: () => true,
+    getDeliveryUrl: () => 'https://discord.com/api/webhooks/id/token'
+  });
+  dispatcher.enqueue({
+    actor: { username: 'Editor' },
+    action: 'account.signed_in',
+    summary: 'Signed in to the workspace',
+    details: { clientVersion: '2026.1.1-nightly.7', clientPlatform: 'macOS', clientArchitecture: 'arm64' }
+  });
+  for (let attempt = 0; attempt < 30 && !request; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(request);
+  const embed = JSON.parse(request.body).embeds[0];
+  assert.deepEqual(embed.fields.slice(2), [
+    { name: 'Version', value: '2026.1.1-nightly.7', inline: true },
+    { name: 'Platform', value: 'macOS', inline: true },
+    { name: 'Architecture', value: 'arm64', inline: true }
+  ]);
+});
+
 test('terminal webhook delivery errors update status without logging a failure notification', async (context) => {
   const previousFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = previousFetch; });
