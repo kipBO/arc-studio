@@ -1,7 +1,9 @@
 import { Client, CommandStatistics, GatewayIntents, RESTClient } from 'chezcord';
+import { registerAsyncEventHandler } from './AsyncEventHandler.js';
 import { MockGateway } from './MockGateway.js';
 import { GraphRunner } from './GraphRunner.js';
 import { startCronScheduler } from './CronSchedule.js';
+import { waitForGatewayReady } from './GatewayReadyWaiter.js';
 import { NodeDefinitions } from './NodeRegistry.js';
 import { CryptoEngine } from '../security/CryptoEngine.js';
 import { serverConfig } from '../config.js';
@@ -14,6 +16,12 @@ import { envFilePath } from '../storage.js';
 const botConfigAad = 'arc-studio-bot-config-v1';
 const botTokenAad = 'arc-studio-bot-token-v1';
 const VERIFIED_BOT_FLAG = 1 << 16;
+const APP_LATENCY_VARIABLE_ID = 'project_var_app_latency';
+const GATEWAY_LATENCY_VARIABLE_ID = 'project_var_gateway_latency';
+const BOT_UPTIME_VARIABLE_ID = 'project_var_bot_uptime';
+const BOT_STATISTICS_VARIABLE_ID = 'project_var_bot_statistics';
+const APP_LATENCY_INTERVAL_MS = 30_000;
+const BOT_UPTIME_INTERVAL_MS = 1_000;
 //
 function isDiscordVerifiedBot(user) {
   const rawFlags = user?.public_flags ?? user?.flags;
@@ -61,7 +69,12 @@ export class BotManager {
     this.graphRunControllers = new Map();
     this.startBotPromise = null;
     this.botStartGeneration = 0;
+    this.discordUnauthorizedCount = 0;
+    this.discordAuthWarning = null;
+    this.trackedRestClients = new WeakSet();
     this.status = 'DISCONNECTED'; // DISCONNECTED | CONNECTING | ONLINE | ERROR
+    this.botUptimeStartedAt = null;
+    this.botUptimeInterval = null;
     this.gatewayMetrics = { latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null, rateLimitedUntil: 0, rateLimitScope: null };
     this.gatewayLatencySamples = [];
     this.botProfile = null;
@@ -93,6 +106,10 @@ export class BotManager {
     this.mockVariableStates = new Map();
     this.projectVariableStates = new Map();
     this.mockProjectVariableStates = new Map();
+    this.ensureAppLatencyVariable();
+    this.ensureGatewayLatencyVariable();
+    this.ensureBotUptimeVariable();
+    this.ensureBotStatisticsVariable();
     this.deletedGraphIds = new Set();
     if (!this.project.emptyStart) this.initDefaultGraphs();
     this.loadSavedGraphs();
@@ -108,6 +125,7 @@ export class BotManager {
     this.graphSnapshots = [];
     this.defaultGraphId = this.project.emptyStart ? '' : 'tab_slash_help';
     this.loadGraphLibrary();
+    this.startAppLatencyMonitor();
     if (this.botProfile) this.botProfile.intentSummary = this.getIntentPlan();
   }
 
@@ -135,7 +153,10 @@ export class BotManager {
 
   switchProject(id) {
     if (this.status === 'ONLINE' || this.status === 'CONNECTING') throw new Error('Stop the gateway before switching projects.');
+    this.stopBotUptime();
     if (id !== this.project.id) {
+      this.discordUnauthorizedCount = 0;
+      this.discordAuthWarning = null;
       this.flushStatistics();
       this.persistGraphs();
       this.persistGraphLibrary();
@@ -157,6 +178,10 @@ export class BotManager {
     this.mockVariableStates = new Map();
     this.projectVariableStates = new Map();
     this.mockProjectVariableStates = new Map();
+    this.ensureAppLatencyVariable();
+    this.ensureGatewayLatencyVariable();
+    this.ensureBotUptimeVariable();
+    this.ensureBotStatisticsVariable();
     if (!this.project.emptyStart) this.initDefaultGraphs();
     this.loadSavedGraphs();
     this.graphTemplates = [];
@@ -173,8 +198,10 @@ export class BotManager {
     let statisticsState = {};
     try { statisticsState = JSON.parse(fs.readFileSync(this.statisticsStorePath, 'utf8')); } catch {}
     this.commandStatistics = new CommandStatistics({ state: statisticsState, onChange: () => this.scheduleStatisticsSave() });
+    this.refreshAppLatency().catch((error) => this.log('WARN', `Could not refresh APP_LATENCY: ${error.message}`));
+    this.updateBotStatistics();
     if (this.botProfile) this.botProfile.intentSummary = this.getIntentPlan();
-    this.broadcastWS({ type: 'PROJECT_CHANGED', payload: { ...this.getProjects(), graphs: this.getGraphs(), graphLibrary: this.getGraphLibrary(), projectVariables: this.getProjectVariables(), botProfile: this.botProfile } });
+    this.broadcastWS({ type: 'PROJECT_CHANGED', payload: { ...this.getProjects(), graphs: this.getGraphs(), graphLibrary: this.getGraphLibrary(), projectVariables: this.getProjectVariables(), botProfile: this.botProfile, discordAuthWarning: this.discordAuthWarning } });
     return this.project;
   }
 
@@ -187,11 +214,64 @@ export class BotManager {
     }
   }
 
+  createTrackedRESTClient(token = this.getBotToken()) {
+    return this.trackDiscordRESTClient(new RESTClient({ token }));
+  }
+
+  trackDiscordRESTClient(rest) {
+    if (!rest || typeof rest.request !== 'function' || this.trackedRestClients.has(rest)) return rest;
+    this.trackedRestClients.add(rest);
+    const request = rest.request.bind(rest);
+    rest.request = async (...args) => {
+      const requestOptions = args[2] || {};
+      const authenticated = requestOptions.auth !== false && Boolean(rest.token);
+      try {
+        const result = await request(...args);
+        if (authenticated) this.recordDiscordAuthResult(200, rest.token);
+        return result;
+      } catch (error) {
+        if (authenticated) this.recordDiscordAuthResult(error?.status, rest.token);
+        throw error;
+      }
+    };
+    return rest;
+  }
+
+  recordDiscordAuthResult(status, token) {
+    if (!token || token !== this.getBotToken()) return;
+    if (status === 401) {
+      this.discordUnauthorizedCount = Math.min(3, this.discordUnauthorizedCount + 1);
+      if (this.discordUnauthorizedCount === 3 && !this.discordAuthWarning) {
+        this.discordAuthWarning = {
+          title: 'Discord rejected the bot token',
+          message: 'Discord returned HTTP 401 Unauthorized on three consecutive authenticated API requests using this project’s bot token. Check the token configured for this project. This warning does not block Gateway startup or command deployment review.'
+        };
+        this.log('WARN', this.discordAuthWarning.message);
+        this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, discordAuthWarning: this.discordAuthWarning } });
+      }
+      return;
+    }
+    if (Number.isInteger(status)) this.discordUnauthorizedCount = 0;
+    if (status >= 200 && status < 300 && this.discordAuthWarning) {
+      this.discordAuthWarning = null;
+      this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, discordAuthWarning: null } });
+      this.log('INFO', 'Discord authenticated API request succeeded; cleared the bot token warning.');
+    }
+  }
+
   publishGatewayMetrics() {
     this.broadcastWS({ type: 'BOT_METRICS', payload: { ...this.gatewayMetrics } });
   }
 
+  resetGatewayLatency() {
+    this.updateGatewayLatency(0);
+    this.gatewayLatencySamples = [];
+    this.gatewayMetrics = { ...this.gatewayMetrics, latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null };
+    this.publishGatewayMetrics();
+  }
+
   recordGatewayLatency(latencyMs) {
+    this.updateGatewayLatency(latencyMs);
     this.gatewayLatencySamples = [...this.gatewayLatencySamples.slice(-9), latencyMs];
     const samples = this.gatewayLatencySamples;
     const averageLatencyMs = Math.round(samples.reduce((sum, value) => sum + value, 0) / samples.length);
@@ -200,6 +280,167 @@ export class BotManager {
       : 0;
     this.gatewayMetrics = { ...this.gatewayMetrics, latencyMs, averageLatencyMs, jitterMs, lastHeartbeatAt: Date.now() };
     this.publishGatewayMetrics();
+  }
+
+  ensureAppLatencyVariable() {
+    return this.ensureManagedProjectVariable('APP_LATENCY', APP_LATENCY_VARIABLE_ID);
+  }
+
+  ensureGatewayLatencyVariable() {
+    return this.ensureManagedProjectVariable('GATEWAY_LATENCY', GATEWAY_LATENCY_VARIABLE_ID);
+  }
+
+  ensureBotUptimeVariable() {
+    return this.ensureManagedProjectVariable('BOT_UPTIME', BOT_UPTIME_VARIABLE_ID);
+  }
+
+  ensureBotStatisticsVariable() {
+    return this.ensureManagedProjectVariable('BOT_STATISTICS', BOT_STATISTICS_VARIABLE_ID, {
+      type: 'object',
+      initialValue: this.getBotStatisticsSnapshot()
+    });
+  }
+
+  getBotStatisticsSnapshot() {
+    const summary = this.commandStatistics ? this.commandStatistics.getSummary() : { commands: [], totalUses: 0 };
+    const uptimeSeconds = this.botUptimeStartedAt === null
+      ? 0
+      : Math.floor((performance.now() - this.botUptimeStartedAt) / 1_000);
+    const appLatencyMs = this.projectVariableStates?.get(APP_LATENCY_VARIABLE_ID) ?? 0;
+    const gatewayLatencyMs = this.projectVariableStates?.get(GATEWAY_LATENCY_VARIABLE_ID) ?? 0;
+    return {
+      uptimeSeconds,
+      appLatencyMs,
+      gatewayLatencyMs,
+      ...summary
+    };
+  }
+
+  ensureManagedProjectVariable(name, id, { type = 'number', initialValue = 0 } = {}) {
+    if (this.disabledBuiltInProjectVariables.has(name)) return false;
+    if (this.projectVariables.some((variable) => variable.name?.toLowerCase() === name.toLowerCase() && variable.id !== id)) return false;
+    const existing = this.projectVariables.find((variable) => variable.id === id);
+    if (existing?.name === name && existing.type === type && (type === 'number' ? Number.isFinite(existing.initialValue) : existing.initialValue !== undefined)) {
+      existing.systemManaged = true;
+      return false;
+    }
+    const value = { id, name, type, initialValue, systemManaged: true };
+    const next = existing
+      ? this.projectVariables.map((variable) => variable.id === id ? { ...variable, ...value } : variable)
+      : [...this.projectVariables, value];
+    this.setProjectVariables(next, { allowManagedVariableUpdate: true });
+    return true;
+  }
+
+  updateManagedProjectVariable(id, value) {
+    const variable = this.projectVariables.find((item) => item.id === id);
+    if (!variable) return value;
+    if (variable.type === 'object') {
+      const objectValue = value && typeof value === 'object' && !Array.isArray(value) ? structuredClone(value) : {};
+      const serialized = JSON.stringify(objectValue);
+      const changed = JSON.stringify(variable.initialValue) !== serialized
+        || [this.projectVariableStates, this.mockProjectVariableStates].some((state) => JSON.stringify(state?.get(id)) !== serialized);
+      variable.initialValue = objectValue;
+      variable.systemManaged = true;
+      for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) state?.set(id, structuredClone(objectValue));
+      if (changed) this.broadcastWS({
+        type: 'PROJECT_VARIABLES_UPDATED',
+        payload: { projectId: this.project.id, variables: this.getProjectVariables() }
+      });
+      return objectValue;
+    }
+    const numericValue = Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+    const changed = Number(variable.initialValue) !== numericValue
+      || [this.projectVariableStates, this.mockProjectVariableStates].some((state) => state?.get(id) !== numericValue);
+    variable.initialValue = numericValue;
+    variable.systemManaged = true;
+    for (const state of [this.projectVariableStates, this.mockProjectVariableStates]) state?.set(id, numericValue);
+    if (changed) this.broadcastWS({
+      type: 'PROJECT_VARIABLES_UPDATED',
+      payload: { projectId: this.project.id, variables: this.getProjectVariables() }
+    });
+    return numericValue;
+  }
+
+  updateAppLatency(value) {
+    const res = this.updateManagedProjectVariable(APP_LATENCY_VARIABLE_ID, value);
+    this.updateBotStatistics();
+    return res;
+  }
+
+  updateGatewayLatency(value) {
+    const res = this.updateManagedProjectVariable(GATEWAY_LATENCY_VARIABLE_ID, value);
+    this.updateBotStatistics();
+    return res;
+  }
+
+  updateBotUptime() {
+    const uptimeSeconds = this.botUptimeStartedAt === null
+      ? 0
+      : Math.floor((performance.now() - this.botUptimeStartedAt) / 1_000);
+    const res = this.updateManagedProjectVariable(BOT_UPTIME_VARIABLE_ID, uptimeSeconds);
+    this.updateBotStatistics();
+    return res;
+  }
+
+  updateBotStatistics() {
+    return this.updateManagedProjectVariable(BOT_STATISTICS_VARIABLE_ID, this.getBotStatisticsSnapshot());
+  }
+
+  startBotUptime() {
+    if (this.botUptimeInterval) clearInterval(this.botUptimeInterval);
+    this.botUptimeStartedAt = performance.now();
+    this.updateBotUptime();
+    this.botUptimeInterval = setInterval(() => this.updateBotUptime(), BOT_UPTIME_INTERVAL_MS);
+    this.botUptimeInterval.unref?.();
+  }
+
+  stopBotUptime() {
+    if (this.botUptimeInterval) clearInterval(this.botUptimeInterval);
+    this.botUptimeInterval = null;
+    this.botUptimeStartedAt = null;
+    this.updateBotUptime();
+  }
+
+  async refreshAppLatency() {
+    const token = this.getBotToken();
+    if (!token) {
+      this.updateAppLatency(0);
+      return 0;
+    }
+    if (this.appLatencyProbeInFlight) {
+      if (this.appLatencyProbeToken !== token) this.appLatencyProbePending = true;
+      return this.projectVariableStates?.get(APP_LATENCY_VARIABLE_ID) ?? 0;
+    }
+    this.appLatencyProbeInFlight = true;
+    this.appLatencyProbeToken = token;
+    const startedAt = performance.now();
+    try {
+      await this.createTrackedRESTClient(token).getCurrentApplication();
+      if (token !== this.getBotToken()) return 0;
+      return this.updateAppLatency(performance.now() - startedAt);
+    } catch {
+      if (token === this.getBotToken()) this.updateAppLatency(0);
+      return 0;
+    } finally {
+      this.appLatencyProbeInFlight = false;
+      this.appLatencyProbeToken = '';
+      if (this.appLatencyProbePending) {
+        this.appLatencyProbePending = false;
+        queueMicrotask(() => {
+          this.refreshAppLatency().catch((error) => this.log('WARN', `Could not refresh APP_LATENCY: ${error.message}`));
+        });
+      }
+    }
+  }
+
+  startAppLatencyMonitor() {
+    if (this.appLatencyMonitor) clearInterval(this.appLatencyMonitor);
+    this.appLatencyMonitor = setInterval(() => {
+      this.refreshAppLatency().catch((error) => this.log('WARN', `Could not refresh APP_LATENCY: ${error.message}`));
+    }, APP_LATENCY_INTERVAL_MS);
+    this.appLatencyMonitor.unref?.();
+    this.refreshAppLatency().catch((error) => this.log('WARN', `Could not refresh APP_LATENCY: ${error.message}`));
   }
 
   loadBotConfig() {
@@ -253,12 +494,24 @@ export class BotManager {
   }
 
   setBotToken(token, persist = true) {
+    const normalizedToken = token ? String(token).trim() : '';
+    const changed = (this.getBotToken() || '') !== normalizedToken;
+    if (changed) {
+      this.discordUnauthorizedCount = 0;
+      if (this.discordAuthWarning) {
+        this.discordAuthWarning = null;
+        this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, discordAuthWarning: null } });
+      }
+    }
     if (!token) {
       this.encryptedBotToken = null;
     } else {
-      this.encryptedBotToken = CryptoEngine.encrypt(token.trim(), serverConfig.botTokenEncryptionKey, botTokenAad);
+      this.encryptedBotToken = CryptoEngine.encrypt(normalizedToken, serverConfig.botTokenEncryptionKey, botTokenAad);
     }
     if (persist) this.persistBotConfig();
+    if (changed && this.projectVariableStates instanceof Map) {
+      this.refreshAppLatency().catch((error) => this.log('WARN', `Could not refresh APP_LATENCY: ${error.message}`));
+    }
   }
 
   setBroadcast(fn) {
@@ -286,6 +539,7 @@ export class BotManager {
     } catch (error) {
       this.log?.('ERROR', `Could not save command statistics: ${error.message}`);
     }
+    this.updateBotStatistics();
   }
 
   getCommandStatistics(options) {
@@ -297,7 +551,9 @@ export class BotManager {
   }
 
   updateCommandStatisticsSettings(settings) {
-    return this.commandStatistics.updateSettings(settings);
+    const updated = this.commandStatistics.updateSettings(settings);
+    this.updateBotStatistics();
+    return updated;
   }
 
   log(level, message, meta = null) {
@@ -583,9 +839,29 @@ export class BotManager {
   }
 
   getCommandPermissionRequirements(graphs) {
-    const types = new Set(graphs.flatMap((graph) => (graph.nodes || []).map((node) => node.type)));
     const permissions = new Set();
-    if (types.has('action_send_message') || types.has('action_edit_message')) for (const permission of ['View Channels', 'Send Messages']) permissions.add(permission);
+    for (const graph of graphs) for (const node of graph.nodes || []) {
+      if (['action_send_message', 'action_edit_message'].includes(node.type)) {
+        permissions.add('View Channels');
+        permissions.add('Send Messages');
+        if (node.type === 'action_send_message'
+          && (String(node.data?.thread_id || '').trim() || graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_id'))) {
+          permissions.add('Send Messages in Threads');
+        }
+      }
+      if (node.type === 'action_create_thread') {
+        permissions.add('View Channels');
+        const typeIsWired = graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'thread_type');
+        const threadType = String(node.data?.thread_type || 'public').toLowerCase();
+        if (typeIsWired || !['public', 'private'].includes(threadType)) {
+          permissions.add('Create Public Threads');
+          permissions.add('Create Private Threads');
+        } else permissions.add(threadType === 'private' ? 'Create Private Threads' : 'Create Public Threads');
+      }
+      if (node.type === 'action_start_thread_from_message') {
+        for (const permission of ['View Channels', 'Send Messages', 'Create Public Threads']) permissions.add(permission);
+      }
+    }
     if (graphs.some((graph) => (graph.nodes || []).some((node) => ['action_send_message', 'action_edit_message'].includes(node.type) && graph.connections?.some((wire) => wire.targetNodeId === node.id && wire.targetPinId === 'embed')))) permissions.add('Embed Links');
     return [...permissions];
   }
@@ -598,7 +874,7 @@ export class BotManager {
       throw new Error('The workspace is too large or contains an invalid graph. Save the graphs and try again.');
     }
     const { desired, errors } = this.getDesiredSlashCommands(graphs);
-    const rest = new RESTClient({ token });
+    const rest = this.createTrackedRESTClient(token);
     let application = this.botProfile?.application || null;
     try {
       const freshApplication = await rest.getCurrentApplication();
@@ -648,7 +924,8 @@ export class BotManager {
       planHash: this.getCommandPlanHash(desired, graphs),
       intents: intentPlan.filter((intent) => intent.required),
       permissions: this.getCommandPermissionRequirements(graphs),
-      noChanges: !created.length && !updated.length && !removed.length
+      noChanges: !created.length && !updated.length && !removed.length,
+      discordAuthWarning: this.discordAuthWarning
     };
   }
 
@@ -681,7 +958,7 @@ export class BotManager {
     this.commandDeploymentInFlight = true;
     this.commandDeploymentLastAt = Date.now();
     try {
-      const rest = new RESTClient({ token });
+      const rest = this.createTrackedRESTClient(token);
       const application = this.botProfile?.application?.id
         ? this.botProfile.application
         : await rest.getCurrentApplication();
@@ -810,10 +1087,17 @@ export class BotManager {
   }
 
   setDefaultGraph(graphId) {
+    if (!graphId || graphId === 'tab_slash_help') {
+      this.defaultGraphId = 'tab_slash_help';
+      this.persistGraphLibrary();
+      this.broadcastWS({ type: 'GRAPH_LIBRARY_UPDATED', payload: this.getGraphLibrary() });
+      return this.defaultGraphId;
+    }
     const exists = this.graphs.has(graphId) || this.graphTemplates.some((template) => template.id === graphId);
     if (!exists) throw new Error('Choose a saved graph or template as the default.');
     this.defaultGraphId = graphId;
     this.persistGraphLibrary();
+    this.broadcastWS({ type: 'GRAPH_LIBRARY_UPDATED', payload: this.getGraphLibrary() });
     return graphId;
   }
 
@@ -832,7 +1116,7 @@ export class BotManager {
 
   getProjectVariables() { return this.projectVariables.map((variable) => ({ ...variable })); }
 
-  setProjectVariables(variables, { allowDiscordAppIdUpdate = false } = {}) {
+  setProjectVariables(variables, { allowDiscordAppIdUpdate = false, allowAppLatencyUpdate = false, allowManagedVariableUpdate = false } = {}) {
     if (!Array.isArray(variables) || variables.length > 100) throw new TypeError('A project can have at most 100 shared variables.');
     const names = new Set();
     const existingVariables = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
@@ -843,15 +1127,41 @@ export class BotManager {
       if (!name) throw new TypeError('Every project variable needs a name.');
       const validName = /^(?=.{1,64}$)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(name);
       const discordAppIdVariable = item.id === 'project_var_discord_app_id';
+      const appLatencyVariable = item.id === APP_LATENCY_VARIABLE_ID;
+      const gatewayLatencyVariable = item.id === GATEWAY_LATENCY_VARIABLE_ID;
+      const botUptimeVariable = item.id === BOT_UPTIME_VARIABLE_ID;
+      const botStatisticsVariable = item.id === BOT_STATISTICS_VARIABLE_ID;
+      const managedVariableName = discordAppIdVariable ? 'DISCORD_APP_ID'
+        : appLatencyVariable ? 'APP_LATENCY'
+          : gatewayLatencyVariable ? 'GATEWAY_LATENCY'
+            : botUptimeVariable ? 'BOT_UPTIME'
+              : botStatisticsVariable ? 'BOT_STATISTICS' : '';
+      const managedVariable = Boolean(managedVariableName);
       if (discordAppIdVariable && this.disabledBuiltInProjectVariables.has('DISCORD_APP_ID')) {
         throw new TypeError('ARC no longer owns DISCORD_APP_ID in this project. Recreate it as a regular project variable.');
       }
-      const reservedDiscordAppName = name === 'DISCORD_APP_ID';
+      if (managedVariable && this.disabledBuiltInProjectVariables.has(managedVariableName)) {
+        throw new TypeError(`ARC no longer owns ${managedVariableName} in this project. Recreate it as a regular project variable.`);
+      }
+      if (managedVariable && !existingVariables.has(item.id) && !allowManagedVariableUpdate
+        && !(appLatencyVariable && allowAppLatencyUpdate)) throw new TypeError(`${managedVariableName} is managed by ARC.`);
+      const reservedManagedName = ['DISCORD_APP_ID', 'APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS'].includes(name);
+      const matchingManagedId = ({
+        DISCORD_APP_ID: 'project_var_discord_app_id',
+        APP_LATENCY: APP_LATENCY_VARIABLE_ID,
+        GATEWAY_LATENCY: GATEWAY_LATENCY_VARIABLE_ID,
+        BOT_UPTIME: BOT_UPTIME_VARIABLE_ID,
+        BOT_STATISTICS: BOT_STATISTICS_VARIABLE_ID
+      })[name];
+      if (reservedManagedName && item.id !== matchingManagedId && !this.disabledBuiltInProjectVariables.has(name)) {
+        throw new TypeError(`${name} is reserved for the ARC managed project variable.`);
+      }
       const unchangedLegacyName = existingVariables.get(item.id)?.name === name && /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name);
-      if (!validName && !reservedDiscordAppName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
+      if (!validName && !reservedManagedName && !unchangedLegacyName) throw new TypeError(`Project variable “${name}” must use 1–64 letters or numbers, with single hyphens between them.`);
       if (!type) throw new TypeError(`Project variable “${name}” has an unsupported type.`);
-      if ((discordAppIdVariable || reservedDiscordAppName) && type !== 'number') throw new TypeError('DISCORD_APP_ID must be a number variable.');
-      if (discordAppIdVariable && !reservedDiscordAppName) throw new TypeError('The Discord application ID variable name cannot be changed.');
+      const expectedType = (managedVariableName === 'BOT_STATISTICS' || name === 'BOT_STATISTICS') ? 'object' : 'number';
+      if ((managedVariable || reservedManagedName) && type !== expectedType) throw new TypeError(`${managedVariableName || name} must be a ${expectedType} variable.`);
+      if (managedVariable && name !== managedVariableName) throw new TypeError(`The ${managedVariableName} variable name cannot be changed.`);
       const previousReserved = existingVariables.get(item.id);
       if (discordAppIdVariable && previousReserved && !allowDiscordAppIdUpdate
         && String(item.initialValue) !== String(previousReserved.initialValue)) throw new TypeError('DISCORD_APP_ID is managed by the connected Discord application and cannot be edited.');
@@ -861,6 +1171,15 @@ export class BotManager {
       if (discordAppIdVariable) {
         initialValue = String(item.initialValue ?? '');
         if (!/^\d{15,22}$/.test(initialValue)) throw new TypeError('DISCORD_APP_ID must be a valid Discord application ID.');
+      } else if (managedVariable && previousReserved && !allowManagedVariableUpdate
+        && !(appLatencyVariable && allowAppLatencyUpdate)
+        && !(discordAppIdVariable && allowDiscordAppIdUpdate)) {
+        const currentValue = this.projectVariableStates?.get(item.id) ?? previousReserved.initialValue;
+        if (type === 'object') {
+          initialValue = currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue) ? structuredClone(currentValue) : {};
+        } else {
+          initialValue = Number(currentValue) || 0;
+        }
       } else if (type === 'number') initialValue = Number.isFinite(Number(item.initialValue)) ? Number(item.initialValue) : 0;
       else if (type === 'boolean') initialValue = Boolean(item.initialValue);
       else if (type === 'array' || type === 'object') {
@@ -870,11 +1189,24 @@ export class BotManager {
         if (serialized.length > 10000) throw new TypeError(`Project variable “${name}” exceeds the 10,000 character JSON limit.`);
         initialValue = JSON.parse(serialized);
       } else initialValue = String(item.initialValue ?? '').slice(0, 10000);
-      return { id: item.id, name, type, initialValue, ...(discordAppIdVariable ? { systemManaged: true } : {}), updatedAt: new Date().toISOString() };
+      return { id: item.id, name, type, initialValue, ...(managedVariable ? { systemManaged: true } : {}), updatedAt: new Date().toISOString() };
     });
     const previousById = new Map(this.projectVariables.map((variable) => [variable.id, variable]));
     if (previousById.has('project_var_discord_app_id') && !next.some((variable) => variable.id === 'project_var_discord_app_id')) {
       this.disabledBuiltInProjectVariables.add('DISCORD_APP_ID');
+      const projectRecord = this.projectStore.projects.find((item) => item.id === this.project.id);
+      if (projectRecord) projectRecord.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+      this.project.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+      this.projectStore.persist();
+    }
+    for (const [variableId, name] of [
+      [APP_LATENCY_VARIABLE_ID, 'APP_LATENCY'],
+      [GATEWAY_LATENCY_VARIABLE_ID, 'GATEWAY_LATENCY'],
+      [BOT_UPTIME_VARIABLE_ID, 'BOT_UPTIME'],
+      [BOT_STATISTICS_VARIABLE_ID, 'BOT_STATISTICS']
+    ]) {
+      if (!previousById.has(variableId) || next.some((variable) => variable.id === variableId)) continue;
+      this.disabledBuiltInProjectVariables.add(name);
       const projectRecord = this.projectStore.projects.find((item) => item.id === this.project.id);
       if (projectRecord) projectRecord.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
       this.project.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
@@ -912,6 +1244,71 @@ export class BotManager {
       : [...this.projectVariables, value];
     this.setProjectVariables(next, { allowDiscordAppIdUpdate: true });
     return true;
+  }
+
+  restoreBuiltInProjectVariable(name) {
+    const normalized = String(name || '').trim().toUpperCase();
+    const known = ['APP_LATENCY', 'GATEWAY_LATENCY', 'BOT_UPTIME', 'BOT_STATISTICS', 'DISCORD_APP_ID'];
+    if (!known.includes(normalized)) {
+      throw new TypeError(`Unknown system variable “${name}”.`);
+    }
+    const matchingManagedId = ({
+      DISCORD_APP_ID: 'project_var_discord_app_id',
+      APP_LATENCY: APP_LATENCY_VARIABLE_ID,
+      GATEWAY_LATENCY: GATEWAY_LATENCY_VARIABLE_ID,
+      BOT_UPTIME: BOT_UPTIME_VARIABLE_ID,
+      BOT_STATISTICS: BOT_STATISTICS_VARIABLE_ID
+    })[normalized];
+
+    const conflicting = this.projectVariables.find((variable) => variable.name.toLowerCase() === normalized.toLowerCase() && variable.id !== matchingManagedId);
+    if (conflicting) {
+      throw new Error(`A custom variable named ${normalized} already exists. Delete it before restoring the system variable.`);
+    }
+
+    this.disabledBuiltInProjectVariables.delete(normalized);
+    const projectRecord = this.projectStore.projects.find((item) => item.id === this.project.id);
+    if (projectRecord) projectRecord.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+    this.project.disabledBuiltInVariables = [...this.disabledBuiltInProjectVariables];
+    this.projectStore.persist();
+
+    if (normalized === 'APP_LATENCY') {
+      this.ensureAppLatencyVariable();
+      this.refreshAppLatency().catch(() => {});
+    } else if (normalized === 'GATEWAY_LATENCY') {
+      this.ensureGatewayLatencyVariable();
+    } else if (normalized === 'BOT_UPTIME') {
+      this.ensureBotUptimeVariable();
+      this.updateBotUptime();
+    } else if (normalized === 'BOT_STATISTICS') {
+      this.ensureBotStatisticsVariable();
+      this.updateBotStatistics();
+    } else if (normalized === 'DISCORD_APP_ID') {
+      const activeToken = this.getBotToken();
+      let detectedId = this.botProfile?.application?.id || this.botProfile?.id || '';
+      if (!detectedId && activeToken) {
+        try {
+          const first = activeToken.split('.')[0];
+          const decoded = Buffer.from(first, 'base64').toString('utf8');
+          if (/^\d{15,22}$/.test(decoded)) detectedId = decoded;
+        } catch {}
+      }
+      if (detectedId) {
+        this.ensureDiscordAppIdVariable(detectedId);
+      } else {
+        this.ensureManagedProjectVariable('DISCORD_APP_ID', 'project_var_discord_app_id', { type: 'number', initialValue: 0 });
+      }
+    }
+
+    this.broadcastWS({
+      type: 'PROJECT_VARIABLES_UPDATED',
+      payload: { projectId: this.project.id, variables: this.getProjectVariables() }
+    });
+
+    return {
+      success: true,
+      variables: this.getProjectVariables(),
+      disabledBuiltInVariables: [...this.disabledBuiltInProjectVariables]
+    };
   }
 
   getProjectVariableState(mode = 'live') {
@@ -1003,7 +1400,7 @@ export class BotManager {
     const cleanToken = String(token || '').trim();
     if (!cleanToken) throw new Error('Token is required.');
     this.log('INFO', 'Verifying Discord Bot Token via Chezcord REST client...');
-    const rest = new RESTClient({ token: cleanToken });
+    const rest = this.createTrackedRESTClient(cleanToken);
 
     try {
       const user = await rest.getCurrentUser();
@@ -1106,6 +1503,7 @@ export class BotManager {
     }
 
     this.status = 'CONNECTING';
+    this.startBotUptime();
     this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status } });
     this.log('GATEWAY', 'Initiating Chezcord Gateway connection...');
 
@@ -1117,6 +1515,7 @@ export class BotManager {
     const intents = intentPlan.filter((intent) => intent.required && !(intent.privileged && intent.portalEnabled === false)).reduce((value, intent) => value | intent.bit, 0);
     if (this.botProfile) this.botProfile.intentSummary = intentPlan;
     this.client = new Client({ token: activeToken, intents });
+    this.trackDiscordRESTClient(this.client.rest);
     if (!this.applicationEmojis.length && this.botProfile?.application?.id) {
       try {
         const emojiResult = await this.client.rest.getApplicationEmojis(this.botProfile.application.id);
@@ -1125,8 +1524,7 @@ export class BotManager {
         this.log('WARN', `App emojis could not be loaded for text templates: ${error.message}`);
       }
     }
-    this.gatewayLatencySamples = [];
-    this.gatewayMetrics = { ...this.gatewayMetrics, latencyMs: null, averageLatencyMs: null, jitterMs: null, lastHeartbeatAt: null };
+    this.resetGatewayLatency();
     this.client.on('heartbeatLatency', (latencyMs) => this.recordGatewayLatency(latencyMs));
     this.restRateLimitListener = ({ rateLimitedUntil, scope }) => {
       this.gatewayMetrics = { ...this.gatewayMetrics, rateLimitedUntil, rateLimitScope: scope };
@@ -1188,6 +1586,9 @@ export class BotManager {
             },
             deploySlashCommands: () => this.deploySlashCommands(),
             signal: graphController.signal,
+            waitForGateway: (timeoutMs, signal) => this.status === 'ONLINE'
+              ? Promise.resolve(true)
+              : waitForGatewayReady(this.client, timeoutMs, signal),
             onNodeExecution: ({ graphId, nodeId }) => this.broadcastWS({ type: 'GRAPH_EXECUTION_PULSE', payload: { tabId: graphId, nodeIds: [nodeId] } }),
             onNodeError: (failure) => {
               this.log('ERROR', `Graph “${failure.graphName}” failed at node “${failure.nodeLabel}” (${failure.nodeId}): ${failure.error}`, { graphId: failure.graphId, nodeId: failure.nodeId, nodeLabel: failure.nodeLabel });
@@ -1237,13 +1638,16 @@ export class BotManager {
       });
     });
 
-    this.client.on('messageCreate', async (msg) => {
+    registerAsyncEventHandler(this.client, 'messageCreate', async (msg) => {
       if (msg.author?.id === this.client.user?.id) return;
       this.log('INFO', 'Message event received, dispatching to matching graphs.');
       await dispatchGraphEvent('MESSAGE_CREATE', msg);
-    });
+    }, (error, eventName) => this.log('ERROR', `Discord ${eventName} event failed: ${error?.message || String(error)}`, {
+      httpStatus: error?.status,
+      discordCode: error?.code
+    }));
 
-    this.client.on('interactionCreate', async (interaction) => {
+    registerAsyncEventHandler(this.client, 'interactionCreate', async (interaction) => {
       this.log('INFO', `Interaction received: Type ${interaction.type}`);
       if (Number(interaction.type) === 4) {
         const commandName = String(interaction.data?.name || '').toLowerCase();
@@ -1291,11 +1695,17 @@ export class BotManager {
       }
 
       await dispatchGraphEvent('INTERACTION_CREATE', interaction);
-    });
+    }, (error, eventName) => this.log('ERROR', `Discord ${eventName} event failed: ${error?.message || String(error)}`, {
+      httpStatus: error?.status,
+      discordCode: error?.code
+    }));
 
-    this.client.on('guildMemberAdd', async (member) => {
+    registerAsyncEventHandler(this.client, 'guildMemberAdd', async (member) => {
       await dispatchGraphEvent('GUILD_MEMBER_ADD', member);
-    });
+    }, (error, eventName) => this.log('ERROR', `Discord ${eventName} event failed: ${error?.message || String(error)}`, {
+      httpStatus: error?.status,
+      discordCode: error?.code
+    }));
 
     this.client.on('gatewayDispatch', (eventName, payload) => {
       if (['READY', 'MESSAGE_CREATE', 'INTERACTION_CREATE', 'GUILD_MEMBER_ADD'].includes(eventName)) return;
@@ -1309,6 +1719,7 @@ export class BotManager {
       this.stopCronScheduler?.();
       this.stopCronScheduler = null;
       this.graphRunAbortController?.abort();
+      this.stopBotUptime();
       this.status = 'ERROR';
       this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, error: err.message } });
       this.log('ERROR', `Fatal Gateway Error: ${err.message}`);
@@ -1316,8 +1727,13 @@ export class BotManager {
 
     try {
       await this.client.login();
+      if (startGeneration === this.botStartGeneration && !runSignal.aborted) {
+        dispatchGraphEvent('BOT_STARTUP', { gatewayConnected: this.status === 'ONLINE' })
+          .catch((error) => this.log('ERROR', `Bot-startup graph failed: ${error.message}`));
+      }
     } catch (err) {
       this.graphRunAbortController?.abort();
+      this.stopBotUptime();
       this.status = 'ERROR';
       this.broadcastWS({ type: 'BOT_STATUS', payload: { status: this.status, error: err.message } });
       this.log('ERROR', `Login failed: ${err.message}`);
@@ -1365,7 +1781,7 @@ export class BotManager {
     this.intentPlanLastRefreshAt = Date.now();
     this.intentPlanRefreshPromise = (async () => {
       try {
-        const application = await new RESTClient({ token }).getCurrentApplication();
+        const application = await this.createTrackedRESTClient(token).getCurrentApplication();
         if (application && this.botProfile) {
           const previous = this.botProfile.application || {};
           this.botProfile = {
@@ -1397,6 +1813,8 @@ export class BotManager {
     this.stopCronScheduler = null;
     this.graphRunAbortController?.abort();
     this.graphRunAbortController = null;
+    this.stopBotUptime();
+    this.resetGatewayLatency();
     if (this.client) {
       if (this.restRateLimitListener) this.client.rest.rateLimiter.off('rateLimit', this.restRateLimitListener);
       this.restRateLimitListener = null;
