@@ -33,6 +33,7 @@ const shortcutActions = [
   ['arrangeNodes', 'Arrange nodes'],
   ['toggleLibrary', 'Toggle Library'],
   ['openSearch', 'Open node search'],
+  ['addNote', 'Add note'],
   ['emojiPicker', 'Open emoji picker'],
   ['saveGraph', 'Save graph'],
   ['undo', 'Undo'],
@@ -284,6 +285,8 @@ export function EditorSettingsModal({ isOpen, onClose, settings, onUpdateSetting
     {activeTab === 'shortcuts' && desktopMode && <div className="settings-section settings-tab-content settings-shortcuts-content">
       <div className="settings-shortcuts-intro"><Keyboard size={17} /><div><strong>Keyboard shortcuts</strong><span>Choose a shortcut, then press the keys you want to use.</span></div></div>
       <div className="settings-shortcut-editor">{shortcutActions.filter(([key]) => key !== 'arrangeNodes' || localWorkspace).map(([key, label]) => <div className="settings-shortcut-row" key={key}><span>{label}</span><button type="button" className={`settings-shortcut-record ${recording === key ? 'is-recording' : ''}`} onClick={() => { setShortcutCaptureError(''); setRecording(key); }} aria-label={`Change shortcut for ${label}`}>{recording === key ? 'Press keys…' : shortcuts[key] ? formatShortcut(shortcuts[key], platform) : 'Unassigned'}</button></div>)}</div>
+      <div className="settings-shortcut-gesture"><strong>Canvas find</strong><span>{platform === 'macos' ? '⌘F' : 'Ctrl+F'} opens the active sidebar search when one is open, otherwise it finds on the canvas. {platform === 'macos' ? '⌘G' : 'Ctrl+G'} and {platform === 'macos' ? '⌘⇧G' : 'Ctrl+Shift+G'} move through results.</span></div>
+      <div className="settings-shortcut-gesture"><strong>Collaborative arrows</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and Shift, then drag on the canvas. Arrows fade after 10 seconds unless you keep them.</span></div>
       <div className="settings-shortcut-gesture"><strong>Colored sections</strong><span>Hold {platform === 'macos' ? 'Option' : 'Alt'} and drag a node to move it between sections. It stays grouped while inside; drag it fully outside to remove it. The section won’t stretch to follow the node.</span></div>
       {shortcutCaptureError && <p className="field-error" role="alert">{shortcutCaptureError}</p>}
       <div className="settings-shortcut-actions"><small>Shortcuts are saved on this device. Press Esc while recording to cancel.</small><Button variant="secondary" onClick={() => update('shortcuts', { ...DEFAULT_SHORTCUTS })}>Restore defaults</Button></div>
