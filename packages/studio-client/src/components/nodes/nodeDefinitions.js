@@ -139,36 +139,21 @@ export function getNodeTemplateInputPins(node, inputs = [], variables = [], conn
 }
 
 export function createDefaultNodeData(type) {
-  if (type === 'variable_create') return { name: '', valueType: 'string', value: '', persist: true };
-  if (type === 'data_to_number') return { text: '' };
-  if (type === 'data_check_value') return { fallback: '' };
-  if (type === 'data_get_value_by_path') return { path: '', fallback: '' };
-  if (type === 'data_find_array_item') return { path: '', value: '' };
-  if (type === 'data_filter_array') return { path: '', operator: 'equals', value: '' };
-  if (type === 'branch_switch') return { caseCount: 2, value: '', case_1: '', case_2: '' };
-  if (type === 'data_format_number') return { locale: 'en-US', style: 'decimal', currency: 'USD', minimum_fraction_digits: 0, maximum_fraction_digits: 2 };
-  if (type === 'data_to_text') return { value: '' };
-  if (type === 'data_to_boolean') return { value: false };
-  if (type === 'data_regex') return { mode: 'test', text: '', pattern: '', flags: '', replacement: '' };
-  if (type === 'data_array_get') return { index: 0 };
-  if (type === 'repeat_while') return { condition: true, interval_ms: 500 };
-  if (type === 'event_cron') return { cronExpression: '*/5 * * * *', timeZone: 'UTC' };
-  if (type === 'event_bot_startup') return { wait_for_gateway: false, timeout_seconds: 30 };
-  if (type === 'function_input') return { paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`, name: 'Input', valueType: 'number', optional: false, defaultValue: 0 };
-  if (type === 'function_return') return { valueType: 'number' };
-  if (type === 'math_round') return { precision: 0 };
-  if (type === 'math_compare') return { operation: 'less_than' };
-  if (type === 'math_constant') return { constant: 'pi' };
-  if (type === 'function_math') return { operation: 'add' };
-  if (type === 'build_embed') return { blocks: [], components: [] };
-  if (type === 'build_modal') return { modal: { customId: 'arc_modal', title: 'Tell us more', components: [{ type: 'text', customId: 'details', label: 'Details', style: 2, required: true, minLength: 1, maxLength: 1000 }] } };
-  if (type === 'data_permission_overwrites') return {
-    overwriteCount: 1,
-    target_id_1: '', target_type_1: 0, allow_1: [], deny_1: []
+  const definition = BuiltInNodeDefinitions.find((candidate) => candidate.type === type);
+  const editorDefaults = Object.fromEntries((definition?.editorControls || [])
+    .filter((control) => control.key && Object.hasOwn(control, 'defaultValue'))
+    .map((control) => [control.key, control.defaultValue]));
+  const nodeDefaults = definition?.defaultData || {};
+  if (type === 'function_input') {
+    return { ...nodeDefaults, paramId: `param_${Date.now()}_${Math.random().toString(36).slice(2, 5)}` };
+  }
+  const pluginDefinition = definition?.pluginAdapter ? definition : null;
+  if (pluginDefinition) return {
+    ...Object.fromEntries(pluginDefinition.inputs.filter((pin) => pin.type !== 'exec' && pin.defaultValue !== undefined).map((pin) => [pin.id, pin.defaultValue])),
+    ...nodeDefaults,
+    ...editorDefaults
   };
-  const pluginDefinition = BuiltInNodeDefinitions?.find((definition) => definition.type === type && definition.pluginAdapter);
-  if (pluginDefinition) return Object.fromEntries(pluginDefinition.inputs.filter((pin) => pin.type !== 'exec' && pin.defaultValue !== undefined).map((pin) => [pin.id, pin.defaultValue]));
-  return {};
+  return { ...nodeDefaults, ...editorDefaults };
 }
 
 const bundledNodeDefinitions = Object.values(NodeDefinitions);
