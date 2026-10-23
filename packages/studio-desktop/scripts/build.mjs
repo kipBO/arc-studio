@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 //
 const command = process.platform === 'win32' ? 'tauri.cmd' : 'tauri';
@@ -33,7 +32,7 @@ try {
   if (process.env.ARC_UPDATE_ENDPOINT && process.env.ARC_UPDATE_ENDPOINT !== expectedUpdateEndpoint) {
     throw new Error(`The ${releaseChannel} desktop build must use its matching updater endpoint.`);
   }
-  const tauriArgs = ['build', '--target', target, '--bundles', process.platform === 'darwin' ? 'app' : process.platform === 'win32' ? 'nsis' : 'appimage'];
+  const tauriArgs = ['build', '--target', target, '--bundles', process.platform === 'darwin' ? 'app' : process.platform === 'win32' ? 'nsis' : 'appimage,deb'];
   const signingConfigured = Boolean(process.env.TAURI_SIGNING_PRIVATE_KEY || process.env.TAURI_SIGNING_PRIVATE_KEY_PATH);
   const tauriBuildConfig = { bundle: { createUpdaterArtifacts: signingConfigured } };
   let nightlyIconDirectory = null;
@@ -146,22 +145,31 @@ try {
   const bundleRoot = path.join('src-tauri', 'target', target, 'release', 'bundle', bundleKind);
   const extension = process.platform === 'darwin' ? '.dmg' : process.platform === 'win32' ? '.exe' : '.AppImage';
   if (!fs.existsSync(bundleRoot)) throw new Error(`The ${bundleKind} bundle directory was not created: ${bundleRoot}`);
-  const installers = fs.readdirSync(bundleRoot).filter((name) => name.endsWith(extension));
-  if (!installers.length) throw new Error(`No ${extension} installer was created in ${bundleRoot}`);
-  for (const originalName of installers) {
-    let installer = originalName;
-    if (!/-unsigned\.(?:dmg|exe|AppImage)$/i.test(installer)) {
-      const renamed = `${installer.slice(0, -extension.length)}-unsigned${extension}`;
-      const sourcePath = path.join(bundleRoot, installer);
-      const renamedPath = path.join(bundleRoot, renamed);
-      if (fs.existsSync(renamedPath)) throw new Error(`Unsigned installer destination already exists: ${renamedPath}`);
-      fs.renameSync(sourcePath, renamedPath);
-      installer = renamed;
+  const installerBundles = [{ directory: bundleRoot, extension }];
+  if (process.platform === 'linux') {
+    installerBundles.push({
+      directory: path.join('src-tauri', 'target', target, 'release', 'bundle', 'deb'),
+      extension: '.deb'
+    });
+  }
+  for (const bundle of installerBundles) {
+    if (!fs.existsSync(bundle.directory)) throw new Error(`The ${path.basename(bundle.directory)} bundle directory was not created: ${bundle.directory}`);
+    const installers = fs.readdirSync(bundle.directory).filter((name) => name.endsWith(bundle.extension));
+    if (!installers.length) throw new Error(`No ${bundle.extension} installer was created in ${bundle.directory}`);
+    for (const originalName of installers) {
+      let installer = originalName;
+      if (!/-unsigned\.(?:dmg|exe|AppImage|deb)$/i.test(installer)) {
+        const renamed = `${installer.slice(0, -bundle.extension.length)}-unsigned${bundle.extension}`;
+        const sourcePath = path.join(bundle.directory, installer);
+        const renamedPath = path.join(bundle.directory, renamed);
+        if (fs.existsSync(renamedPath)) throw new Error(`Unsigned installer destination already exists: ${renamedPath}`);
+        fs.renameSync(sourcePath, renamedPath);
+        fs.rmSync(`${sourcePath}.sha256`, { force: true });
+        installer = renamed;
+      }
+      fs.rmSync(path.join(bundle.directory, `${installer}.sha256`), { force: true });
+      console.log(`Prepared installer: ${path.join(bundle.directory, installer)}`);
     }
-    const installerPath = path.join(bundleRoot, installer);
-    const digest = createHash('sha256').update(fs.readFileSync(installerPath)).digest('hex');
-    fs.writeFileSync(`${installerPath}.sha256`, `${digest}  ${installer}\n`);
-    console.log(`SHA-256 ${installer}: ${digest}`);
   }
   const buildInfoPath = path.join('src-tauri', 'target', target, 'release', 'bundle', 'arc-build-info.json');
   const buildInfo = {
