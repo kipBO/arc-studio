@@ -36,6 +36,11 @@ export function compareArcStudioVersions(candidate, current) {
   return 0;
 }
 
+export function isArcStudioClientVersionAllowed(candidate, minimum) {
+  const order = compareArcStudioVersions(candidate, minimum);
+  return order !== null && order >= 0;
+}
+
 export function projectVersionAge(createdWithVersion, currentVersion = currentArcStudioVersion) {
   const created = parseArcVersion(createdWithVersion);
   const current = parseArcVersion(currentVersion);
