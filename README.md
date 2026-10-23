@@ -42,7 +42,7 @@ Run it yourself in a browser, or install the desktop app:
 | macOS 14 or newer | Universal app for Intel and Apple silicon |
 | Windows 10 version 1803 or newer | x64 installer |
 | Windows 11 | x64 and ARM64 installers |
-| Ubuntu 22.04, Debian 12, and compatible Linux distributions | x64 and ARM64 AppImages |
+| Ubuntu 22.04, Debian 12, and compatible Linux distributions | x64 and ARM64 AppImages and `.deb` packages |
 
 See [desktop downloads and system requirements](docs/DESKTOP_DISTRIBUTION.md).
 
@@ -116,4 +116,4 @@ ARC Studio and Chezcord are licensed under the [Apache License 2.0](LICENSE). Th
 
 
 [Termux Labs Discord Server](https://discord.gg/Cet9px5ZnZ) (Application only)
-Last Edited: 21 October 2026
+Last Edited: 23 October 2026
