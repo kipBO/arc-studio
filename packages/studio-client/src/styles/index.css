@@ -2094,6 +2094,7 @@ body.is-resizing-sidebar .discord-text-studio { transition: none !important; }
 .discord-text-studio-title { display: flex; min-width: 0; flex: 1; align-items: center; gap: 10px; }
 .discord-text-studio-title > svg { color: var(--accent); }
 .discord-text-studio-title > div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.discord-text-studio-title .read-only-badge { margin-left: 0; }
 .discord-text-studio-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc((13px) * var(--arc-font-scale, 1)); }
 .discord-text-studio-actions { display: flex; align-items: center; gap: 9px; }
 .discord-text-studio-count { color: var(--muted); font: calc(11px * var(--arc-font-scale, 1)) var(--mono, monospace); white-space: nowrap; }
