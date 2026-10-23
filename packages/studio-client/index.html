@@ -1,38 +1,66 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#191c21" />
     <title>ARC Studio</title>
-    <meta name="description" content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace." />
+    <meta
+      name="description"
+      content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace."
+    />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="ARC Studio" />
     <meta property="og:title" content="ARC Studio - Create your Discord Bot" />
-    <meta property="og:description" content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace." />
+    <meta
+      property="og:description"
+      content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace."
+    />
     <meta property="og:image" content="/arc.png" />
     <meta property="og:image:type" content="image/png" />
     <meta property="og:image:alt" content="ARC Studio logo" />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="ARC Studio - Create your Discord Bot" />
-    <meta name="twitter:description" content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace." />
+    <meta
+      name="twitter:description"
+      content="Build and debug Discord bots with visual node graphs. Connect to this private ARC Studio workspace."
+    />
     <meta name="twitter:image" content="/arc.png" />
     <link rel="icon" type="image/png" href="/arc.png" />
     <script>
       (() => {
-        const reloadKey = 'arc:stale-client-reload-at';
-        const getSessionValue = (key) => { try { return sessionStorage.getItem(key); } catch { return null; } };
-        const setSessionValue = (key, value) => { try { sessionStorage.setItem(key, value); return true; } catch { return false; } };
-        window.addEventListener('vite:preloadError', (event) => {
+        const reloadKey = "arc:stale-client-reload-at";
+        const getSessionValue = (key) => {
+          try {
+            return sessionStorage.getItem(key);
+          } catch {
+            return null;
+          }
+        };
+        const setSessionValue = (key, value) => {
+          try {
+            sessionStorage.setItem(key, value);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        window.addEventListener("vite:preloadError", (event) => {
           event.preventDefault();
           const now = Date.now();
           const lastReload = Number(getSessionValue(reloadKey) || 0);
-          if ((!lastReload || now - lastReload > 15000) && setSessionValue(reloadKey, String(now))) {
+          if (
+            (!lastReload || now - lastReload > 15000) &&
+            setSessionValue(reloadKey, String(now))
+          ) {
             const url = new URL(window.location.href);
-            url.searchParams.set('__arc_refresh', String(now));
+            url.searchParams.set("__arc_refresh", String(now));
             window.location.replace(url);
           } else {
-            console.error('ARC Studio could not load a client module after refreshing. Reload the page to try again.', event.payload);
+            console.error(
+              "ARC Studio could not load a client module after refreshing. Reload the page to try again.",
+              event.payload,
+            );
           }
         });
       })();
@@ -44,5 +72,7 @@
     <div id="root"></div>
 
     <script type="module" src="/src/main.jsx"></script>
+    <canvas id="snow-canvas"></canvas>
+    <script src="/src/components/splash/snow.js" defer></script>
   </body>
 </html>
