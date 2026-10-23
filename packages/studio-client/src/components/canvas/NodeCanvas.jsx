@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CanvasNode } from '../nodes/CanvasNode.jsx';
-import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getPermissionOverwritePins, getSwitchCasePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
-import { FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, StepForward, Type } from 'lucide-react';
+import { BuiltInNodeDefinitions, getArrayAppendPins, getArrayCombinePins, getArrayCreatePins, getMathListPins, getNodeArgumentPins, getNodeTemplateInputPins, getPermissionOverwritePins, getSwitchCasePins, PinColors, getTextTemplateSlots } from '../nodes/nodeDefinitions.js';
+import { ChevronDown, ChevronUp, FastForward, FileCode2, FolderTree, Hand, LockKeyhole, LockOpen, Maximize, Minus, MousePointer2, Plus, Scissors, Search, StepForward, Type, X } from 'lucide-react';
 import { embedBlockPins, getEmbedBlocks, getEmbedFieldSocketLabels } from '../nodes/EmbedNodeBuilder.jsx';
 import { getArcUiScale } from '../../core/uiScale.js';
+import { getEffectiveCanvasQuality } from '../../core/canvasQuality.js';
 import { onPageBlur } from '../../core/pageFocus.js';
 import { readAppStorage, writeAppStorage } from '../../core/storage.js';
 import { Modal } from '../ui/Modal.jsx';
@@ -19,7 +20,7 @@ const LARGE_GRAPH_NODE_LIMIT = 48;
 const LARGE_GRAPH_WIRE_LIMIT = 64;
 const NODE_CULL_OVERSCAN_MIN = 520;
 const NODE_CULL_OVERSCAN_MAX = 1120;
-const BUILTIN_NODE_DEFINITIONS_BY_TYPE = new Map(BuiltInNodeDefinitions.map((definition) => [definition.type, definition]));
+const PAN_CULL_REFRESH_DISTANCE = 560;
 const EMPTY_NODE_CONNECTIONS = Object.freeze({ incoming: [], outgoing: [], incident: [] });
 const textInputPopupOpen = () => typeof document !== 'undefined' && Boolean(document.querySelector('.arc-full-emoji-picker, .discord-emoji-suggestions'));
 const getCanvasDisplayScale = (element) => {
@@ -254,7 +255,7 @@ function getWireCutSegments(pathElement, event) {
 export function NodeCanvas({
   nodes: suppliedNodes = [], connections: suppliedConnections = [], graphId = '', projectId = '', focusRequest = null, followRequest = null, onFollowComplete, activePulseNodeIds = [], debugStep = null, onDebugAction, settings = {}, isLocked = false, desktopMode = false, shortcutPlatform = 'windows', authToken = '', graphName = 'Untitled graph',
   tagGroups = [], notes = [], currentUser = null, noteEditLocks = {}, collaborationOnline = false, collaborationReady = false, collaborationMotionSupported = false, collaborationClientId = '', onRequestNoteEditLock, onReleaseNoteEditLock, onNotesChange, onTagGroupsChange, onRequestCreateTagGroup, onRequestEditTagGroup, onRenameNode,
-  graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
+  graphVariables = [], functionGraphs = [], callableGraphs = functionGraphs, appEmojis = [], nodeDefinitions = BuiltInNodeDefinitions, onNodesChange, onConnectionsChange, onOpenPalette, onViewportCenterChange, onSelectedNodeChange, onSelectedNodeCountChange, onOpenLibrary, onOpenVariables,
   onHistoryGroupStart, onHistoryGroupEnd, onNodeDrop, onSaveNodePrefab, onOpenEmbedStudio, onOpenTextStudio, onOpenPermissionStudio, onOpenSlashCommandStudio, onOpenModalStudio, onOpenFunctionGraph, remoteActions = [], onCollaborationAction,
   graphChatEnabled = false, graphChatBubbles = [], onSendGraphChat, onMoveGraphChatBubble
 }) {
@@ -390,6 +391,7 @@ export function NodeCanvas({
   const pinDoubleClickRef = useRef(null);
   const pendingPinDragRef = useRef(null);
   const frameTimingRef = useRef({ last: 0, samples: 0, slow: 0, fast: 0 });
+  const canvasWorldRef = useRef(null);
   const autoPanFrameTimeRef = useRef(0);
   const [performanceReduced, setPerformanceReduced] = useState(() => {
     if (typeof navigator === 'undefined') return false;
@@ -400,7 +402,6 @@ export function NodeCanvas({
   const canvasQualityMode = ['auto', 'fast', 'optimal', 'quality'].includes(settings.canvasQuality) ? settings.canvasQuality : 'auto';
   const canvasQualityModeRef = useRef(canvasQualityMode);
   canvasQualityModeRef.current = canvasQualityMode;
-  const effectiveCanvasQuality = canvasQualityMode === 'auto' ? (performanceReduced ? 'fast' : 'quality') : canvasQualityMode;
   const performanceReducedRef = useRef(performanceReduced);
   performanceReducedRef.current = performanceReduced;
   canvasRenderVersionRef.current += 1;
@@ -410,9 +411,16 @@ export function NodeCanvas({
   const viewportGraphKeyRef = useRef(viewportGraphKey);
   const [pan, setPan] = useState({ x: 22, y: 18 });
   const [zoom, setZoom] = useState(1);
+  const [canvasFindOpen, setCanvasFindOpen] = useState(false);
+  const [canvasFindQuery, setCanvasFindQuery] = useState('');
+  const [canvasFindCaseSensitive, setCanvasFindCaseSensitive] = useState(false);
+  const [canvasFindWholeWord, setCanvasFindWholeWord] = useState(false);
+  const [canvasFindRegex, setCanvasFindRegex] = useState(false);
+  const [canvasFindIndex, setCanvasFindIndex] = useState(-1);
+  const canvasFindInputRef = useRef(null);
   const viewportRef = useRef({ pan, zoom });
-  viewportRef.current = { pan, zoom };
   const [isPanning, setIsPanning] = useState(false);
+  viewportRef.current = { pan: isPanning ? viewportRef.current.pan : pan, zoom };
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState([]);
   const [selectedNoteIds, setSelectedNoteIds] = useState([]);
@@ -561,6 +569,15 @@ export function NodeCanvas({
   const rightPanMovedRef = useRef(false);
   const rightPanOriginRef = useRef(null);
   const collaborationCursorRef = useRef(null);
+  const applyPanDuringGesture = (nextPan) => {
+    viewportRef.current = { ...viewportRef.current, pan: nextPan };
+    if (canvasWorldRef.current) {
+      canvasWorldRef.current.style.transform = `translate3d(${nextPan.x}px, ${nextPan.y}px, 0) scale(${viewportRef.current.zoom})`;
+    }
+    containerRef.current?.style.setProperty('--grid-x', `${nextPan.x}px`);
+    containerRef.current?.style.setProperty('--grid-y', `${nextPan.y}px`);
+    if (Math.hypot(nextPan.x - pan.x, nextPan.y - pan.y) >= PAN_CULL_REFRESH_DISTANCE) setPan(nextPan);
+  };
   useEffect(() => { collaborationCursorRef.current = null; }, [graphId]);
   const reportGraphChatCursorMode = (mode) => {
     let cursor = collaborationCursorRef.current;
@@ -639,6 +656,7 @@ export function NodeCanvas({
 
   useEffect(() => {
     const onKeyDown = (event) => {
+      if (canvasFindOpen && event.key === 'Escape') return;
       if (event.key === 'Shift') setShiftHeld(true);
       if (event.key === 'Alt') altDownRef.current = true;
       const shortcutBlocked = isTextTarget(event.target) || (event.target instanceof HTMLElement && Boolean(event.target.closest('[role="dialog"]')));
@@ -740,10 +758,11 @@ export function NodeCanvas({
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, connectingWire, isLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen]);
+  }, [selectedNodeId, selectedNodeIds, selectedNoteIds, connectingWire, isLocked, nodes, connections, onOpenPalette, cancelConnectingWire, pan, zoom, notes, contextMenu, onRequestCreateTagGroup, currentUser, onNotesChange, onCollaborationAction, graphChatEnabled, collaborationReady, graphId, graphChatComposerOpen, canvasFindOpen]);
 
   useEffect(() => {
     if (!contextMenu) return undefined;
+    if (isPanning) setPan(viewportRef.current.pan);
     setIsPanning(false);
     rightPanOriginRef.current = null;
     const close = (event) => {
@@ -759,7 +778,7 @@ export function NodeCanvas({
       document.removeEventListener('keydown', onKeyDown);
       removePageBlurListener();
     };
-  }, [contextMenu, uiScale]);
+  }, [contextMenu, isPanning, uiScale]);
 
   useEffect(() => () => {
     window.clearTimeout(shakeTimerRef.current);
@@ -810,10 +829,17 @@ export function NodeCanvas({
         const factor = Math.exp(-(event.deltaY / displayScale) * 0.006);
         setZoom((currentZoom) => {
           const nextZoom = clamp(currentZoom * factor, 0.25, 2.5);
-          setPan((currentPan) => ({
-            x: cursorX - ((cursorX - currentPan.x) / currentZoom) * nextZoom,
-            y: cursorY - ((cursorY - currentPan.y) / currentZoom) * nextZoom
-          }));
+          setPan((currentPan) => {
+            const nextPan = {
+              x: cursorX - ((cursorX - currentPan.x) / currentZoom) * nextZoom,
+              y: cursorY - ((cursorY - currentPan.y) / currentZoom) * nextZoom
+            };
+            panStartRef.current = {
+              x: event.clientX / displayScale - nextPan.x,
+              y: event.clientY / displayScale - nextPan.y
+            };
+            return nextPan;
+          });
           return nextZoom;
         });
       } else if (event.shiftKey) {
@@ -834,7 +860,7 @@ export function NodeCanvas({
     if (selectedNodeId && !nodes.some((node) => node.id === selectedNodeId)) setSelectedNodeId(validIds[0] || null);
   }, [nodes, selectedNodeId, selectedNodeIds]);
 
-  const definitionsByType = BUILTIN_NODE_DEFINITIONS_BY_TYPE;
+  const definitionsByType = useMemo(() => new Map(nodeDefinitions.map((definition) => [definition.type, definition])), [nodeDefinitions]);
   const modalFieldOptions = useMemo(() => nodes.flatMap((modalNode) => {
     if (modalNode.type !== 'build_modal') return [];
     const modal = modalNode.data?.modal || {};
@@ -850,10 +876,38 @@ export function NodeCanvas({
     if (seen.has(node.id)) return definition;
     const nextSeen = new Set(seen).add(node.id);
     const nodeConnections = nodeConnectionsById.get(node.id) || EMPTY_NODE_CONNECTIONS;
+    const resolveInputPinColor = (pin) => {
+      if (!pin || (pin.type !== 'arg' && pin.type !== 'any')) return pin;
+      const wire = connectionByNodePin.incoming.get(node.id)?.get(pin.id);
+      if (!wire) {
+        if (pin.colorType) {
+          const { colorType: _, ...rest } = pin;
+          return rest;
+        }
+        return pin;
+      }
+      const sourceNode = definitionNodesById.get(wire.sourceNodeId);
+      const sourceDefinition = sourceNode && getNodeDefinition(sourceNode, nextSeen);
+      const sourcePin = sourceDefinition?.outputs?.find((item) => item.id === wire.sourcePinId);
+      const declaredType = sourcePin?.colorType || sourcePin?.type;
+      const colorType = declaredType && !['arg', 'any'].includes(declaredType) ? declaredType : wire.type;
+      if (colorType && colorType !== 'arg' && colorType !== 'any') {
+        return { ...pin, colorType };
+      }
+      if (pin.colorType) {
+        const { colorType: _, ...rest } = pin;
+        return rest;
+      }
+      return pin;
+    };
     const withExecInputPins = (nextDefinition) => {
-      const inputs = nextDefinition.inputs || [];
+      const baseInputs = nextDefinition.inputs || [];
+      const existingIds = new Set(baseInputs.map((pin) => pin.id));
+      const templatePins = getNodeTemplateInputPins(node, baseInputs, canvasGraphVariables, nodeConnections.incident);
+      let inputs = [...baseInputs, ...templatePins.filter((pin) => !existingIds.has(pin.id))];
+      inputs = inputs.map(resolveInputPinColor);
       const execPin = inputs.find((pin) => pin.type === 'exec');
-      if (!execPin) return nextDefinition;
+      if (!execPin) return { ...nextDefinition, inputs };
       const baseId = execPin.id;
       const highestConnected = nodeConnections.incoming.reduce((highest, wire) => {
         if (wire.targetPinId === baseId) return Math.max(highest, 1);
@@ -906,21 +960,13 @@ export function NodeCanvas({
         outputs.push({ id: outputId, label, type });
       }
       return withExecInputPins({ ...definition, inputs, outputs });
-    }
+    };
     const withArgumentPins = (nextDefinition) => {
       const argumentPins = getNodeArgumentPins(node, nextDefinition.inputs || [], nodeConnections.incident);
       const existingIds = new Set((nextDefinition.inputs || []).map((pin) => pin.id));
-      const typedArgumentPins = argumentPins.map((pin) => {
-        const wire = connectionByNodePin.incoming.get(node.id)?.get(pin.id);
-        if (!wire) return pin;
-        const sourceNode = definitionNodesById.get(wire.sourceNodeId);
-        const sourceDefinition = sourceNode && getNodeDefinition(sourceNode, nextSeen);
-        const sourcePin = sourceDefinition?.outputs?.find((item) => item.id === wire.sourcePinId);
-        const declaredType = sourcePin?.colorType || sourcePin?.type;
-        const colorType = declaredType && !['arg', 'any'].includes(declaredType) ? declaredType : wire.type;
-        return colorType && colorType !== 'arg' && colorType !== 'any' ? { ...pin, colorType } : pin;
-      });
-      const withArguments = typedArgumentPins.length ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...typedArgumentPins.filter((pin) => !existingIds.has(pin.id))] } : nextDefinition;
+      const withArguments = argumentPins.length
+        ? { ...nextDefinition, inputs: [...(nextDefinition.inputs || []), ...argumentPins.filter((pin) => !existingIds.has(pin.id))] }
+        : nextDefinition;
       return withExecInputPins(withArguments);
     };
     if (node.type === 'event_message_create') {
@@ -1003,7 +1049,7 @@ export function NodeCanvas({
         : withArgumentPins({ ...definition, inputs: definition.inputs.map((pin) => pin.id === 'value' ? { ...pin, label: pinLabel, type: pinType, colorType: variable?.type || pinType, defaultValue: variable?.initialValue ?? '' } : pin) });
     }
     if (node.type === 'build_embed' && Array.isArray(node.data?.blocks)) {
-      return withArgumentPins({ ...definition, inputs: embedBlockPins(getEmbedBlocks(node.data)) });
+      return withArgumentPins({ ...definition, inputs: embedBlockPins(getEmbedBlocks(node.data), canvasGraphVariables) });
     }
     if (node.type === 'build_embed' && Array.isArray(node.data?.fields) && node.data.fields.length) {
       const fields = node.data.fields;
@@ -1026,16 +1072,28 @@ export function NodeCanvas({
         return argument
           ? [{ id: `arg_${argument[1]}`, label: `arg${argument[1]}`, type: 'arg', defaultValue: '' }]
           : variableNames.has(name.toLowerCase()) ? []
-            : [{ id: `slot_${name}`, label: name, type: 'string', defaultValue: '' }];
+            : [{ id: `slot_${name}`, label: name, type: 'arg', defaultValue: '' }];
       }) });
     }
     if (node.type === 'function_input') {
       const type = node.data?.valueType || 'number';
-      return withExecInputPins({ ...definition, outputs: [{ id: 'value', label: node.data?.name || 'Value', type }] });
+      return withExecInputPins({
+        ...definition,
+        outputs: [
+          { id: 'exec', label: 'Exec', type: 'exec' },
+          { id: 'value', label: node.data?.name || 'Value', type }
+        ]
+      });
     }
     if (node.type === 'function_return') {
       const type = node.data?.valueType || 'number';
-      return withExecInputPins({ ...definition, inputs: [{ id: 'value', label: 'Return', type, defaultValue: defaultForType(type) }] });
+      return withExecInputPins({
+        ...definition,
+        inputs: [
+          { id: 'exec', label: 'Exec', type: 'exec' },
+          { id: 'value', label: 'Return', type, defaultValue: defaultForType(type) }
+        ]
+      });
     }
     if (node.type === 'function_call') {
       const target = functionGraphDefinitionViews.find((graph) => graph.id === node.data?.graphId);
@@ -1043,8 +1101,14 @@ export function NodeCanvas({
       const returnNode = target?.nodes?.find((item) => item.type === 'function_return');
       return withExecInputPins({
         ...definition,
-        inputs: params.map((param) => ({ id: `arg_${param.data?.paramId || param.id}`, label: `${param.data?.name || 'Input'}${param.data?.optional !== false ? ' (optional)' : ''}`, type: param.data?.valueType || 'number', defaultValue: param.data?.defaultValue ?? defaultForType(param.data?.valueType) })),
-        outputs: returnNode ? [{ id: 'result', label: 'Result', type: returnNode.data?.valueType || 'number' }] : []
+        inputs: [
+          { id: 'exec', label: 'Exec', type: 'exec' },
+          ...params.map((param) => ({ id: `arg_${param.data?.paramId || param.id}`, label: `${param.data?.name || 'Input'}${param.data?.optional !== false ? ' (optional)' : ''}`, type: param.data?.valueType || 'number', defaultValue: param.data?.defaultValue ?? defaultForType(param.data?.valueType) }))
+        ],
+        outputs: [
+          { id: 'exec', label: 'Exec', type: 'exec' },
+          ...(returnNode ? [{ id: 'result', label: 'Result', type: returnNode.data?.valueType || 'number' }] : [])
+        ]
       });
     }
     return withArgumentPins(definition);
@@ -1381,6 +1445,10 @@ export function NodeCanvas({
     return additive;
   };
 
+  const isCanvasBackgroundTarget = (target) => target instanceof Element
+    && Boolean(containerRef.current?.contains(target))
+    && !target.closest('[data-node-card-id], [data-note-id], [data-wire-id], button, input, textarea, select, .canvas-tools, .canvas-breadcrumbs');
+
   const selectTagGroupNodes = (groupId) => {
     const group = tagGroups.find((item) => item.id === groupId);
     if (!group) return;
@@ -1458,7 +1526,7 @@ export function NodeCanvas({
       if (!sourceNode || !targetNode) return false;
       const sourcePin = getNodeDefinition(sourceNode)?.outputs?.find((pin) => pin.id === connection.sourcePinId);
       const targetPin = getNodeDefinition(targetNode)?.inputs?.find((pin) => pin.id === connection.targetPinId);
-      return sourcePin && targetPin && (sourcePin.type === targetPin.type || sourcePin.type === 'arg' || targetPin.type === 'arg');
+      return sourcePin && targetPin && (sourcePin.type === targetPin.type || sourcePin.type === 'arg' || targetPin.type === 'arg' || sourcePin.type === 'any' || targetPin.type === 'any');
     });
     onNodesChange?.(nextNodes);
     if (nextConnections.length !== connections.length) onConnectionsChange?.(nextConnections);
@@ -1466,7 +1534,7 @@ export function NodeCanvas({
 
   const startPan = (event) => {
     if (contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) return;
-    const isCanvasTarget = event.target === containerRef.current || event.target.classList?.contains('canvas-surface') || event.target.classList?.contains('canvas-world');
+    const isCanvasTarget = isCanvasBackgroundTarget(event.target);
     const textPopupOpen = textInputPopupOpen();
     if (textPopupOpen && event.pointerType === 'touch' && isCanvasTarget) return;
     if (event.pointerType === 'touch' && isCanvasTarget && !textPopupOpen) {
@@ -1500,6 +1568,7 @@ export function NodeCanvas({
     const spacePan = event.button === 0 && spaceDownRef.current;
     if (rightPan && !isCanvasTarget) return;
     if (textPopupOpen && (rightPan || spacePan || event.button === 1)) return;
+    if (settings.canvasRightClickPan && event.button === 0 && isCanvasTarget) return;
     if (rightPan || spacePan) {
       event.preventDefault();
       setIsPanning(true);
@@ -1557,6 +1626,7 @@ export function NodeCanvas({
     pointerPositionRef.current = { x: event.clientX, y: event.clientY };
     activatePendingPinDrag(event);
     if (textInputPopupOpen() && (isPanning || touchPinchRef.current)) {
+      if (isPanning) setPan(viewportRef.current.pan);
       setIsPanning(false);
       rightPanOriginRef.current = null;
       touchPinchRef.current = null;
@@ -1585,6 +1655,7 @@ export function NodeCanvas({
       }
     }
     if ((contextMenu || document.querySelector('.arc-dropdown.is-open, .canvas-context-menu')) && isPanning) {
+      setPan(viewportRef.current.pan);
       setIsPanning(false);
       rightPanOriginRef.current = null;
       return;
@@ -1592,7 +1663,8 @@ export function NodeCanvas({
     const bounds = containerRef.current?.getBoundingClientRect();
     if (bounds) {
       const displayScale = getCanvasDisplayScale(containerRef.current);
-      const cursor = { x: ((event.clientX - bounds.left) / displayScale - pan.x) / zoom, y: ((event.clientY - bounds.top) / displayScale - pan.y) / zoom };
+      const currentViewport = viewportRef.current;
+      const cursor = { x: ((event.clientX - bounds.left) / displayScale - currentViewport.pan.x) / currentViewport.zoom, y: ((event.clientY - bounds.top) / displayScale - currentViewport.pan.y) / currentViewport.zoom };
       collaborationCursorRef.current = cursor;
       if (connectingWire) onCollaborationAction?.({ kind: 'wire-drag', cursor, start: connectingWire.startPos, pinType: connectingWire.pinType, nodeId: connectingWire.nodeId, pinId: connectingWire.pinId, direction: connectingWire.direction, snapTarget: connectingWire.snapTarget ? { nodeId: connectingWire.snapTarget.nodeId, pinId: connectingWire.snapTarget.pinId } : null, selectedNodeIds });
       else if (draggingNode) {
@@ -1658,7 +1730,7 @@ export function NodeCanvas({
     if (isPanning) {
       if (rightPanOriginRef.current && Math.hypot(event.clientX - rightPanOriginRef.current.x, event.clientY - rightPanOriginRef.current.y) > 4) rightPanMovedRef.current = true;
       const displayScale = getCanvasDisplayScale(containerRef.current);
-      setPan({ x: event.clientX / displayScale - panStartRef.current.x, y: event.clientY / displayScale - panStartRef.current.y });
+      applyPanDuringGesture({ x: event.clientX / displayScale - panStartRef.current.x, y: event.clientY / displayScale - panStartRef.current.y });
       return;
     }
     if (selectionStartRef.current) {
@@ -1928,6 +2000,7 @@ export function NodeCanvas({
       selectionStartRef.current = null;
       setSelectionBox(null);
     }
+    if (isPanning) setPan(viewportRef.current.pan);
     setIsPanning(false);
     setDraggingNode(null);
     if (draggingNote) {
@@ -2175,6 +2248,129 @@ export function NodeCanvas({
     setPan({ x: bounds.width / scale / 2 - x * zoom, y: bounds.height / scale / 2 - y * zoom });
   }, [zoom]);
 
+  const canvasFindResults = useMemo(() => {
+    const query = canvasFindQuery.trim();
+    if (!query) return { results: [], error: '' };
+    let expression;
+    try {
+      const source = canvasFindRegex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      expression = new RegExp(source, `gu${canvasFindCaseSensitive ? '' : 'i'}`);
+    } catch (error) {
+      return { results: [], error: error instanceof Error ? error.message : 'Invalid regular expression' };
+    }
+    const results = [];
+    for (const node of nodes) {
+      const definition = getNodeDefinition(node);
+      const content = [
+        node.id, node.label, definition?.label, definition?.category, node.type,
+        ...(definition?.inputs || []).map((pin) => pin.label),
+        ...(definition?.outputs || []).map((pin) => pin.label),
+        JSON.stringify(node.data || {})
+      ]
+        .filter((value) => typeof value === 'string' && value.length)
+        .join('\n');
+      expression.lastIndex = 0;
+      let match = expression.exec(content);
+      while (match) {
+        const start = match.index;
+        const end = start + match[0].length;
+        const isWord = (character) => Boolean(character && /[\p{L}\p{N}_]/u.test(character));
+        if (!canvasFindWholeWord || (!isWord(content[start - 1]) && !isWord(content[end]))) {
+          results.push(node);
+          break;
+        }
+        if (!expression.global) break;
+        if (match[0].length === 0) expression.lastIndex += 1;
+        match = expression.exec(content);
+      }
+    }
+    return { results, error: '' };
+  }, [canvasFindQuery, canvasFindCaseSensitive, canvasFindWholeWord, canvasFindRegex, nodes, getNodeDefinition]);
+  const canvasFindResultIds = useMemo(() => new Set(canvasFindResults.results.map((node) => node.id)), [canvasFindResults.results]);
+  const canvasFindCurrentNodeId = canvasFindOpen && canvasFindQuery.trim()
+    ? canvasFindResults.results[canvasFindIndex]?.id
+    : undefined;
+
+  const navigateCanvasFind = useCallback((direction) => {
+    const results = canvasFindResults.results;
+    if (!results.length) {
+      setCanvasFindIndex(-1);
+      return;
+    }
+    const nextIndex = canvasFindIndex < 0
+      ? (direction > 0 ? 0 : results.length - 1)
+      : (canvasFindIndex + direction + results.length) % results.length;
+    setCanvasFindIndex(nextIndex);
+    const node = results[nextIndex];
+    setSelectedNodeId(node.id);
+    setSelectedNodeIds([node.id]);
+    setSelectedNoteIds([]);
+    const size = nodeWorldSizeCacheRef.current.sizes.get(node.id);
+    focusWorldPoint(node.x + (size?.width || NODE_WIDTH) / 2, node.y + (size?.height || estimateNodeCardHeight(node, getNodeDefinition(node))) / 2);
+  }, [canvasFindResults, canvasFindIndex, focusWorldPoint, getNodeDefinition]);
+
+  useEffect(() => {
+    if (!canvasFindOpen) return undefined;
+    const frame = window.requestAnimationFrame(() => canvasFindInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [canvasFindOpen]);
+
+  useEffect(() => {
+    const closeCanvasFind = () => setCanvasFindOpen(false);
+    window.addEventListener('arc:canvas-find-close', closeCanvasFind);
+    return () => window.removeEventListener('arc:canvas-find-close', closeCanvasFind);
+  }, []);
+
+  useEffect(() => {
+    setCanvasFindIndex((current) => current >= canvasFindResults.results.length ? -1 : current);
+  }, [canvasFindResults.results.length]);
+
+  useEffect(() => {
+    if (!canvasFindOpen) return undefined;
+    const dismissOutside = (event) => {
+      if (event.target instanceof Element && !event.target.closest('.canvas-tools')) setCanvasFindOpen(false);
+    };
+    document.addEventListener('pointerdown', dismissOutside, true);
+    return () => document.removeEventListener('pointerdown', dismissOutside, true);
+  }, [canvasFindOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.defaultPrevented) return;
+      const command = event.metaKey || event.ctrlKey;
+      const target = event.target;
+      const isEditing = target instanceof HTMLElement && (
+        target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+      );
+      if (canvasFindOpen && event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setCanvasFindOpen(false);
+        return;
+      }
+      const isCanvasTarget = target instanceof HTMLElement && Boolean(target.closest('.node-canvas'));
+      if (command && !event.altKey && event.key.toLowerCase() === 'f' && (!isEditing || isCanvasTarget)) {
+        event.preventDefault();
+        if (canvasFindOpen) {
+          canvasFindInputRef.current?.focus();
+          canvasFindInputRef.current?.select();
+          return;
+        }
+        setCanvasFindQuery('');
+        setCanvasFindIndex(-1);
+        setContextMenu(null);
+        setCanvasFindOpen(true);
+        return;
+      }
+      if (canvasFindOpen && command && !event.altKey && event.key.toLowerCase() === 'g') {
+        event.preventDefault();
+        navigateCanvasFind(event.shiftKey ? -1 : 1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [canvasFindOpen, navigateCanvasFind]);
+
   const handledFollowRequestRef = useRef(null);
   useEffect(() => {
     if (!followRequest || followRequest.graphId !== graphId || handledFollowRequestRef.current === followRequest.requestId) return;
@@ -2201,6 +2397,7 @@ export function NodeCanvas({
     event.stopPropagation();
     if (rightPanMovedRef.current) { rightPanMovedRef.current = false; rightPanOriginRef.current = null; return; }
     rightPanOriginRef.current = null;
+    if (settings.canvasRightClickPan && event.button === 2 && isCanvasBackgroundTarget(event.target)) return;
     if (event.target.closest?.('.canvas-tools, .canvas-breadcrumbs')) return;
     const nodeCard = event.target.closest?.('[data-node-card-id]');
     const noteCard = event.target.closest?.('[data-note-id]');
@@ -2676,6 +2873,69 @@ const previewOutput = (node, outputId, seen = new Set()) => {
   }, [connections, getSocketPosition, pan, zoom, wireStyle, wireViewportWidth, wireViewportHeight]);
   const visibleBaseConnections = useMemo(() => visibleWireIds ? baseConnections.filter((wire) => visibleWireIds.has(wire.id)) : baseConnections, [baseConnections, visibleWireIds]);
   const visibleElevatedConnections = useMemo(() => visibleWireIds ? elevatedConnections.filter((wire) => visibleWireIds.has(wire.id)) : elevatedConnections, [elevatedConnections, visibleWireIds]);
+  const denseViewportWorkload = useMemo(() => {
+    if (zoom > 0.55 || renderedCanvasNodes.length < 80 || visibleBaseConnections.length + visibleElevatedConnections.length < 100) {
+      return { nodeCount: 0, wireCount: 0 };
+    }
+    const viewport = {
+      left: -pan.x / zoom,
+      top: -pan.y / zoom,
+      right: (wireViewportWidth - pan.x) / zoom,
+      bottom: (wireViewportHeight - pan.y) / zoom
+    };
+    const sizes = nodeWorldSizeCacheRef.current.sizes;
+    let nodeCount = 0;
+    for (const node of renderedCanvasNodes) {
+      const position = localNodePositionById?.get(node.id) || remoteNodePositionById.get(node.id) || node;
+      const size = sizes.get(node.id);
+      const width = size?.width || NODE_WIDTH;
+      const height = Math.max(size?.height || 0, estimateCulledNodeHeight(node, nodeDefinitionsById.get(node.id)));
+      if (position.x + width >= viewport.left && position.x <= viewport.right
+        && position.y + height >= viewport.top && position.y <= viewport.bottom) nodeCount++;
+    }
+    let wireCount = 0;
+    const countVisibleWires = (wires) => {
+      for (const connection of wires) {
+        const start = getSocketPosition(connection.sourceNodeId, connection.sourcePinId, 'output');
+        const end = getSocketPosition(connection.targetNodeId, connection.targetPinId, 'input');
+        let left = Math.min(start.x, end.x);
+        let right = Math.max(start.x, end.x);
+        if (wireStyle !== 'straight') {
+          const curve = Math.max(Math.abs(end.x - start.x) * 0.5, 52);
+          left = Math.min(left, start.x + curve, end.x - curve);
+          right = Math.max(right, start.x + curve, end.x - curve);
+        }
+        const padding = 8 / zoom;
+        if (right + padding >= viewport.left && left - padding <= viewport.right
+          && Math.max(start.y, end.y) + padding >= viewport.top
+          && Math.min(start.y, end.y) - padding <= viewport.bottom) wireCount++;
+      }
+    };
+    countVisibleWires(visibleBaseConnections);
+    countVisibleWires(visibleElevatedConnections);
+    return { nodeCount, wireCount };
+  }, [
+    renderedCanvasNodes,
+    visibleBaseConnections,
+    visibleElevatedConnections,
+    pan,
+    zoom,
+    wireViewportWidth,
+    wireViewportHeight,
+    localNodePositionById,
+    remoteNodePositionById,
+    nodeDefinitionsById,
+    nodeBoundsRevision,
+    getSocketPosition,
+    wireStyle
+  ]);
+  const effectiveCanvasQuality = getEffectiveCanvasQuality({
+    mode: canvasQualityMode,
+    performanceReduced,
+    zoom,
+    visibleNodeCount: denseViewportWorkload.nodeCount,
+    visibleWireCount: denseViewportWorkload.wireCount
+  });
   const visibleCanvas = { left: 0, top: 0, right: canvasWidth, bottom: canvasHeight };
   const sidebar = containerRef.current?.parentElement?.querySelector('.project-sidebar, .graph-library-panel, .plugin-store-sidebar, .bot-settings-sidebar, .graph-variables-sidebar');
   if (sidebar && canvasBounds) {
@@ -2749,6 +3009,10 @@ const previewOutput = (node, outputId, seen = new Set()) => {
       onPointerDown={startPan}
       onPointerMove={queuePointerMove}
       onClick={(event) => {
+        if (settings.canvasRightClickPan && event.button === 0 && event.detail === 1 && isCanvasBackgroundTarget(event.target)) {
+          openContextMenu(event);
+          return;
+        }
         if (event.detail !== 3 || event.target.closest?.('button, input, textarea, select, [data-node-card-id], [data-note-id], [data-wire-id]')) return;
         const bounds = containerRef.current?.getBoundingClientRect();
         if (!bounds) return;
@@ -2765,7 +3029,9 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         if (pointerMoveFrameRef.current) window.cancelAnimationFrame(pointerMoveFrameRef.current);
         pointerMoveFrameRef.current = 0; pendingPointerMoveRef.current = null; canvasInteractionActiveRef.current = false;
         pendingPinDragRef.current = null;
-        touchPointersRef.current.clear(); touchPinchRef.current = null; setIsPanning(false);
+        touchPointersRef.current.clear(); touchPinchRef.current = null;
+        if (isPanning) setPan(viewportRef.current.pan);
+        setIsPanning(false);
         const nodePositions = collaborationMotionSupported && draggingNode ? (draggingNode.nodeIds || [draggingNode.id]).map((id) => { const node = nodes.find((item) => item.id === id); return node ? { id, x: node.x, y: node.y } : null; }).filter(Boolean) : undefined;
         if (collaborationCursorRef.current) onCollaborationAction?.({ kind: 'cursor', cursor: collaborationCursorRef.current, mode: 'move', selectedNodeIds, nodePositions }, true);
         setDraggingNode(null); setDraggingNote(null); selectionStartRef.current = null; setSelectionBox(null); rightPanOriginRef.current = null; rightPanMovedRef.current = false; cancelConnectingWire(); onHistoryGroupEnd?.();
@@ -2815,11 +3081,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           }
         } catch {}
       }}
-      style={{ '--grid-size': `${gridSize}px`, '--grid-x': `${pan.x}px`, '--grid-y': `${pan.y}px` }}
+      style={{ '--grid-size': `${gridSize}px`, '--grid-x': `${viewportRef.current.pan.x}px`, '--grid-y': `${viewportRef.current.pan.y}px` }}
     >
       <div className={`canvas-surface ${settings.showGrid === false ? 'is-grid-hidden' : ''}`} aria-hidden="true" />
       {connectingWire?.clickToConnect && <div className="wire-connect-hint">Click or tap a matching socket to connect <kbd>Esc</kbd> cancels</div>}
-      <div className="canvas-world" style={{ transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` }}>
+      <div ref={canvasWorldRef} className="canvas-world" style={{ transform: `translate3d(${viewportRef.current.pan.x}px, ${viewportRef.current.pan.y}px, 0) scale(${zoom})` }}>
         {tagGroupLayouts.map((group) => <div key={group.id} className="canvas-tag-group" aria-hidden="true" style={{ left: group.left, top: group.top, width: group.width, height: group.height, '--tag-group-color': group.color }} />)}
         {remoteActions.filter((peer) => peer.action?.kind === 'selection' && peer.action.selectionRect).map((peer) => {
           const rect = peer.action.selectionRect;
@@ -2828,10 +3094,11 @@ const previewOutput = (node, outputId, seen = new Set()) => {
         <svg className="wire-layer wire-layer-base" width="20000" height="20000" aria-label="Graph connections">
           {visibleBaseConnections.map((connection) => renderWire(connection, false))}
         </svg>
-
         {renderedCanvasNodes.map((node) => {
           const isSelected = selectedNodeIdSet.has(node.id);
           const isWireRelated = relatedNodeIds.has(node.id) && !isSelected;
+          const isFindMatch = canvasFindResultIds.has(node.id);
+          const isFindCurrent = isFindMatch && canvasFindCurrentNodeId === node.id;
           const definition = nodeDefinitionsById.get(node.id);
           const templatePreviewValues = templatePreviewValuesByNode.get(node.id) || EMPTY_TEMPLATE_PREVIEW_VALUES;
           const remoteVisual = remoteNodeVisualStateById.get(node.id) || EMPTY_REMOTE_NODE_STATE;
@@ -2842,7 +3109,7 @@ const previewOutput = (node, outputId, seen = new Set()) => {
           const displayPosition = localPosition || remotePosition || node;
           return (
             <div
-              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
+              className={`node-position ${shakingNodeId === node.id ? 'is-shaking' : ''} ${isSelected ? 'is-selected' : ''} ${isFindMatch ? 'is-canvas-find-match' : ''} ${isFindCurrent ? 'is-canvas-find-current' : ''} ${remoteOwner ? 'is-collaborator-active' : ''} ${remoteVisual.dragging ? 'is-collaborator-dragging' : ''} ${remotePosition ? 'is-remote-moving' : ''} ${remoteSelection ? 'is-collaborator-selected' : ''}`}
               key={node.id}
               style={{ transform: `translate3d(${displayPosition.x}px, ${displayPosition.y}px, 0)`, zIndex: isSelected ? 16 : isWireRelated ? 14 : undefined, '--collaborator-color': remoteOwner?.color }}
               onPointerDown={(event) => beginNodeDrag(event, node)}
@@ -2861,6 +3128,13 @@ const previewOutput = (node, outputId, seen = new Set()) => {
                 selected={isSelected}
                 illuminated={activePulseNodeIdSet.has(node.id)}
                 isLocked={isLocked}
+                findOptions={canvasFindOpen && canvasFindQuery.trim() ? {
+                  query: canvasFindQuery,
+                  matchCase: canvasFindCaseSensitive,
+                  wholeWord: canvasFindWholeWord,
+                  regex: canvasFindRegex
+                } : null}
+                isFindCurrent={isFindCurrent}
                 {...canvasNodeHandlers}
               />
             </div>
@@ -3027,12 +3301,28 @@ const previewOutput = (node, outputId, seen = new Set()) => {
 
       {nodes.length === 0 && <div className="canvas-empty-hint"><span className="empty-hint-glyph"><Plus size={17} /></span><span>Build a graph</span><button onClick={() => onOpenPalette?.()}>Add first node <span className="context-shortcut" aria-label="Shift plus A"><kbd>Shift</kbd><kbd>A</kbd></span></button></div>}
 
-      <div className="canvas-tools" aria-label="Canvas controls">
-        <button className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value / 1.15, 0.25, 2.5)); }} title="Zoom out" aria-label="Zoom out"><Minus size={15} /></button>
-        <button className="canvas-zoom-readout" onClick={() => { if (textInputPopupOpen()) return; setZoom(1); setPan({ x: 22, y: 18 }); }} title="Reset zoom">{Math.round(zoom * 100)}%</button>
-        <button className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value * 1.15, 0.25, 2.5)); }} title="Zoom in" aria-label="Zoom in"><Plus size={15} /></button>
-        <span className="canvas-tool-divider" />
-        <button className="canvas-tool-button" onClick={fitView} title="Frame graph" aria-label="Frame graph"><Maximize size={15} /></button>
+      <div className={`canvas-tools ${canvasFindOpen ? 'is-finding' : ''}`} aria-label={canvasFindOpen ? 'Find on canvas' : 'Canvas controls'}>
+        <div className="canvas-toolset" aria-hidden={canvasFindOpen}>
+          <button tabIndex={canvasFindOpen ? -1 : 0} className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value / 1.15, 0.25, 2.5)); }} title="Zoom out" aria-label="Zoom out"><Minus size={15} /></button>
+          <button tabIndex={canvasFindOpen ? -1 : 0} className="canvas-zoom-readout" onClick={() => { if (textInputPopupOpen()) return; setZoom(1); setPan({ x: 22, y: 18 }); }} title="Reset zoom">{Math.round(zoom * 100)}%</button>
+          <button tabIndex={canvasFindOpen ? -1 : 0} className="canvas-tool-button" onClick={() => { if (!textInputPopupOpen()) setZoom((value) => clamp(value * 1.15, 0.25, 2.5)); }} title="Zoom in" aria-label="Zoom in"><Plus size={15} /></button>
+          <span className="canvas-tool-divider" />
+          <button tabIndex={canvasFindOpen ? -1 : 0} className="canvas-tool-button" onClick={fitView} title="Frame graph" aria-label="Frame graph"><Maximize size={15} /></button>
+          <button tabIndex={canvasFindOpen ? -1 : 0} className="canvas-tool-button canvas-find-toggle" onClick={() => { setCanvasFindQuery(''); setCanvasFindIndex(-1); setCanvasFindOpen(true); }} title="Find on canvas (⌘F)" aria-label="Find on canvas"><Search size={15} /></button>
+        </div>
+        <div className="canvas-find-controls" aria-hidden={!canvasFindOpen}>
+          <label className="canvas-find-input"><Search size={14} /><input ref={canvasFindInputRef} value={canvasFindQuery} onChange={(event) => { setCanvasFindQuery(event.target.value); setCanvasFindIndex(-1); }} onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); navigateCanvasFind(event.shiftKey ? -1 : 1); }
+            if (event.key === 'Escape') { event.preventDefault(); setCanvasFindOpen(false); }
+          }} placeholder="Find on canvas" aria-label="Find nodes on canvas" tabIndex={canvasFindOpen ? 0 : -1} /></label>
+          <span className="canvas-find-count" role="status">{canvasFindResults.error ? 'Invalid pattern' : canvasFindQuery.trim() ? canvasFindResults.results.length ? `${canvasFindIndex < 0 ? 0 : canvasFindIndex + 1} of ${canvasFindResults.results.length}` : 'No results' : ''}</span>
+          <button type="button" className="canvas-find-button" onClick={() => navigateCanvasFind(-1)} title="Previous result (⌘⇧G)" aria-label="Previous canvas result" tabIndex={canvasFindOpen ? 0 : -1}><ChevronUp size={15} /></button>
+          <button type="button" className="canvas-find-button" onClick={() => navigateCanvasFind(1)} title="Next result (⌘G)" aria-label="Next canvas result" tabIndex={canvasFindOpen ? 0 : -1}><ChevronDown size={15} /></button>
+          <label className="canvas-find-option" title="Match case"><input type="checkbox" checked={canvasFindCaseSensitive} onChange={(event) => { setCanvasFindCaseSensitive(event.target.checked); setCanvasFindIndex(-1); }} tabIndex={canvasFindOpen ? 0 : -1} /> Aa</label>
+          <label className="canvas-find-option" title="Match whole word"><input type="checkbox" checked={canvasFindWholeWord} onChange={(event) => { setCanvasFindWholeWord(event.target.checked); setCanvasFindIndex(-1); }} tabIndex={canvasFindOpen ? 0 : -1} /> ab</label>
+          <label className="canvas-find-option" title="Use regular expression"><input type="checkbox" checked={canvasFindRegex} onChange={(event) => { setCanvasFindRegex(event.target.checked); setCanvasFindIndex(-1); }} tabIndex={canvasFindOpen ? 0 : -1} /> .*</label>
+          <button type="button" className="canvas-find-button canvas-find-close" onClick={() => setCanvasFindOpen(false)} title="Close find (Esc)" aria-label="Close canvas find" tabIndex={canvasFindOpen ? 0 : -1}><X size={14} /></button>
+        </div>
       </div>
       {!!(tagGroupLayouts.length || notes.length) && <aside className="canvas-note-timeline" aria-label="Graph sections and notes">
         <header>Sections &amp; notes</header>
@@ -3150,7 +3440,8 @@ function estimateNodeCardHeight(node, definition) {
   else if (node?.type === 'action_web_fetch') configHeight = 470;
   else if (node?.type === 'action_web_retry') configHeight = 590;
   else if (node?.type === 'action_http_download') configHeight = 320;
-  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message') configHeight = 440;
+  else if (node?.type === 'action_send_message' || node?.type === 'action_edit_message') configHeight = 490;
+  else if (['action_create_thread', 'action_start_thread_from_message'].includes(node?.type)) configHeight = 320;
   else if (node?.type === 'branch_switch') configHeight = 150;
   else if (definition?.pluginAdapter) configHeight = 120 + (definition.inputs || []).filter((pin) => pin.type !== 'exec').length * 42;
   return pinHeight + configHeight;
